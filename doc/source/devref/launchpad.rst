@@ -40,9 +40,10 @@ https://blueprints.launchpad.net/cinder.
 Technical support (Answers)
 ---------------------------
 
-Cinder no longer uses Launchpad Answers to track Cinder technical support questions.
+Cinder uses Launchpad Answers to track Cinder technical support questions. The Cinder
+Answers page is at https://answers.launchpad.net/cinder.
 
-Note that `Ask OpenStack`_ (which is not hosted on Launchpad) can
+Note that `Ask OpenStack`_ (which is not hosted on Launchpad) can also
 be used for technical support requests.
 
 .. _Launchpad: http://launchpad.net

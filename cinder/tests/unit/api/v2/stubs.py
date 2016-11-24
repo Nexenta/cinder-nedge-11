@@ -18,18 +18,19 @@ import iso8601
 
 from cinder import exception as exc
 from cinder import objects
-from cinder.objects import fields
-from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_volume
-from cinder import utils
 
+
+FAKE_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+FAKE_UUIDS = {}
+TEST_SNAPSHOT_UUID = '00000000-0000-0000-0000-000000000001'
 
 DEFAULT_VOL_NAME = "displayname"
 DEFAULT_VOL_DESCRIPTION = "displaydesc"
 DEFAULT_VOL_SIZE = 1
 DEFAULT_VOL_TYPE = "vol_type_name"
 DEFAULT_VOL_STATUS = "fakestatus"
-DEFAULT_VOL_ID = fake.VOLUME_ID
+DEFAULT_VOL_ID = '1'
 
 # TODO(vbala): api.v1 tests use hard-coded "fakeaz" for verifying
 # post-conditions. Update value to "zone1:host1" once we remove
@@ -40,8 +41,8 @@ DEFAULT_AZ = "fakeaz"
 def stub_volume(id, **kwargs):
     volume = {
         'id': id,
-        'user_id': fake.USER_ID,
-        'project_id': fake.PROJECT_ID,
+        'user_id': 'fakeuser',
+        'project_id': 'fakeproject',
         'host': 'fakehost',
         'size': DEFAULT_VOL_SIZE,
         'availability_zone': DEFAULT_AZ,
@@ -90,7 +91,6 @@ def stub_volume_create(self, context, size, name, description, snapshot=None,
     vol['source_volid'] = source_volume.get('id')
     vol['bootable'] = False
     vol['volume_attachment'] = []
-    vol['multiattach'] = utils.get_bool_param('multiattach', param)
     try:
         vol['snapshot_id'] = snapshot['id']
     except (KeyError, TypeError):
@@ -117,7 +117,7 @@ def stub_image_service_detail(self, context, **kwargs):
 def stub_volume_create_from_image(self, context, size, name, description,
                                   snapshot, volume_type, metadata,
                                   availability_zone):
-    vol = stub_volume(fake.VOLUME_ID)
+    vol = stub_volume('1')
     vol['status'] = 'creating'
     vol['size'] = size
     vol['display_name'] = name
@@ -166,17 +166,17 @@ def stub_volume_api_get(self, context, volume_id, viewable_admin_meta=False):
 def stub_volume_get_all(context, search_opts=None, marker=None, limit=None,
                         sort_keys=None, sort_dirs=None, filters=None,
                         viewable_admin_meta=False, offset=None):
-    return [stub_volume(fake.VOLUME_ID, project_id=fake.PROJECT_ID),
-            stub_volume(fake.VOLUME2_ID, project_id=fake.PROJECT2_ID),
-            stub_volume(fake.VOLUME3_ID, project_id=fake.PROJECT3_ID)]
+    return [stub_volume(100, project_id='fake'),
+            stub_volume(101, project_id='superfake'),
+            stub_volume(102, project_id='superduperfake')]
 
 
 def stub_volume_get_all_by_project(self, context, marker, limit,
                                    sort_keys=None, sort_dirs=None,
                                    filters=None,
                                    viewable_admin_meta=False, offset=None):
-    return [stub_volume_get(self, context, fake.VOLUME_ID,
-                            viewable_admin_meta=True)]
+    filters = filters or {}
+    return [stub_volume_get(self, context, '1', viewable_admin_meta=True)]
 
 
 def stub_volume_api_get_all_by_project(self, context, marker, limit,
@@ -184,7 +184,8 @@ def stub_volume_api_get_all_by_project(self, context, marker, limit,
                                        filters=None,
                                        viewable_admin_meta=False,
                                        offset=None):
-    vol = stub_volume_get(self, context, fake.VOLUME_ID,
+    filters = filters or {}
+    vol = stub_volume_get(self, context, '1',
                           viewable_admin_meta=viewable_admin_meta)
     vol_obj = fake_volume.fake_volume_obj(context, **vol)
     return objects.VolumeList(objects=[vol_obj])
@@ -192,13 +193,13 @@ def stub_volume_api_get_all_by_project(self, context, marker, limit,
 
 def stub_snapshot(id, **kwargs):
     snapshot = {'id': id,
-                'volume_id': fake.VOLUME_ID,
-                'status': fields.SnapshotStatus.AVAILABLE,
+                'volume_id': 12,
+                'status': 'available',
                 'volume_size': 100,
                 'created_at': None,
                 'display_name': 'Default name',
                 'display_description': 'Default description',
-                'project_id': fake.PROJECT_ID,
+                'project_id': 'fake',
                 'snapshot_metadata': []}
 
     snapshot.update(kwargs)
@@ -207,23 +208,19 @@ def stub_snapshot(id, **kwargs):
 
 def stub_snapshot_get_all(context, filters=None, marker=None, limit=None,
                           sort_keys=None, sort_dirs=None, offset=None):
-    return [stub_snapshot(fake.VOLUME_ID, project_id=fake.PROJECT_ID),
-            stub_snapshot(fake.VOLUME2_ID, project_id=fake.PROJECT2_ID),
-            stub_snapshot(fake.VOLUME3_ID, project_id=fake.PROJECT3_ID)]
+    return [stub_snapshot(100, project_id='fake'),
+            stub_snapshot(101, project_id='superfake'),
+            stub_snapshot(102, project_id='superduperfake')]
 
 
 def stub_snapshot_get_all_by_project(context, project_id, filters=None,
                                      marker=None, limit=None, sort_keys=None,
                                      sort_dirs=None, offset=None):
-    return [stub_snapshot(fake.SNAPSHOT_ID)]
+    return [stub_snapshot(1)]
 
 
 def stub_snapshot_update(self, context, *args, **param):
     pass
-
-
-def stub_service_get_all(*args, **kwargs):
-    return [{'availability_zone': "zone1:host1", "disabled": 0}]
 
 
 def stub_service_get_all_by_topic(context, topic, disabled=None):
@@ -231,7 +228,7 @@ def stub_service_get_all_by_topic(context, topic, disabled=None):
 
 
 def stub_snapshot_get(self, context, snapshot_id):
-    if snapshot_id == fake.WILL_NOT_BE_FOUND_ID:
+    if snapshot_id != TEST_SNAPSHOT_UUID:
         raise exc.SnapshotNotFound(snapshot_id=snapshot_id)
 
     return stub_snapshot(snapshot_id)

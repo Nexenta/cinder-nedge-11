@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_log import log as logging
 import oslo_messaging
 
 from cinder.api import extensions
@@ -22,6 +23,9 @@ from cinder import exception
 from cinder.i18n import _
 from cinder import objects
 from cinder.volume import rpcapi
+
+
+LOG = logging.getLogger(__name__)
 
 
 def authorize(context, action_name):
@@ -61,6 +65,7 @@ class Capabilities(extensions.ExtensionDescriptor):
 
     name = "Capabilities"
     alias = "capabilities"
+    namespace = "http://docs.openstack.org/volume/ext/capabilities/api/v2"
     updated = "2015-08-31T00:00:00+00:00"
 
     def get_resources(self):

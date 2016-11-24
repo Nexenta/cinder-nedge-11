@@ -39,7 +39,7 @@ class IsolationTestCase(test.TestCase):
         class NeverCalled(object):
 
             def __getattribute__(*args):
-                self.fail(msg="I should never get called.")
+                assert False, "I should never get called."
 
         server = rpc.get_server(messaging.Target(topic='volume',
                                                  server=cfg.CONF.host),

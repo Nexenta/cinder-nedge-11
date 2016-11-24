@@ -28,26 +28,20 @@ import six
 
 from cinder import exception
 from cinder.i18n import _
-from cinder import interface
 from cinder import utils
 from cinder.volume.drivers.netapp.dataontap.client import client_7mode
 from cinder.volume.drivers.netapp.dataontap import nfs_base
 from cinder.volume.drivers.netapp.dataontap.performance import perf_7mode
 from cinder.volume.drivers.netapp import options as na_opts
 from cinder.volume.drivers.netapp import utils as na_utils
-from cinder.volume import utils as volume_utils
 
 
 LOG = logging.getLogger(__name__)
 
 
 @six.add_metaclass(utils.TraceWrapperWithABCMetaclass)
-@interface.volumedriver
 class NetApp7modeNfsDriver(nfs_base.NetAppNfsDriver):
     """NetApp NFS driver for Data ONTAP (7-mode)."""
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "NetApp_CI"
 
     def __init__(self, *args, **kwargs):
         super(NetApp7modeNfsDriver, self).__init__(*args, **kwargs)
@@ -65,6 +59,7 @@ class NetApp7modeNfsDriver(nfs_base.NetAppNfsDriver):
             port=self.configuration.netapp_server_port,
             vfiler=self.configuration.netapp_vfiler)
 
+        self.ssc_enabled = False
         self.perf_library = perf_7mode.Performance7modeLibrary(
             self.zapi_client)
 
@@ -80,26 +75,17 @@ class NetApp7modeNfsDriver(nfs_base.NetAppNfsDriver):
         else:
             msg = _("Data ONTAP API version could not be determined.")
             raise exception.VolumeBackendAPIException(data=msg)
-        self._add_looping_tasks()
         super(NetApp7modeNfsDriver, self).check_for_setup_error()
 
-    def _add_looping_tasks(self):
-        """Add tasks that need to be executed at a fixed interval."""
-        super(NetApp7modeNfsDriver, self)._add_looping_tasks()
-
     def _clone_backing_file_for_volume(self, volume_name, clone_name,
-                                       volume_id, share=None,
-                                       is_snapshot=False,
-                                       source_snapshot=None):
-        """Clone backing file for Cinder volume.
+                                       volume_id, share=None):
+        """Clone backing file for Cinder volume."""
 
-        :param: is_snapshot Not used, present for method signature consistency
-        """
         (_host_ip, export_path) = self._get_export_ip_path(volume_id, share)
         storage_path = self.zapi_client.get_actual_path_for_export(export_path)
         target_path = '%s/%s' % (storage_path, clone_name)
         self.zapi_client.clone_file('%s/%s' % (storage_path, volume_name),
-                                    target_path, source_snapshot)
+                                    target_path)
 
     def _update_volume_stats(self):
         """Retrieve stats info from vserver."""
@@ -137,7 +123,6 @@ class NetApp7modeNfsDriver(nfs_base.NetAppNfsDriver):
             pool = dict()
             pool['pool_name'] = nfs_share
             pool['QoS_support'] = False
-            pool['multiattach'] = True
             pool.update(capacity)
 
             thick = not self.configuration.nfs_sparsed_volumes
@@ -148,7 +133,6 @@ class NetApp7modeNfsDriver(nfs_base.NetAppNfsDriver):
             pool['utilization'] = na_utils.round_down(utilization, '0.01')
             pool['filter_function'] = filter_function
             pool['goodness_function'] = goodness_function
-            pool['consistencygroup_support'] = True
 
             pools.append(pool)
 
@@ -227,35 +211,3 @@ class NetApp7modeNfsDriver(nfs_base.NetAppNfsDriver):
         """Set QoS policy on backend from volume type information."""
         # 7-mode DOT does not support QoS.
         return
-
-    def _get_backing_flexvol_names(self):
-        """Returns a list of backing flexvol names."""
-        flexvol_names = []
-        for nfs_share in self._mounted_shares:
-            flexvol_name = nfs_share.rsplit('/', 1)[1]
-            flexvol_names.append(flexvol_name)
-            LOG.debug("Found flexvol %s", flexvol_name)
-
-        return flexvol_names
-
-    def _get_flexvol_names_from_hosts(self, hosts):
-        """Returns a set of flexvol names."""
-        flexvols = set()
-        for host in hosts:
-            pool_name = volume_utils.extract_host(host, level='pool')
-            flexvol_name = pool_name.rsplit('/', 1)[1]
-            flexvols.add(flexvol_name)
-        return flexvols
-
-    @utils.trace_method
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Delete files backing each snapshot in the cgsnapshot.
-
-        :return: An implicit update of snapshot models that the manager will
-                 interpret and subsequently set the model state to deleted.
-        """
-        for snapshot in snapshots:
-            self._delete_file(snapshot['volume_id'], snapshot['name'])
-            LOG.debug("Snapshot %s deletion successful", snapshot['name'])
-
-        return None, None

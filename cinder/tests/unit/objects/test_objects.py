@@ -15,7 +15,6 @@
 from oslo_versionedobjects import fixture
 
 from cinder import db
-from cinder import objects
 from cinder.objects import base
 from cinder import test
 
@@ -23,35 +22,23 @@ from cinder import test
 # NOTE: The hashes in this list should only be changed if they come with a
 # corresponding version bump in the affected objects.
 object_data = {
-    'Backup': '1.4-c50f7a68bb4c400dd53dd219685b3992',
-    'BackupImport': '1.4-c50f7a68bb4c400dd53dd219685b3992',
-    'BackupList': '1.0-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'Cluster': '1.0-6f06e867c073e9d31722c53b0a9329b8',
-    'ClusterList': '1.0-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'CGSnapshot': '1.0-3212ac2b4c2811b7134fb9ba2c49ff74',
-    'CGSnapshotList': '1.0-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'ConsistencyGroup': '1.3-7bf01a79b82516639fc03cd3ab6d9c01',
-    'ConsistencyGroupList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'QualityOfServiceSpecs': '1.0-0b212e0a86ee99092229874e03207fe8',
-    'QualityOfServiceSpecsList': '1.0-1b54e51ad0fc1f3a8878f5010e7e16dc',
-    'RequestSpec': '1.1-b0bd1a28d191d75648901fa853e8a733',
-    'Service': '1.4-c7d011989d1718ca0496ccf640b42712',
-    'ServiceList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'Snapshot': '1.1-d6a9d58f627bb2a5cf804b0dd7a12bc7',
-    'SnapshotList': '1.0-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'Volume': '1.5-19919d8086d6a38ab9d3ab88139e70e0',
-    'VolumeList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'VolumeAttachment': '1.0-b30dacf62b2030dd83d8a1603f1064ff',
-    'VolumeAttachmentList': '1.0-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'VolumeProperties': '1.1-cadac86b2bdc11eb79d1dcea988ff9e8',
-    'VolumeType': '1.2-02ecb0baac87528d041f4ddd95b95579',
-    'VolumeTypeList': '1.1-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'GroupType': '1.0-d4a7b272199d0b0d6fc3ceed58539d30',
-    'GroupTypeList': '1.0-1b54e51ad0fc1f3a8878f5010e7e16dc',
-    'Group': '1.1-bd853b1d1ee05949d9ce4b33f80ac1a0',
-    'GroupList': '1.0-15ecf022a68ddbb8c2a6739cfc9f8f5e',
-    'GroupSnapshot': '1.0-9af3e994e889cbeae4427c3e351fa91d',
-    'GroupSnapshotList': '1.0-15ecf022a68ddbb8c2a6739cfc9f8f5e',
+    'Backup': '1.4-cae44fe34d5a870110ba93adebc1edca',
+    'BackupImport': '1.4-cae44fe34d5a870110ba93adebc1edca',
+    'BackupList': '1.0-7350483276ddb74960c8c39b69192eaa',
+    'CGSnapshot': '1.0-78b91e76cb4c56e9cf5c9c41e208c05a',
+    'CGSnapshotList': '1.0-e8c3f4078cd0ee23487b34d173eec776',
+    'ConsistencyGroup': '1.2-3aeb6b25664057e8078bd6d45bf23e0a',
+    'ConsistencyGroupList': '1.1-73916823b697dfa0c7f02508d87e0f28',
+    'Service': '1.3-66c8e1683f58546c54551e9ff0a3b111',
+    'ServiceList': '1.1-07d2be494d704784ad2af4d4c91e68e5',
+    'Snapshot': '1.0-404c1a8b48a808aa0b7cc92cd3ec1e57',
+    'SnapshotList': '1.0-58441afd20ddf9417b8879aa6de1ee6f',
+    'Volume': '1.3-264388ec57bc4c3353c89f93bebf9482',
+    'VolumeList': '1.1-8859f973dc02e9eb4582063a171bd0f1',
+    'VolumeAttachment': '1.0-8fc9a9ac6f554fdf2a194d25dbf28a3b',
+    'VolumeAttachmentList': '1.0-4ef79b3824e5d1717ebe0d0558ddff96',
+    'VolumeType': '1.0-dd980cfd1eef2dcce941a981eb469fc8',
+    'VolumeTypeList': '1.1-68a4549e98563caec82a2018638fa69c',
 }
 
 
@@ -88,12 +75,7 @@ class TestObjectVersions(test.TestCase):
         # db model and object match.
         def _check_table_matched(db_model, cls):
             for column in db_model.__table__.columns:
-                # NOTE(xyang): Skip the comparison of the colume name
-                # group_type_id in table Group because group_type_id
-                # is in the object Group but it is stored in a different
-                # table in the database, not in the Group table.
-                if (column.name in cls.fields and
-                        (column.name != 'group_type_id' and name != 'Group')):
+                if column.name in cls.fields:
                     self.assertEqual(
                         column.nullable,
                         cls.fields[column.name].nullable,
@@ -103,18 +85,6 @@ class TestObjectVersions(test.TestCase):
 
         classes = base.CinderObjectRegistry.obj_classes()
         for name, cls in classes.items():
-            if issubclass(cls[0], base.CinderPersistentObject):
+            if not issubclass(cls[0], base.ObjectListBase):
                 db_model = db.get_model_for_versioned_object(cls[0])
                 _check_table_matched(db_model, cls[0])
-
-    def test_obj_make_compatible(self):
-        # Go through all of the object classes and run obj_to_primitive() with
-        # a target version of all previous minor versions. It doesn't test
-        # the converted data, but at least ensures the method doesn't blow
-        # up on something simple.
-        init_args = {}
-        init_kwargs = {objects.Snapshot: {'context': 'ctxt'}}
-        checker = fixture.ObjectVersionChecker(
-            base.CinderObjectRegistry.obj_classes())
-        checker.test_compatibility_routines(init_args=init_args,
-                                            init_kwargs=init_kwargs)

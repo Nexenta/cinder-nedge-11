@@ -20,6 +20,7 @@ import webob
 
 from cinder.api import extensions
 from cinder.api.openstack import wsgi
+from cinder.api.v1 import types
 from cinder.api.views import types as views_types
 from cinder import exception
 from cinder.i18n import _
@@ -47,6 +48,7 @@ class VolumeTypesManageController(wsgi.Controller):
         rpc.get_notifier('volumeType').info(context, method, payload)
 
     @wsgi.action("create")
+    @wsgi.serializers(xml=types.VolumeTypeTemplate)
     def _create(self, req, body):
         """Creates a new volume type."""
         context = req.environ['cinder.context']
@@ -58,7 +60,6 @@ class VolumeTypesManageController(wsgi.Controller):
         name = vol_type.get('name', None)
         description = vol_type.get('description')
         specs = vol_type.get('extra_specs', {})
-        utils.validate_dictionary_string_length(specs)
         is_public = vol_type.get('os-volume-type-access:is_public', True)
 
         if name is None or len(name.strip()) == 0:
@@ -95,12 +96,12 @@ class VolumeTypesManageController(wsgi.Controller):
         except exception.VolumeTypeNotFoundByName as err:
             self._notify_volume_type_error(
                 context, 'volume_type.create', err, name=name)
-            # Not found exception will be handled at the wsgi level
-            raise
+            raise webob.exc.HTTPNotFound(explanation=err.msg)
 
         return self._view_builder.show(req, vol_type)
 
     @wsgi.action("update")
+    @wsgi.serializers(xml=types.VolumeTypeTemplate)
     def _update(self, req, id, body):
         # Update description for a given volume type.
         context = req.environ['cinder.context']
@@ -149,8 +150,7 @@ class VolumeTypesManageController(wsgi.Controller):
         except exception.VolumeTypeNotFound as err:
             self._notify_volume_type_error(
                 context, 'volume_type.update', err, id=id)
-            # Not found exception will be handled at the wsgi level
-            raise
+            raise webob.exc.HTTPNotFound(explanation=six.text_type(err))
         except exception.VolumeTypeExists as err:
             self._notify_volume_type_error(
                 context, 'volume_type.update', err, volume_type=vol_type)
@@ -182,8 +182,7 @@ class VolumeTypesManageController(wsgi.Controller):
         except exception.VolumeTypeNotFound as err:
             self._notify_volume_type_error(
                 context, 'volume_type.delete', err, id=id)
-            # Not found exception will be handled at the wsgi level
-            raise
+            raise webob.exc.HTTPNotFound(explanation=err.msg)
 
         return webob.Response(status_int=202)
 
@@ -193,6 +192,7 @@ class Types_manage(extensions.ExtensionDescriptor):
 
     name = "TypesManage"
     alias = "os-types-manage"
+    namespace = "http://docs.openstack.org/volume/ext/types-manage/api/v1"
     updated = "2011-08-24T00:00:00+00:00"
 
     def get_controller_extensions(self):

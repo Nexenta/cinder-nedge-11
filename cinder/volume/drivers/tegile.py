@@ -28,7 +28,6 @@ import six
 from cinder import exception
 from cinder import utils
 from cinder.i18n import _, _LI, _LW
-from cinder import interface
 from cinder.volume import driver
 from cinder.volume.drivers.san import san
 from cinder.volume import utils as volume_utils
@@ -151,9 +150,6 @@ class TegileIntelliFlashVolumeDriver(san.SanDriver):
     REQUIRED_OPTIONS = ['san_ip', 'san_login',
                         'san_password', 'tegile_default_pool']
     SNAPSHOT_PREFIX = 'Manual-V-'
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Tegile_Storage_CI"
 
     _api_executor = None
 
@@ -476,7 +472,6 @@ class TegileIntelliFlashVolumeDriver(san.SanDriver):
                                                       'set.') % {'attr': attr})
 
 
-@interface.volumedriver
 class TegileISCSIDriver(TegileIntelliFlashVolumeDriver, san.SanISCSIDriver):
     """Tegile ISCSI Driver."""
 
@@ -493,8 +488,12 @@ class TegileISCSIDriver(TegileIntelliFlashVolumeDriver, san.SanISCSIDriver):
         """Driver entry point to attach a volume to an instance."""
 
         if getattr(self.configuration, 'use_chap_auth', False):
-            chap_username = getattr(self.configuration, 'chap_username', '')
-            chap_password = getattr(self.configuration, 'chap_password', '')
+                chap_username = getattr(self.configuration,
+                                        'chap_username',
+                                        '')
+                chap_password = getattr(self.configuration,
+                                        'chap_password',
+                                        '')
         else:
             chap_username = ''
             chap_password = ''
@@ -585,7 +584,6 @@ class TegileISCSIDriver(TegileIntelliFlashVolumeDriver, san.SanISCSIDriver):
              'provider_auth': provider_auth})
 
 
-@interface.volumedriver
 class TegileFCDriver(TegileIntelliFlashVolumeDriver,
                      driver.FibreChannelDriver):
     """Tegile FC driver."""

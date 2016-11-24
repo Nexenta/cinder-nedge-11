@@ -1,5 +1,5 @@
 #    Copyright (c) 2013 Dell Inc.
-#    Copyright 2013 OpenStack Foundation
+#    Copyright 2013 OpenStack LLC
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -16,7 +16,6 @@
 """Volume driver for Dell EqualLogic Storage."""
 
 import functools
-import math
 import random
 
 import eventlet
@@ -31,7 +30,6 @@ from six.moves import range
 
 from cinder import exception
 from cinder.i18n import _, _LE, _LW, _LI
-from cinder import interface
 from cinder import ssh_utils
 from cinder import utils
 from cinder.volume.drivers import san
@@ -51,7 +49,6 @@ eqlx_opts = [
                     'specified in cinder/volume/drivers/san/san.py '
                     'and will be removed in M release.'),
     cfg.IntOpt('eqlx_cli_max_retries',
-               min=0,
                default=5,
                help='Maximum retry count for reconnection. Default is 5.'),
     cfg.BoolOpt('eqlx_use_chap',
@@ -105,7 +102,6 @@ def with_timeout(f):
     return __inner
 
 
-@interface.volumedriver
 class DellEQLSanISCSIDriver(san.SanISCSIDriver):
     """Implements commands for Dell EqualLogic SAN ISCSI management.
 
@@ -121,27 +117,18 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
             - modify volume access records;
 
     The access credentials to the SAN are provided by means of the following
-    flags:
-
-    .. code-block:: ini
-
+    flags
         san_ip=<ip_address>
         san_login=<user name>
         san_password=<user password>
         san_private_key=<file containing SSH private key>
 
     Thin provision of volumes is enabled by default, to disable it use:
-
-    .. code-block:: ini
-
         san_thin_provision=false
 
     In order to use target CHAP authentication (which is disabled by default)
     SAN administrator must create a local CHAP user and specify the following
     flags for the driver:
-
-    .. code-block:: ini
-
         use_chap_auth=True
         chap_login=<chap_login>
         chap_password=<chap_password>
@@ -151,20 +138,13 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
     parameter must be set to 'group-0'
 
     Version history:
-
-    .. code-block:: none
-
         1.0   - Initial driver
         1.1.0 - Misc fixes
         1.2.0 - Deprecated eqlx_cli_timeout infavor of ssh_conn_timeout
-        1.3.0 - Added support for manage/unmanage volume
 
     """
 
-    VERSION = "1.3.0"
-
-    # ThirdPartySytems wiki page
-    CI_WIKI_NAME = "Dell_Storage_CI"
+    VERSION = "1.2.0"
 
     def __init__(self, *args, **kwargs):
         super(DellEQLSanISCSIDriver, self).__init__(*args, **kwargs)
@@ -296,6 +276,10 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
 
     def check_for_setup_error(self):
         super(DellEQLSanISCSIDriver, self).check_for_setup_error()
+        if self.configuration.eqlx_cli_max_retries < 0:
+            raise exception.InvalidInput(
+                reason=_("eqlx_cli_max_retries must be greater than or "
+                         "equal to 0"))
 
     def _eql_execute(self, *args, **kwargs):
         return self._run_ssh(
@@ -304,9 +288,6 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
     def _get_volume_data(self, lines):
         prefix = 'iSCSI target name is '
         target_name = self._get_prefixed_value(lines, prefix)[:-1]
-        return self._get_model_update(target_name)
-
-    def _get_model_update(self, target_name):
         lun_id = "%s:%s,1 %s 0" % (self._group_ip, '3260', target_name)
         model_update = {}
         model_update['provider_location'] = lun_id
@@ -325,7 +306,7 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
         elif val.endswith('TB'):
             scale = 1.0 * 1024
             part = 'TB'
-        return math.ceil(scale * float(val.partition(part)[0]))
+        return scale * float(val.partition(part)[0])
 
     def _update_volume_stats(self):
         """Retrieve stats info from eqlx group."""
@@ -375,25 +356,6 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
         data['thick_provisioning_support'] = not thin_enabled
 
         self._stats = data
-
-    def _get_volume_info(self, volume_name):
-        """Get the volume details on the array"""
-        command = ['volume', 'select', volume_name, 'show']
-        try:
-            data = {}
-            for line in self._eql_execute(*command):
-                if line.startswith('Size:'):
-                    out_tup = line.rstrip().partition(' ')
-                    data['size'] = self._get_space_in_gb(out_tup[-1])
-                elif line.startswith('iSCSI Name:'):
-                    out_tup = line.rstrip().partition(': ')
-                    data['iSCSI_Name'] = out_tup[-1]
-            return data
-        except processutils.ProcessExecutionError:
-            msg = (_("Volume does not exists %s.") % volume_name)
-            LOG.error(msg)
-            raise exception.ManageExistingInvalidReference(
-                existing_ref=volume_name, reason=msg)
 
     def _check_volume(self, volume):
         """Check if the volume exists on the Array."""
@@ -478,18 +440,6 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
                               'for volume "%s".'),
                           volume['name'])
 
-    def _set_volume_description(self, volume, description):
-        """Set the description of the volume"""
-        try:
-            cmd = ['volume', 'select',
-                   volume['name'], 'description', description]
-            self._eql_execute(*cmd)
-        except Exception:
-            with excutils.save_and_reraise_exception():
-                LOG.error(_LE('Failed to set description '
-                              'for volume "%s".'),
-                          volume['name'])
-
     def delete_volume(self, volume):
         """Delete a volume."""
         try:
@@ -527,15 +477,6 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
                                     snapshot['volume_name'], 'snapshot',
                                     'select', snapshot['name'],
                                     'clone', volume['name'])
-            # Extend Volume if needed
-            if out and volume['size'] > snapshot['volume_size']:
-                self.extend_volume(volume, volume['size'])
-                LOG.debug('Volume from snapshot %(name)s resized from '
-                          '%(current_size)sGB to %(new_size)sGB.',
-                          {'name': volume['name'],
-                           'current_size': snapshot['volume_size'],
-                           'new_size': volume['size']})
-
             self.add_multihost_access(volume)
             return self._get_volume_data(out)
         except Exception:
@@ -549,11 +490,6 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
             src_volume_name = src_vref['name']
             out = self._eql_execute('volume', 'select', src_volume_name,
                                     'clone', volume['name'])
-
-            # Extend Volume if needed
-            if out and volume['size'] > src_vref['size']:
-                self.extend_volume(volume, volume['size'])
-
             self.add_multihost_access(volume)
             return self._get_volume_data(out)
         except Exception:
@@ -566,9 +502,6 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
         try:
             self._eql_execute('volume', 'select', snapshot['volume_name'],
                               'snapshot', 'delete', snapshot['name'])
-        except processutils.ProcessExecutionError as err:
-            if err.stdout.find('does not exist') > -1:
-                LOG.debug('Snapshot %s could not be found.', snapshot['name'])
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.error(_LE('Failed to delete snapshot %(snap)s of '
@@ -650,11 +583,6 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
         try:
             self._eql_execute('volume', 'select', volume['name'],
                               'size', "%sG" % new_size)
-            LOG.info(_LI('Volume %(name)s resized from '
-                         '%(current_size)sGB to %(new_size)sGB.'),
-                     {'name': volume['name'],
-                      'current_size': volume['size'],
-                      'new_size': new_size})
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.error(_LE('Failed to extend_volume %(name)s from '
@@ -662,70 +590,6 @@ class DellEQLSanISCSIDriver(san.SanISCSIDriver):
                           {'name': volume['name'],
                            'current_size': volume['size'],
                            'new_size': new_size})
-
-    def _get_existing_volume_ref_name(self, ref):
-        existing_volume_name = None
-        if 'source-name' in ref:
-            existing_volume_name = ref['source-name']
-        elif 'source-id' in ref:
-            existing_volume_name = ref['source-id']
-        else:
-            msg = _('Reference must contain source-id or source-name.')
-            LOG.error(msg)
-            raise exception.InvalidInput(reason=msg)
-
-        return existing_volume_name
-
-    def manage_existing(self, volume, existing_ref):
-        """Manage an existing volume on the backend storage."""
-        existing_volume_name = self._get_existing_volume_ref_name(existing_ref)
-        try:
-            cmd = ['volume', 'rename',
-                   existing_volume_name, volume['name']]
-            self._eql_execute(*cmd)
-            self._set_volume_description(volume, '"OpenStack Managed"')
-            self.add_multihost_access(volume)
-            data = self._get_volume_info(volume['name'])
-            updates = self._get_model_update(data['iSCSI_Name'])
-            LOG.info(_LI("Backend volume %(back_vol)s renamed to "
-                     "%(vol)s and is now managed by cinder."),
-                     {'back_vol': existing_volume_name,
-                      'vol': volume['name']})
-            return updates
-        except Exception:
-            with excutils.save_and_reraise_exception():
-                LOG.error(_LE('Failed to manage volume "%s".'), volume['name'])
-
-    def manage_existing_get_size(self, volume, existing_ref):
-        """Return size of volume to be managed by manage_existing.
-
-        When calculating the size, round up to the next GB.
-
-        :param volume:       Cinder volume to manage
-        :param existing_ref: Driver-specific information used to identify a
-        volume
-        """
-        existing_volume_name = self._get_existing_volume_ref_name(existing_ref)
-        data = self._get_volume_info(existing_volume_name)
-        return data['size']
-
-    def unmanage(self, volume):
-        """Removes the specified volume from Cinder management.
-
-        Does not delete the underlying backend storage object.
-
-        :param volume: Cinder volume to unmanage
-        """
-        try:
-            self._set_volume_description(volume, '"OpenStack UnManaged"')
-            LOG.info(_LI("Virtual volume %(disp)s '%(vol)s' is no "
-                     "longer managed."),
-                     {'disp': volume['display_name'],
-                      'vol': volume['name']})
-        except Exception:
-            with excutils.save_and_reraise_exception():
-                LOG.error(_LE('Failed to unmanage volume "%s".'),
-                          volume['name'])
 
     def local_path(self, volume):
         raise NotImplementedError()

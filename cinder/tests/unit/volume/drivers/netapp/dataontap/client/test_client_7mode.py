@@ -17,7 +17,6 @@
 
 import uuid
 
-import ddt
 from lxml import etree
 import mock
 import paramiko
@@ -31,7 +30,6 @@ from cinder.tests.unit.volume.drivers.netapp.dataontap.client import (
 from cinder.tests.unit.volume.drivers.netapp.dataontap import fakes as fake
 from cinder.volume.drivers.netapp.dataontap.client import api as netapp_api
 from cinder.volume.drivers.netapp.dataontap.client import client_7mode
-from cinder.volume.drivers.netapp.dataontap.client import client_base
 from cinder.volume.drivers.netapp import utils as netapp_utils
 
 CONNECTION_INFO = {'hostname': 'hostname',
@@ -41,7 +39,6 @@ CONNECTION_INFO = {'hostname': 'hostname',
                    'password': 'passw0rd'}
 
 
-@ddt.ddt
 class NetApp7modeClientTestCase(test.TestCase):
 
     def setUp(self):
@@ -510,9 +507,7 @@ class NetApp7modeClientTestCase(test.TestCase):
         self.connection.invoke_successfully.side_effect = [
             fake_clone_id_response, fake_clone_list_response]
 
-        self.client.clone_file(expected_src_path,
-                               expected_dest_path,
-                               source_snapshot=fake.CG_SNAPSHOT_ID)
+        self.client.clone_file(expected_src_path, expected_dest_path)
 
         __, _args, _kwargs = self.connection.invoke_successfully.mock_calls[0]
         actual_request = _args[0]
@@ -524,9 +519,6 @@ class NetApp7modeClientTestCase(test.TestCase):
 
         self.assertEqual(expected_src_path, actual_src_path)
         self.assertEqual(expected_dest_path, actual_dest_path)
-        self.assertEqual(
-            fake.CG_SNAPSHOT_ID,
-            actual_request.get_child_by_name('snapshot-name').get_content())
         self.assertEqual(actual_request.get_child_by_name(
             'destination-exists'), None)
         self.assertTrue(enable_tunneling)
@@ -678,13 +670,11 @@ class NetApp7modeClientTestCase(test.TestCase):
                              'available_bytes': expected_available_bytes}))
         self.connection.invoke_successfully.return_value = response
 
-        result = self.client.get_flexvol_capacity(fake_flexvol_path)
+        total_bytes, available_bytes = (
+            self.client.get_flexvol_capacity(fake_flexvol_path))
 
-        expected = {
-            'size-total': expected_total_bytes,
-            'size-available': expected_available_bytes,
-        }
-        self.assertEqual(expected, result)
+        self.assertEqual(expected_total_bytes, total_bytes)
+        self.assertEqual(expected_available_bytes, available_bytes)
 
     def test_get_performance_instance_names(self):
 
@@ -819,39 +809,3 @@ class NetApp7modeClientTestCase(test.TestCase):
 
         self.assertRaises(exception.SnapshotNotFound, self.client.get_snapshot,
                           expected_vol_name, expected_snapshot_name)
-
-    @ddt.data({
-        'mock_return':
-            fake_client.SNAPSHOT_INFO_MARKED_FOR_DELETE_SNAPSHOT_7MODE,
-        'expected': [{
-            'name': client_base.DELETED_PREFIX + fake.SNAPSHOT_NAME,
-            'instance_id': 'abcd-ef01-2345-6789',
-            'volume_name': fake.SNAPSHOT['volume_id'],
-        }]
-    }, {
-        'mock_return': fake_client.NO_RECORDS_RESPONSE,
-        'expected': [],
-    }, {
-        'mock_return':
-            fake_client.SNAPSHOT_INFO_MARKED_FOR_DELETE_SNAPSHOT_7MODE_BUSY,
-        'expected': [],
-    })
-    @ddt.unpack
-    def test_get_snapshots_marked_for_deletion(self, mock_return, expected):
-        api_response = netapp_api.NaElement(mock_return)
-        volume_list = [fake.SNAPSHOT['volume_id']]
-        self.mock_object(self.client,
-                         'send_request',
-                         mock.Mock(return_value=api_response))
-
-        result = self.client.get_snapshots_marked_for_deletion(volume_list)
-
-        api_args = {
-            'target-name': fake.SNAPSHOT['volume_id'],
-            'target-type': 'volume',
-            'terse': 'true',
-        }
-
-        self.client.send_request.assert_called_once_with(
-            'snapshot-list-info', api_args)
-        self.assertListEqual(expected, result)

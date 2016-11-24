@@ -17,6 +17,7 @@ from __future__ import print_function
 import socket
 
 from oslo_config import cfg
+from oslo_log import log as logging
 from oslo_service import wsgi
 from oslo_utils import netutils
 
@@ -37,6 +38,8 @@ socket_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(socket_opts)
+
+LOG = logging.getLogger(__name__)
 
 
 class Server(wsgi.Server):

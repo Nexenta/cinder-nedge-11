@@ -18,8 +18,7 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 
 from cinder import exception
-from cinder.i18n import _, _LE, _LW
-from cinder import interface
+from cinder.i18n import _, _LE
 from cinder.volume import driver
 from cinder.volume.drivers.dell import dell_storagecenter_common
 from cinder.zonemanager import utils as fczm_utils
@@ -27,20 +26,15 @@ from cinder.zonemanager import utils as fczm_utils
 LOG = logging.getLogger(__name__)
 
 
-@interface.volumedriver
 class DellStorageCenterFCDriver(dell_storagecenter_common.DellCommonDriver,
                                 driver.FibreChannelDriver):
 
-    """Implements commands for Dell Storage Center FC management.
+    """Implements commands for Dell EqualLogic SAN ISCSI management.
 
     To enable the driver add the following line to the cinder configuration:
-        volume_driver=cinder.volume.drivers.dell.dell_storagecenter_fc.\
-        DellStorageCenterFCDriver
+        volume_driver=cinder.volume.drivers.dell.DellStorageCenterFCDriver
 
     Version history:
-
-    .. code-block:: none
-
         1.0.0 - Initial driver
         1.1.0 - Added extra spec support for Storage Profile selection
         1.2.0 - Added consistency group support.
@@ -53,21 +47,14 @@ class DellStorageCenterFCDriver(dell_storagecenter_common.DellCommonDriver,
         2.4.0 - Added Replication V2 support.
         2.4.1 - Updated Replication support to V2.1.
         2.5.0 - ManageableSnapshotsVD implemented.
-        3.0.0 - ProviderID utilized.
-        3.1.0 - Failback supported.
-        3.2.0 - Live Volume support.
-
     """
 
-    VERSION = '3.2.0'
-
-    CI_WIKI_NAME = "Dell_Storage_CI"
+    VERSION = '2.5.0'
 
     def __init__(self, *args, **kwargs):
         super(DellStorageCenterFCDriver, self).__init__(*args, **kwargs)
         self.backend_name =\
             self.configuration.safe_get('volume_backend_name') or 'Dell-FC'
-        self.storage_protocol = 'FC'
 
     @fczm_utils.AddFCZone
     def initialize_connection(self, volume, connector):
@@ -84,47 +71,30 @@ class DellStorageCenterFCDriver(dell_storagecenter_common.DellCommonDriver,
         # We use id to name the volume name as it is a
         # known unique name.
         volume_name = volume.get('id')
-        provider_id = volume.get('provider_id')
-        islivevol = self._is_live_vol(volume)
         LOG.debug('Initialize connection: %s', volume_name)
         with self._client.open_connection() as api:
             try:
-                wwpns = connector.get('wwpns')
                 # Find our server.
-                scserver = self._find_server(api, wwpns)
+                wwpns = connector.get('wwpns')
+                for wwn in wwpns:
+                    scserver = api.find_server(wwn)
+                    if scserver is not None:
+                        break
 
                 # No? Create it.
                 if scserver is None:
-                    scserver = api.create_server(
-                        wwpns, self.configuration.dell_server_os)
+                    scserver = api.create_server_multiple_hbas(wwpns)
                 # Find the volume on the storage center.
-                scvolume = api.find_volume(volume_name, provider_id, islivevol)
+                scvolume = api.find_volume(volume_name)
                 if scserver is not None and scvolume is not None:
-                    mapping = api.map_volume(scvolume, scserver)
+                    mapping = api.map_volume(scvolume,
+                                             scserver)
                     if mapping is not None:
                         # Since we just mapped our volume we had best update
                         # our sc volume object.
-                        scvolume = api.get_volume(scvolume['instanceId'])
+                        scvolume = api.find_volume(volume_name)
                         lun, targets, init_targ_map = api.find_wwns(scvolume,
                                                                     scserver)
-
-                        # Do we have extra live volume work?
-                        if islivevol:
-                            # Get our volume and our swap state.
-                            sclivevolume, swapped = api.get_live_volume(
-                                provider_id)
-                            # Do not map to a failed over volume.
-                            if sclivevolume and not swapped:
-                                # Now map our secondary.
-                                lvlun, lvtargets, lvinit_targ_map = (
-                                    self.initialize_secondary(api,
-                                                              sclivevolume,
-                                                              wwpns))
-                                # Unmapped. Add info to our list.
-                                targets += lvtargets
-                                init_targ_map.update(lvinit_targ_map)
-
-                        # Roll up our return data.
                         if lun is not None and len(targets) > 0:
                             data = {'driver_volume_type': 'fibre_channel',
                                     'data': {'target_lun': lun,
@@ -144,74 +114,24 @@ class DellStorageCenterFCDriver(dell_storagecenter_common.DellCommonDriver,
         # We get here because our mapping is none so blow up.
         raise exception.VolumeBackendAPIException(_('Unable to map volume.'))
 
-    def _find_server(self, api, wwns, ssn=-1):
-        for wwn in wwns:
-            scserver = api.find_server(wwn, ssn)
-            if scserver is not None:
-                return scserver
-        return None
-
-    def initialize_secondary(self, api, sclivevolume, wwns):
-        """Initialize the secondary connection of a live volume pair.
-
-        :param api: Dell SC api object.
-        :param sclivevolume: Dell SC live volume object.
-        :param wwns: Cinder list of wwns from the connector.
-        :return: lun, targets and initiator target map.
-        """
-        # Find our server.
-        secondary = self._find_server(
-            api, wwns, sclivevolume['secondaryScSerialNumber'])
-
-        # No? Create it.
-        if secondary is None:
-            secondary = api.create_server(
-                wwns, self.configuration.dell_server_os,
-                sclivevolume['secondaryScSerialNumber'])
-        if secondary:
-            if api.map_secondary_volume(sclivevolume, secondary):
-                # Get mappings.
-                secondaryvol = api.get_volume(
-                    sclivevolume['secondaryVolume']['instanceId'])
-                if secondaryvol:
-                    return api.find_wwns(secondaryvol, secondary)
-        LOG.warning(_LW('Unable to map live volume secondary volume'
-                        ' %(vol)s to secondary server wwns: %(wwns)r'),
-                    {'vol': sclivevolume['secondaryVolume']['instanceName'],
-                     'wwns': wwns})
-        return None, [], {}
-
     @fczm_utils.RemoveFCZone
     def terminate_connection(self, volume, connector, force=False, **kwargs):
         # Get our volume name
         volume_name = volume.get('id')
-        provider_id = volume.get('provider_id')
-        islivevol = self._is_live_vol(volume)
         LOG.debug('Terminate connection: %s', volume_name)
         with self._client.open_connection() as api:
             try:
                 wwpns = connector.get('wwpns')
-                scserver = self._find_server(api, wwpns)
+                for wwn in wwpns:
+                    scserver = api.find_server(wwn)
+                    if scserver is not None:
+                        break
 
                 # Find the volume on the storage center.
-                scvolume = api.find_volume(volume_name, provider_id, islivevol)
+                scvolume = api.find_volume(volume_name)
                 # Get our target map so we can return it to free up a zone.
-                lun, targets, init_targ_map = api.find_wwns(scvolume, scserver)
-
-                # Do we have extra live volume work?
-                if islivevol:
-                    # Get our volume and our swap state.
-                    sclivevolume, swapped = api.get_live_volume(
-                        provider_id)
-                    # Do not map to a failed over volume.
-                    if sclivevolume and not swapped:
-                        lvlun, lvtargets, lvinit_targ_map = (
-                            self.terminate_secondary(api, sclivevolume, wwpns))
-                        # Add to our return.
-                        if lvlun:
-                            targets += lvtargets
-                            init_targ_map.update(lvinit_targ_map)
-
+                lun, targets, init_targ_map = api.find_wwns(scvolume,
+                                                            scserver)
                 # If we have a server and a volume lets unmap them.
                 if (scserver is not None and
                         scvolume is not None and
@@ -238,23 +158,14 @@ class DellStorageCenterFCDriver(dell_storagecenter_common.DellCommonDriver,
         raise exception.VolumeBackendAPIException(
             _('Terminate connection unable to connect to backend.'))
 
-    def terminate_secondary(self, api, sclivevolume, wwns):
-        # Find our server.
-        secondary = self._find_server(
-            api, wwns, sclivevolume['secondaryScSerialNumber'])
-        secondaryvol = api.get_volume(
-            sclivevolume['secondaryVolume']['instanceId'])
-        if secondary and secondaryvol:
-            # Get our map.
-            lun, targets, init_targ_map = api.find_wwns(secondaryvol,
-                                                        secondary)
-            # If we have a server and a volume lets unmap them.
-            ret = api.unmap_volume(secondaryvol, secondary)
-            LOG.debug('terminate_secondary: secondary volume %(name)s unmap '
-                      'to secondary server %(server)s result: %(result)r',
-                      {'name': secondaryvol['name'],
-                       'server': secondary['name'],
-                       'result': ret})
-            # return info for
-            return lun, targets, init_targ_map
-        return None, [], {}
+    def get_volume_stats(self, refresh=False):
+        """Get volume status.
+
+        If 'refresh' is True, run update the stats first.
+        """
+        if refresh:
+            self._update_volume_stats()
+            # Update our protocol to the correct one.
+            self._stats['storage_protocol'] = 'FC'
+
+        return self._stats

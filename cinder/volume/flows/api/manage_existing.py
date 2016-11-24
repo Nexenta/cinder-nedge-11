@@ -11,21 +11,21 @@
 #    under the License.
 
 
+from oslo_config import cfg
 from oslo_log import log as logging
 import taskflow.engines
 from taskflow.patterns import linear_flow
 from taskflow.types import failure as ft
 
-from cinder.common import constants
 from cinder import exception
 from cinder import flow_utils
 from cinder.i18n import _LE
-from cinder import objects
 from cinder.volume.flows import common
 
 LOG = logging.getLogger(__name__)
 
 ACTION = 'volume:manage_existing'
+CONF = cfg.CONF
 
 
 class EntryCreateTask(flow_utils.CinderTask):
@@ -64,15 +64,22 @@ class EntryCreateTask(flow_utils.CinderTask):
             'host': kwargs.pop('host'),
             'availability_zone': kwargs.pop('availability_zone'),
             'volume_type_id': volume_type_id,
-            'metadata': kwargs.pop('metadata') or {},
+            'metadata': kwargs.pop('metadata'),
             'bootable': kwargs.pop('bootable'),
         }
 
-        volume = objects.Volume(context=context, **volume_properties)
-        volume.create()
+        volume = self.db.volume_create(context, volume_properties)
 
         return {
             'volume_properties': volume_properties,
+            # NOTE(harlowja): it appears like further usage of this volume
+            # result actually depend on it being a sqlalchemy object and not
+            # just a plain dictionary so that's why we are storing this here.
+            #
+            # In the future where this task results can be serialized and
+            # restored automatically for continued running we will need to
+            # resolve the serialization & recreation of this object since raw
+            # sqlalchemy objects can't be serialized.
             'volume': volume,
         }
 
@@ -102,21 +109,22 @@ class ManageCastTask(flow_utils.CinderTask):
         self.scheduler_rpcapi = scheduler_rpcapi
         self.db = db
 
-    def execute(self, context, volume, **kwargs):
+    def execute(self, context, **kwargs):
+        volume = kwargs.pop('volume')
         request_spec = kwargs.copy()
         request_spec['volume_id'] = volume.id
 
         # Call the scheduler to ensure that the host exists and that it can
         # accept the volume
-        self.scheduler_rpcapi.manage_existing(context, constants.VOLUME_TOPIC,
-                                              volume.id,
-                                              request_spec=request_spec,
-                                              volume=volume)
+        self.scheduler_rpcapi.manage_existing(context, CONF.volume_topic,
+                                              volume['id'],
+                                              request_spec=request_spec)
 
-    def revert(self, context, result, flow_failures, volume, **kwargs):
+    def revert(self, context, result, flow_failures, **kwargs):
         # Restore the source volume status and set the volume to error status.
-        common.error_out(volume)
-        LOG.error(_LE("Volume %s: manage failed."), volume.id)
+        volume_id = kwargs['volume_id']
+        common.error_out_volume(context, self.db, volume_id)
+        LOG.error(_LE("Volume %s: manage failed."), volume_id)
         exc_info = False
         if all(flow_failures[-1].exc_info):
             exc_info = flow_failures[-1].exc_info

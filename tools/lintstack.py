@@ -26,46 +26,25 @@ from pylint import lint
 from pylint.reporters import text
 from six.moves import cStringIO as StringIO
 
-ignore_codes = [
-    # Note(maoy): E1103 is error code related to partial type inference
-    "E1103"
-]
-
-ignore_messages = [
-    # Note(maoy): this error message is the pattern of E0202. It should be
-    # ignored for cinder.tests modules
-    "An attribute affected in cinder.tests",
-
-    # Note(fengqian): this error message is the pattern of [E0611].
-    "No name 'urllib' in module '_MovedItems'",
-
-    # Note(e0ne): this error message is for SQLAlchemy update() calls
-    # It should be ignored because use six module to keep py3.X compatibility.
-    # in DB schema migrations.
-    "No value passed for parameter 'dml'",
-
-    # Note(xyang): these error messages are for the code [E1101].
-    # They should be ignored because 'sha256' and 'sha224' are functions in
-    # 'hashlib'.
-    "Module 'hashlib' has no 'sha256' member",
-    "Module 'hashlib' has no 'sha224' member",
-
-    # Note(aarefiev): this error message is for SQLAlchemy rename calls in
-    # DB migration(033_add_encryption_unique_key).
-    "Instance of 'Table' has no 'rename' member",
-
-    # NOTE(geguileo): these error messages are for code [E1101], and they can
-    # be ignored because a SQLAlchemy ORM class will have __table__ member
-    # during runtime.
-    "Class 'ConsistencyGroup' has no '__table__' member",
-    "Class 'Cgsnapshot' has no '__table__' member",
-
-    # NOTE(xyang): this error message is for code [E1120] when checking if
-    # there are already 'groups' entries in 'quota_classes' `in DB migration
-    # (078_add_groups_and_group_volume_type_mapping_table).
-    "No value passed for parameter 'functions' in function call",
-]
-
+# Note(maoy): E1103 is error code related to partial type inference
+ignore_codes = ["E1103"]
+# Note(maoy): the error message is the pattern of E0202. It should be ignored
+# for cinder.tests modules
+# Note(fengqian): the second error message is the pattern of [E0611].
+# It should be ignored because use six module to keep py3.X compatibility.
+# Note(e0ne): the third error message is for SQLAlchemy update() calls
+# in DB schema migrations.
+# Note(xyang): the fourth and fifth error messages are for the code [E1101].
+# They should be ignored because 'sha256' and 'sha224' are functions in
+# 'hashlib'.
+# Note(aarefiev): the sixth error message is for SQLAlchemy rename calls in
+# DB migration(033_add_encryption_unique_key).
+ignore_messages = ["An attribute affected in cinder.tests",
+                   "No name 'urllib' in module '_MovedItems'",
+                   "No value passed for parameter 'dml'",
+                   "Module 'hashlib' has no 'sha256' member",
+                   "Module 'hashlib' has no 'sha224' member",
+                   "Instance of 'Table' has no 'rename' member"]
 # Note(maoy):  We ignore cinder.tests for now due to high false
 # positive rate.
 ignore_modules = ["cinder/tests/"]
@@ -92,24 +71,12 @@ objects_ignore_messages = [
     "Module 'cinder.objects' has no 'CGSnapshotList' member",
     "Module 'cinder.objects' has no 'ConsistencyGroup' member",
     "Module 'cinder.objects' has no 'ConsistencyGroupList' member",
-    "Module 'cinder.objects' has no 'QualityOfServiceSpecs' member",
-    "Module 'cinder.objects' has no 'QualityOfServiceSpecsList' member",
-    "Module 'cinder.objects' has no 'RequestSpec' member",
     "Module 'cinder.objects' has no 'Service' member",
     "Module 'cinder.objects' has no 'ServiceList' member",
     "Module 'cinder.objects' has no 'Snapshot' member",
     "Module 'cinder.objects' has no 'SnapshotList' member",
     "Module 'cinder.objects' has no 'Volume' member",
     "Module 'cinder.objects' has no 'VolumeList' member",
-    "Module 'cinder.objects' has no 'VolumeProperties' member",
-    "Module 'cinder.objects' has no 'VolumeType' member",
-    "Module 'cinder.objects' has no 'VolumeTypeList' member",
-    "Module 'cinder.objects' has no 'Group' member",
-    "Module 'cinder.objects' has no 'GroupList' member",
-    "Module 'cinder.objects' has no 'GroupSnapshot' member",
-    "Module 'cinder.objects' has no 'GroupSnapshotList' member",
-    "Class 'Group' has no '__table__' member",
-    "Class 'GroupSnapshot' has no '__table__' member",
 ]
 objects_ignore_modules = ["cinder/objects/"]
 
@@ -191,12 +158,8 @@ class LintOutput(object):
 
     def review_str(self):
         return ("File %(filename)s\nLine %(lineno)d:%(line_content)s\n"
-                "%(code)s: %(message)s" %
-                {'filename': self.filename,
-                 'lineno': self.lineno,
-                 'line_content': self.line_content,
-                 'code': self.code,
-                 'message': self.message})
+                "%(code)s: %(message)s" % self.__dict__)
+
 
 class ErrorKeys(object):
 

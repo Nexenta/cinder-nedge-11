@@ -54,12 +54,15 @@ image_helper_opts = [cfg.StrOpt('image_conversion_dir',
 CONF = cfg.CONF
 CONF.register_opts(image_helper_opts)
 
+QEMU_IMG_LIMITS = processutils.ProcessLimits(
+    cpu_time=2,
+    address_space=1 * units.Gi)
 
 # NOTE(abhishekk): qemu-img convert command supports raw, qcow2, qed,
 # vdi, vmdk, vhd and vhdx disk-formats but glance doesn't support qed
-# disk-format.
+# and vhdx disk-formats.
 # Ref: http://docs.openstack.org/image-guide/convert-images.html
-VALID_DISK_FORMATS = ('raw', 'vmdk', 'vdi', 'qcow2', 'vhd', 'vhdx')
+VALID_DISK_FORMATS = ('raw', 'vmdk', 'vdi', 'qcow2', 'vhd')
 
 
 def validate_disk_format(disk_format):
@@ -71,7 +74,8 @@ def qemu_img_info(path, run_as_root=True):
     cmd = ('env', 'LC_ALL=C', 'qemu-img', 'info', path)
     if os.name == 'nt':
         cmd = cmd[2:]
-    out, _err = utils.execute(*cmd, run_as_root=run_as_root)
+    out, _err = utils.execute(*cmd, run_as_root=run_as_root,
+                              prlimit=QEMU_IMG_LIMITS)
     return imageutils.QemuImgInfo(out)
 
 
@@ -303,12 +307,12 @@ def fetch_to_volume_format(context, image_service,
             LOG.debug('Copying image from %(tmp)s to volume %(dest)s - '
                       'size: %(size)s', {'tmp': tmp, 'dest': dest,
                                          'size': image_meta['size']})
-            image_size_m = math.ceil(float(image_meta['size']) / units.Mi)
+            image_size_m = math.ceil(image_meta['size'] / units.Mi)
             volume_utils.copy_volume(tmp, dest, image_size_m, blocksize)
             return
 
         data = qemu_img_info(tmp, run_as_root=run_as_root)
-        virt_size = int(math.ceil(float(data.virtual_size) / units.Gi))
+        virt_size = data.virtual_size / units.Gi
 
         # NOTE(xqueralt): If the image virtual size doesn't fit in the
         # requested volume there is no point on resizing it because it will
@@ -412,20 +416,6 @@ def upload_volume(context, image_service, image_meta, volume_path,
 
         with open(tmp, 'rb') as image_file:
             image_service.update(context, image_id, {}, image_file)
-
-
-def check_virtual_size(virtual_size, volume_size, image_id):
-    virtual_size = int(math.ceil(float(virtual_size) / units.Gi))
-
-    if virtual_size > volume_size:
-        params = {'image_size': virtual_size,
-                  'volume_size': volume_size}
-        reason = _("Image virtual size is %(image_size)dGB"
-                   " and doesn't fit in a volume of size"
-                   " %(volume_size)dGB.") % params
-        raise exception.ImageUnacceptable(image_id=image_id,
-                                          reason=reason)
-    return virtual_size
 
 
 def is_xenserver_image(context, image_service, image_id):

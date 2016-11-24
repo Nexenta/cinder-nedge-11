@@ -30,7 +30,6 @@ from oslo_utils import uuidutils
 import six
 
 from cinder.api import common
-from cinder.common import constants
 from cinder import context
 from cinder import db
 from cinder.db import base
@@ -39,7 +38,7 @@ from cinder import flow_utils
 from cinder.i18n import _, _LE, _LI, _LW
 from cinder.image import cache as image_cache
 from cinder.image import glance
-from cinder import keymgr as key_manager
+from cinder import keymgr
 from cinder import objects
 from cinder.objects import base as objects_base
 from cinder.objects import fields
@@ -50,6 +49,7 @@ from cinder.scheduler import rpcapi as scheduler_rpcapi
 from cinder import utils
 from cinder.volume.flows.api import create_volume
 from cinder.volume.flows.api import manage_existing
+from cinder.volume import qos_specs
 from cinder.volume import rpcapi as volume_rpcapi
 from cinder.volume import utils as volume_utils
 from cinder.volume import volume_types
@@ -131,7 +131,7 @@ class API(base.Base):
         self.volume_rpcapi = volume_rpcapi.VolumeAPI()
         self.availability_zones = []
         self.availability_zones_last_fetched = None
-        self.key_manager = key_manager.API(CONF)
+        self.key_manager = keymgr.API()
         super(API, self).__init__(db_driver)
 
     def list_availability_zones(self, enable_cache=False):
@@ -150,7 +150,7 @@ class API(base.Base):
                 if cache_age >= CONF.az_cache_duration:
                     refresh_cache = True
         if refresh_cache or not enable_cache:
-            topic = constants.VOLUME_TOPIC
+            topic = CONF.volume_topic
             ctxt = context.get_admin_context()
             services = objects.ServiceList.get_all_by_topic(ctxt, topic)
             az_data = [(s.availability_zone, s.disabled)
@@ -178,10 +178,9 @@ class API(base.Base):
                             first_type=None, second_type=None):
         safe = False
         elevated = context.elevated()
-        services = objects.ServiceList.get_all_by_topic(
-            elevated,
-            constants.VOLUME_TOPIC,
-            disabled=True)
+        services = objects.ServiceList.get_all_by_topic(elevated,
+                                                        'cinder-volume',
+                                                        disabled=True)
         if len(services.objects) == 1:
             safe = True
         else:
@@ -212,8 +211,7 @@ class API(base.Base):
                availability_zone=None, source_volume=None,
                scheduler_hints=None,
                source_replica=None, consistencygroup=None,
-               cgsnapshot=None, multiattach=False, source_cg=None,
-               group=None, group_snapshot=None, source_group=None):
+               cgsnapshot=None, multiattach=False, source_cg=None):
 
         check_policy(context, 'create')
 
@@ -242,18 +240,6 @@ class API(base.Base):
             if volume_type.get('id') not in cg_voltypeids:
                 msg = _("Invalid volume_type provided: %s (requested "
                         "type must be supported by this consistency "
-                        "group).") % volume_type
-                raise exception.InvalidInput(reason=msg)
-
-        if group and (not group_snapshot and not source_group):
-            if not volume_type:
-                msg = _("volume_type must be provided when creating "
-                        "a volume in a group.")
-                raise exception.InvalidInput(reason=msg)
-            vol_type_ids = [v_type.id for v_type in group.volume_types]
-            if volume_type.get('id') not in vol_type_ids:
-                msg = _("Invalid volume_type provided: %s (requested "
-                        "type must be supported by this "
                         "group).") % volume_type
                 raise exception.InvalidInput(reason=msg)
 
@@ -299,8 +285,6 @@ class API(base.Base):
         if CONF.storage_availability_zone:
             availability_zones.add(CONF.storage_availability_zone)
 
-        utils.check_metadata_properties(metadata)
-
         create_what = {
             'context': context,
             'raw_size': size,
@@ -319,19 +303,12 @@ class API(base.Base):
             'consistencygroup': consistencygroup,
             'cgsnapshot': cgsnapshot,
             'multiattach': multiattach,
-            'group': group,
-            'group_snapshot': group_snapshot,
-            'source_group': source_group,
         }
         try:
-            sched_rpcapi = (self.scheduler_rpcapi if (
-                            not cgsnapshot and not source_cg and
-                            not group_snapshot and not source_group)
-                            else None)
-            volume_rpcapi = (self.volume_rpcapi if (
-                             not cgsnapshot and not source_cg and
-                             not group_snapshot and not source_group)
-                             else None)
+            sched_rpcapi = (self.scheduler_rpcapi if (not cgsnapshot and
+                            not source_cg) else None)
+            volume_rpcapi = (self.volume_rpcapi if (not cgsnapshot and
+                             not source_cg) else None)
             flow_engine = create_volume.get_flow(self.db,
                                                  self.image_service,
                                                  availability_zones,
@@ -394,8 +371,7 @@ class API(base.Base):
         # Build required conditions for conditional update
         expected = {'attach_status': db.Not('attached'),
                     'migration_status': self.AVAILABLE_MIGRATION_STATUS,
-                    'consistencygroup_id': None,
-                    'group_id': None}
+                    'consistencygroup_id': None}
 
         # If not force deleting we have status conditions
         if not force:
@@ -416,15 +392,14 @@ class API(base.Base):
             status = utils.build_or_str(expected.get('status'),
                                         _('status must be %s and'))
             msg = _('Volume %s must not be migrating, attached, belong to a '
-                    'group or have snapshots.') % status
+                    'consistency group or have snapshots.') % status
             LOG.info(msg)
             raise exception.InvalidVolume(reason=msg)
 
         if cascade:
             values = {'status': 'deleting'}
             expected = {'status': ('available', 'error', 'deleting'),
-                        'cgsnapshot_id': None,
-                        'group_snapshot_id': None}
+                        'cgsnapshot_id': None}
             snapshots = objects.snapshot.SnapshotList.get_all_for_volume(
                 context, volume.id)
             for s in snapshots:
@@ -448,7 +423,7 @@ class API(base.Base):
         encryption_key_id = volume.get('encryption_key_id', None)
         if encryption_key_id is not None:
             try:
-                self.key_manager.delete(context, encryption_key_id)
+                self.key_manager.delete_key(context, encryption_key_id)
             except Exception as e:
                 LOG.warning(_LW("Unable to delete encryption key for "
                                 "volume: %s."), e.msg, resource=volume)
@@ -462,24 +437,22 @@ class API(base.Base):
 
     @wrap_check_policy
     def update(self, context, volume, fields):
-        # TODO(karthikp): Making sure volume is always oslo-versioned
-        # If not we convert it at the start of update method. This check
-        # needs to be removed once we have moved to ovo.
-        if not isinstance(volume, objects_base.CinderObject):
-            vol_obj = objects.Volume()
-            volume = objects.Volume._from_db_object(context, vol_obj, volume)
-
-        if volume.status == 'maintenance':
+        if volume['status'] == 'maintenance':
             LOG.info(_LI("Unable to update volume, "
                          "because it is in maintenance."), resource=volume)
             msg = _("The volume cannot be updated during maintenance.")
             raise exception.InvalidVolume(reason=msg)
 
-        utils.check_metadata_properties(fields.get('metadata', None))
-
-        volume.update(fields)
-        volume.save()
-        LOG.info(_LI("Volume updated successfully."), resource=volume)
+        # NOTE(thangp): Update is called by various APIs, some of which are
+        # not yet using oslo_versionedobjects.  We need to handle the case
+        # where volume is either a dict or an oslo_versionedobject.
+        if isinstance(volume, objects_base.CinderObject):
+            volume.update(fields)
+            volume.save()
+            LOG.info(_LI("Volume updated successfully."), resource=volume)
+        else:
+            vref = self.db.volume_update(context, volume['id'], fields)
+            LOG.info(_LI("Volume updated successfully."), resource=vref)
 
     def get(self, context, volume_id, viewable_admin_meta=False):
         volume = objects.Volume.get_by_id(context, volume_id)
@@ -549,26 +522,7 @@ class API(base.Base):
         LOG.info(_LI("Get all volumes completed successfully."))
         return volumes
 
-    def get_volume_summary(self, context, filters=None):
-        check_policy(context, 'get_all')
-
-        if filters is None:
-            filters = {}
-
-        allTenants = utils.get_bool_param('all_tenants', filters)
-
-        if context.is_admin and allTenants:
-            del filters['all_tenants']
-            volumes = objects.VolumeList.get_volume_summary_all(context)
-        else:
-            volumes = objects.VolumeList.get_volume_summary_by_project(
-                context, context.project_id)
-
-        LOG.info(_LI("Get summary completed successfully."))
-        return volumes
-
     def get_snapshot(self, context, snapshot_id):
-        check_policy(context, 'get_snapshot')
         snapshot = objects.Snapshot.get_by_id(context, snapshot_id)
 
         # FIXME(jdg): The objects don't have the db name entries
@@ -704,7 +658,7 @@ class API(base.Base):
 
     @wrap_check_policy
     def initialize_connection(self, context, volume, connector):
-        if volume.status == 'maintenance':
+        if volume['status'] == 'maintenance':
             LOG.info(_LI('Unable to initialize the connection for '
                          'volume, because it is in '
                          'maintenance.'), resource=volume)
@@ -746,12 +700,10 @@ class API(base.Base):
     def _create_snapshot(self, context,
                          volume, name, description,
                          force=False, metadata=None,
-                         cgsnapshot_id=None,
-                         group_snapshot_id=None):
+                         cgsnapshot_id=None):
         snapshot = self.create_snapshot_in_db(
             context, volume, name,
-            description, force, metadata, cgsnapshot_id,
-            True, group_snapshot_id)
+            description, force, metadata, cgsnapshot_id)
         self.volume_rpcapi.create_snapshot(context, volume, snapshot)
 
         return snapshot
@@ -760,8 +712,7 @@ class API(base.Base):
                               volume, name, description,
                               force, metadata,
                               cgsnapshot_id,
-                              commit_quota=True,
-                              group_snapshot_id=None):
+                              commit_quota=True):
         check_policy(context, 'create_snapshot', volume)
 
         if volume['status'] == 'maintenance':
@@ -799,21 +750,46 @@ class API(base.Base):
                                             volume.get('volume_type_id'))
                 reservations = QUOTAS.reserve(context, **reserve_opts)
             except exception.OverQuota as e:
-                quota_utils.process_reserve_over_quota(
-                    context, e,
-                    resource='snapshots',
-                    size=volume.size)
-        utils.check_metadata_properties(metadata)
+                overs = e.kwargs['overs']
+                usages = e.kwargs['usages']
+                quotas = e.kwargs['quotas']
+
+                def _consumed(name):
+                    return (usages[name]['reserved'] + usages[name]['in_use'])
+
+                for over in overs:
+                    if 'gigabytes' in over:
+                        msg = _LW("Quota exceeded for %(s_pid)s, tried to "
+                                  "create %(s_size)sG snapshot (%(d_consumed)d"
+                                  "G of %(d_quota)dG already consumed).")
+                        LOG.warning(msg, {'s_pid': context.project_id,
+                                          's_size': volume['size'],
+                                          'd_consumed': _consumed(over),
+                                          'd_quota': quotas[over]})
+                        raise exception.VolumeSizeExceedsAvailableQuota(
+                            requested=volume['size'],
+                            consumed=_consumed('gigabytes'),
+                            quota=quotas['gigabytes'])
+                    elif 'snapshots' in over:
+                        msg = _LW("Quota exceeded for %(s_pid)s, tried to "
+                                  "create snapshot (%(d_consumed)d snapshots "
+                                  "already consumed).")
+
+                        LOG.warning(msg, {'s_pid': context.project_id,
+                                          'd_consumed': _consumed(over)})
+                        raise exception.SnapshotLimitExceeded(
+                            allowed=quotas[over])
+
+        self._check_metadata_properties(metadata)
 
         snapshot = None
         try:
             kwargs = {
                 'volume_id': volume['id'],
                 'cgsnapshot_id': cgsnapshot_id,
-                'group_snapshot_id': group_snapshot_id,
                 'user_id': context.user_id,
                 'project_id': context.project_id,
-                'status': fields.SnapshotStatus.CREATING,
+                'status': 'creating',
                 'progress': '0%',
                 'volume_size': volume['size'],
                 'display_name': name,
@@ -841,11 +817,10 @@ class API(base.Base):
     def create_snapshots_in_db(self, context,
                                volume_list,
                                name, description,
-                               cgsnapshot_id,
-                               group_snapshot_id=None):
+                               force, cgsnapshot_id):
         snapshot_list = []
         for volume in volume_list:
-            self._create_snapshot_in_db_validate(context, volume, True)
+            self._create_snapshot_in_db_validate(context, volume, force)
             if volume['status'] == 'error':
                 msg = _("The snapshot cannot be created when the volume is "
                         "in error status.")
@@ -858,8 +833,7 @@ class API(base.Base):
         options_list = []
         for volume in volume_list:
             options = self._create_snapshot_in_db_options(
-                context, volume, name, description, cgsnapshot_id,
-                group_snapshot_id)
+                context, volume, name, description, cgsnapshot_id)
             options_list.append(options)
 
         try:
@@ -924,22 +898,22 @@ class API(base.Base):
                             total_reserve_opts[key] + value
             reservations = QUOTAS.reserve(context, **total_reserve_opts)
         except exception.OverQuota as e:
-            quota_utils.process_reserve_over_quota(context, e,
-                                                   resource='snapshots',
-                                                   size=volume.size)
+            overs = e.kwargs['overs']
+            usages = e.kwargs['usages']
+            quotas = e.kwargs['quotas']
+            volume_utils.process_reserve_over_quota(context, overs, usages,
+                                                    quotas, volume['size'])
 
         return reservations
 
     def _create_snapshot_in_db_options(self, context, volume,
                                        name, description,
-                                       cgsnapshot_id,
-                                       group_snapshot_id=None):
+                                       cgsnapshot_id):
         options = {'volume_id': volume['id'],
                    'cgsnapshot_id': cgsnapshot_id,
-                   'group_snapshot_id': group_snapshot_id,
                    'user_id': context.user_id,
                    'project_id': context.project_id,
-                   'status': fields.SnapshotStatus.CREATING,
+                   'status': "creating",
                    'progress': '0%',
                    'volume_size': volume['size'],
                    'display_name': name,
@@ -950,11 +924,9 @@ class API(base.Base):
 
     def create_snapshot(self, context,
                         volume, name, description,
-                        metadata=None, cgsnapshot_id=None,
-                        group_snapshot_id=None):
+                        metadata=None, cgsnapshot_id=None):
         result = self._create_snapshot(context, volume, name, description,
-                                       False, metadata, cgsnapshot_id,
-                                       group_snapshot_id)
+                                       False, metadata, cgsnapshot_id)
         LOG.info(_LI("Snapshot create request issued successfully."),
                  resource=result)
         return result
@@ -972,19 +944,16 @@ class API(base.Base):
     def delete_snapshot(self, context, snapshot, force=False,
                         unmanage_only=False):
         # Build required conditions for conditional update
-        expected = {'cgsnapshot_id': None,
-                    'group_snapshot_id': None}
+        expected = {'cgsnapshot_id': None}
         # If not force deleting we have status conditions
         if not force:
-            expected['status'] = (fields.SnapshotStatus.AVAILABLE,
-                                  fields.SnapshotStatus.ERROR)
+            expected['status'] = ('available', 'error')
 
-        result = snapshot.conditional_update(
-            {'status': fields.SnapshotStatus.DELETING}, expected)
+        result = snapshot.conditional_update({'status': 'deleting'}, expected)
         if not result:
             status = utils.build_or_str(expected.get('status'),
                                         _('status must be %s and'))
-            msg = (_('Snapshot %s must not be part of a group.') %
+            msg = (_('Snapshot %s must not be part of a consistency group.') %
                    status)
             LOG.error(msg)
             raise exception.InvalidSnapshot(reason=msg)
@@ -1010,49 +979,58 @@ class API(base.Base):
         return dict(rv)
 
     @wrap_check_policy
-    def create_volume_metadata(self, context, volume, metadata):
-        """Creates volume metadata."""
-        db_meta = self._update_volume_metadata(context, volume, metadata)
-
-        LOG.info(_LI("Create volume metadata completed successfully."),
-                 resource=volume)
-        return db_meta
-
-    @wrap_check_policy
     def delete_volume_metadata(self, context, volume,
                                key, meta_type=common.METADATA_TYPES.user):
         """Delete the given metadata item from a volume."""
-        if volume.status in ('maintenance', 'uploading'):
-            msg = _('Deleting volume metadata is not allowed for volumes in '
-                    '%s status.') % volume.status
-            LOG.info(msg, resource=volume)
+        if volume['status'] == 'maintenance':
+            LOG.info(_LI('Unable to delete the volume metadata, '
+                         'because it is in maintenance.'), resource=volume)
+            msg = _("The volume metadata cannot be deleted when the volume "
+                    "is in maintenance mode.")
             raise exception.InvalidVolume(reason=msg)
-        self.db.volume_metadata_delete(context, volume.id, key, meta_type)
+        self.db.volume_metadata_delete(context, volume['id'], key, meta_type)
         LOG.info(_LI("Delete volume metadata completed successfully."),
                  resource=volume)
 
-    def _update_volume_metadata(self, context, volume, metadata, delete=False,
-                                meta_type=common.METADATA_TYPES.user):
-        if volume['status'] in ('maintenance', 'uploading'):
-            msg = _('Updating volume metadata is not allowed for volumes in '
-                    '%s status.') % volume['status']
-            LOG.info(msg, resource=volume)
-            raise exception.InvalidVolume(reason=msg)
-        utils.check_metadata_properties(metadata)
-        return self.db.volume_metadata_update(context, volume['id'],
-                                              metadata, delete, meta_type)
+    def _check_metadata_properties(self, metadata=None):
+        if not metadata:
+            metadata = {}
+
+        for k, v in metadata.items():
+            if len(k) == 0:
+                msg = _("Metadata property key blank.")
+                LOG.warning(msg)
+                raise exception.InvalidVolumeMetadata(reason=msg)
+            if len(k) > 255:
+                msg = _("Metadata property key greater than 255 characters.")
+                LOG.warning(msg)
+                raise exception.InvalidVolumeMetadataSize(reason=msg)
+            if len(v) > 255:
+                msg = _("Metadata property value greater than 255 characters.")
+                LOG.warning(msg)
+                raise exception.InvalidVolumeMetadataSize(reason=msg)
 
     @wrap_check_policy
-    def update_volume_metadata(self, context, volume, metadata, delete=False,
+    def update_volume_metadata(self, context, volume,
+                               metadata, delete=False,
                                meta_type=common.METADATA_TYPES.user):
-        """Updates volume metadata.
+        """Updates or creates volume metadata.
 
         If delete is True, metadata items that are not specified in the
         `metadata` argument will be deleted.
 
         """
-        db_meta = self._update_volume_metadata(context, volume, metadata,
-                                               delete, meta_type)
+        if volume['status'] == 'maintenance':
+            LOG.info(_LI('Unable to update the metadata for volume, '
+                         'because it is in maintenance.'), resource=volume)
+            msg = _("The volume metadata cannot be updated when the volume "
+                    "is in maintenance mode.")
+            raise exception.InvalidVolume(reason=msg)
+        self._check_metadata_properties(metadata)
+        db_meta = self.db.volume_metadata_update(context, volume['id'],
+                                                 metadata,
+                                                 delete,
+                                                 meta_type)
 
         # TODO(jdg): Implement an RPC call for drivers that may use this info
 
@@ -1077,7 +1055,7 @@ class API(base.Base):
         `metadata` argument will be deleted.
 
         """
-        utils.check_metadata_properties(metadata)
+        self._check_metadata_properties(metadata)
         db_meta = self.db.volume_admin_metadata_update(context, volume['id'],
                                                        metadata, delete, add,
                                                        update)
@@ -1088,7 +1066,6 @@ class API(base.Base):
                  resource=volume)
         return db_meta
 
-    @wrap_check_policy
     def get_snapshot_metadata(self, context, snapshot):
         """Get all metadata associated with a snapshot."""
         snapshot_obj = self.get_snapshot(context, snapshot.id)
@@ -1096,7 +1073,6 @@ class API(base.Base):
                  resource=snapshot)
         return snapshot_obj.metadata
 
-    @wrap_check_policy
     def delete_snapshot_metadata(self, context, snapshot, key):
         """Delete the given metadata item from a snapshot."""
         snapshot_obj = self.get_snapshot(context, snapshot.id)
@@ -1104,7 +1080,6 @@ class API(base.Base):
         LOG.info(_LI("Delete snapshot metadata completed successfully."),
                  resource=snapshot)
 
-    @wrap_check_policy
     def update_snapshot_metadata(self, context,
                                  snapshot, metadata,
                                  delete=False):
@@ -1121,7 +1096,7 @@ class API(base.Base):
             _metadata = orig_meta.copy()
             _metadata.update(metadata)
 
-        utils.check_metadata_properties(_metadata)
+        self._check_metadata_properties(_metadata)
 
         snapshot.metadata = _metadata
         snapshot.save()
@@ -1163,57 +1138,51 @@ class API(base.Base):
                                                      meta_entry['value']})
         return results
 
+    def _check_volume_availability(self, volume, force):
+        """Check if the volume can be used."""
+        if volume['status'] not in ['available', 'in-use']:
+            msg = _('Volume %(vol_id)s status must be '
+                    'available or in-use, but current status is: '
+                    '%(vol_status)s.') % {'vol_id': volume['id'],
+                                          'vol_status': volume['status']}
+            raise exception.InvalidVolume(reason=msg)
+        if not force and 'in-use' == volume['status']:
+            msg = _('Volume status is in-use.')
+            raise exception.InvalidVolume(reason=msg)
+
     @wrap_check_policy
     def copy_volume_to_image(self, context, volume, metadata, force):
         """Create a new image from the specified volume."""
+
         if not CONF.enable_force_upload and force:
             LOG.info(_LI("Force upload to image is disabled, "
                          "Force option will be ignored."),
                      resource={'type': 'volume', 'id': volume['id']})
             force = False
 
-        # Build required conditions for conditional update
-        expected = {'status': ('available', 'in-use') if force
-                    else 'available'}
-        values = {'status': 'uploading',
-                  'previous_status': volume.model.status}
+        self._check_volume_availability(volume, force)
+        glance_core_properties = CONF.glance_core_properties
+        if glance_core_properties:
+            try:
+                volume_image_metadata = self.get_volume_image_metadata(context,
+                                                                       volume)
+                custom_property_set = (set(volume_image_metadata).difference
+                                       (set(glance_core_properties)))
+                if custom_property_set:
+                    properties = {custom_property:
+                                  volume_image_metadata[custom_property]
+                                  for custom_property in custom_property_set}
+                    metadata.update(dict(properties=properties))
+            except exception.GlanceMetadataNotFound:
+                # If volume is not created from image, No glance metadata
+                # would be available for that volume in
+                # volume glance metadata table
 
-        result = volume.conditional_update(values, expected)
-        if not result:
-            msg = (_('Volume %(vol_id)s status must be %(statuses)s') %
-                   {'vol_id': volume.id,
-                    'statuses': utils.build_or_str(expected['status'])})
-            raise exception.InvalidVolume(reason=msg)
+                pass
 
-        try:
-            glance_core_props = CONF.glance_core_properties
-            if glance_core_props:
-                try:
-                    vol_img_metadata = self.get_volume_image_metadata(
-                        context, volume)
-                    custom_property_set = (
-                        set(vol_img_metadata).difference(glance_core_props))
-                    if custom_property_set:
-                        metadata['properties'] = {
-                            custom_prop: vol_img_metadata[custom_prop]
-                            for custom_prop in custom_property_set}
-                except exception.GlanceMetadataNotFound:
-                    # If volume is not created from image, No glance metadata
-                    # would be available for that volume in
-                    # volume glance metadata table
-                    pass
-
-            recv_metadata = self.image_service.create(
-                context, self.image_service._translate_to_glance(metadata))
-        except Exception:
-            # NOTE(geguileo): To mimic behavior before conditional_update we
-            # will rollback status if image create fails
-            with excutils.save_and_reraise_exception():
-                volume.conditional_update(
-                    {'status': volume.model.previous_status,
-                     'previous_status': None},
-                    {'status': 'uploading'})
-
+        recv_metadata = self.image_service.create(
+            context, self.image_service._translate_to_glance(metadata))
+        self.update(context, volume, {'status': 'uploading'})
         self.volume_rpcapi.copy_volume_to_image(context,
                                                 volume,
                                                 recv_metadata)
@@ -1228,28 +1197,18 @@ class API(base.Base):
                     "container_format": recv_metadata['container_format'],
                     "disk_format": recv_metadata['disk_format'],
                     "image_name": recv_metadata.get('name', None)}
-        if 'protected' in recv_metadata:
-            response['protected'] = recv_metadata.get('protected')
-        if 'is_public' in recv_metadata:
-            response['is_public'] = recv_metadata.get('is_public')
-        elif 'visibility' in recv_metadata:
-            response['visibility'] = recv_metadata.get('visibility')
         LOG.info(_LI("Copy volume to image completed successfully."),
                  resource=volume)
         return response
 
     @wrap_check_policy
     def extend(self, context, volume, new_size):
-        value = {'status': 'extending'}
-        expected = {'status': 'available'}
-
-        def _roll_back_status():
-            msg = _LE('Could not return volume %s to available.')
-            try:
-                if not volume.conditional_update(expected, value):
-                    LOG.error(msg, volume.id)
-            except Exception:
-                LOG.exception(msg, volume.id)
+        if volume.status != 'available':
+            msg = _('Volume %(vol_id)s status must be available '
+                    'to extend, but current status is: '
+                    '%(vol_status)s.') % {'vol_id': volume.id,
+                                          'vol_status': volume.status}
+            raise exception.InvalidVolume(reason=msg)
 
         size_increase = (int(new_size)) - volume.size
         if size_increase <= 0:
@@ -1259,31 +1218,7 @@ class API(base.Base):
                                                     'size': volume.size})
             raise exception.InvalidInput(reason=msg)
 
-        result = volume.conditional_update(value, expected)
-        if not result:
-            msg = _('Volume %(vol_id)s status must be available '
-                    'to extend.') % {'vol_id': volume.id}
-            raise exception.InvalidVolume(reason=msg)
-
-        rollback = True
         try:
-            values = {'per_volume_gigabytes': new_size}
-            QUOTAS.limit_check(context, project_id=context.project_id,
-                               **values)
-            rollback = False
-        except exception.OverQuota as e:
-            quotas = e.kwargs['quotas']
-            raise exception.VolumeSizeExceedsLimit(
-                size=new_size, limit=quotas['per_volume_gigabytes'])
-        finally:
-            # NOTE(geguileo): To mimic behavior before conditional_update we
-            # will rollback status on quota reservation failure regardless of
-            # the exception that caused the failure.
-            if rollback:
-                _roll_back_status()
-
-        try:
-            reservations = None
             reserve_opts = {'gigabytes': size_increase}
             QUOTAS.add_volume_type_opts(context, reserve_opts,
                                         volume.volume_type_id)
@@ -1291,26 +1226,25 @@ class API(base.Base):
                                           project_id=volume.project_id,
                                           **reserve_opts)
         except exception.OverQuota as exc:
-            gigabytes = exc.kwargs['usages']['gigabytes']
-            gb_quotas = exc.kwargs['quotas']['gigabytes']
+            usages = exc.kwargs['usages']
+            quotas = exc.kwargs['quotas']
 
-            consumed = gigabytes['reserved'] + gigabytes['in_use']
+            def _consumed(name):
+                return (usages[name]['reserved'] + usages[name]['in_use'])
+
             msg = _LE("Quota exceeded for %(s_pid)s, tried to extend volume "
                       "by %(s_size)sG, (%(d_consumed)dG of %(d_quota)dG "
                       "already consumed).")
             LOG.error(msg, {'s_pid': context.project_id,
                             's_size': size_increase,
-                            'd_consumed': consumed,
-                            'd_quota': gb_quotas})
+                            'd_consumed': _consumed('gigabytes'),
+                            'd_quota': quotas['gigabytes']})
             raise exception.VolumeSizeExceedsAvailableQuota(
-                requested=size_increase, consumed=consumed, quota=gb_quotas)
-        finally:
-            # NOTE(geguileo): To mimic behavior before conditional_update we
-            # will rollback status on quota reservation failure regardless of
-            # the exception that caused the failure.
-            if reservations is None:
-                _roll_back_status()
+                requested=size_increase,
+                consumed=_consumed('gigabytes'),
+                quota=quotas['gigabytes'])
 
+        self.update(context, volume, {'status': 'extending'})
         self.volume_rpcapi.extend_volume(context, volume, new_size,
                                          reservations)
         LOG.info(_LI("Extend volume request issued successfully."),
@@ -1320,34 +1254,63 @@ class API(base.Base):
     def migrate_volume(self, context, volume, host, force_host_copy,
                        lock_volume):
         """Migrate the volume to the specified host."""
+
+        if volume.status not in ['available', 'in-use']:
+            msg = _('Volume %(vol_id)s status must be available or in-use, '
+                    'but current status is: '
+                    '%(vol_status)s.') % {'vol_id': volume.id,
+                                          'vol_status': volume.status}
+            LOG.error(msg)
+            raise exception.InvalidVolume(reason=msg)
+
+        # Make sure volume is not part of a migration.
+        if self._is_volume_migrating(volume):
+            msg = _("Volume %s is already part of an active "
+                    "migration.") % volume.id
+            LOG.error(msg)
+            raise exception.InvalidVolume(reason=msg)
+
+        # We only handle volumes without snapshots for now
+        snaps = objects.SnapshotList.get_all_for_volume(context, volume.id)
+        if snaps:
+            msg = _("Volume %s must not have snapshots.") % volume.id
+            LOG.error(msg)
+            raise exception.InvalidVolume(reason=msg)
+
+        # We only handle non-replicated volumes for now
+        if (volume.replication_status is not None and
+                volume.replication_status != 'disabled'):
+            msg = _("Volume %s must not be replicated.") % volume.id
+            LOG.error(msg)
+            raise exception.InvalidVolume(reason=msg)
+
+        if volume.consistencygroup_id:
+            msg = _("Volume %s must not be part of a consistency "
+                    "group.") % volume.id
+            LOG.error(msg)
+            raise exception.InvalidVolume(reason=msg)
+
         # Make sure the host is in the list of available hosts
         elevated = context.elevated()
-        topic = constants.VOLUME_TOPIC
+        topic = CONF.volume_topic
         services = objects.ServiceList.get_all_by_topic(
             elevated, topic, disabled=False)
         found = False
-        svc_host = volume_utils.extract_host(host, 'backend')
         for service in services:
+            svc_host = volume_utils.extract_host(host, 'backend')
             if utils.service_is_up(service) and service.host == svc_host:
                 found = True
-                break
         if not found:
             msg = _('No available service named %s') % host
             LOG.error(msg)
             raise exception.InvalidHost(reason=msg)
 
-        # Build required conditions for conditional update
-        expected = {'status': ('available', 'in-use'),
-                    'migration_status': self.AVAILABLE_MIGRATION_STATUS,
-                    'replication_status': (None, 'disabled'),
-                    'consistencygroup_id': (None, ''),
-                    'group_id': (None, ''),
-                    'host': db.Not(host)}
-
-        filters = [~db.volume_has_snapshots_filter()]
-
-        updates = {'migration_status': 'starting',
-                   'previous_status': volume.model.status}
+        # Make sure the destination host is different than the current one
+        if host == volume.host:
+            msg = _('Destination host must be different '
+                    'than the current host.')
+            LOG.error(msg)
+            raise exception.InvalidHost(reason=msg)
 
         # When the migration of an available volume starts, both the status
         # and the migration status of the volume will be changed.
@@ -1355,20 +1318,11 @@ class API(base.Base):
         # status is changed to 'maintenance', telling users
         # that this volume is in maintenance mode, and no action is allowed
         # on this volume, e.g. attach, detach, retype, migrate, etc.
-        if lock_volume:
-            updates['status'] = db.Case(
-                [(volume.model.status == 'available', 'maintenance')],
-                else_=volume.model.status)
-
-        result = volume.conditional_update(updates, expected, filters)
-
-        if not result:
-            msg = _('Volume %s status must be available or in-use, must not '
-                    'be migrating, have snapshots, be replicated, be part of '
-                    'a group and destination host must be different than the '
-                    'current host') % {'vol_id': volume.id}
-            LOG.error(msg)
-            raise exception.InvalidVolume(reason=msg)
+        updates = {'migration_status': 'starting',
+                   'previous_status': volume.status}
+        if lock_volume and volume.status == 'available':
+            updates['status'] = 'maintenance'
+        self.update(context, volume, updates)
 
         # Call the scheduler to ensure that the host exists and that it can
         # accept the volume
@@ -1380,7 +1334,7 @@ class API(base.Base):
                         'volume_type': volume_type,
                         'volume_id': volume.id}
         self.scheduler_rpcapi.migrate_volume_to_host(context,
-                                                     constants.VOLUME_TOPIC,
+                                                     CONF.volume_topic,
                                                      volume.id,
                                                      host,
                                                      force_host_copy,
@@ -1447,11 +1401,31 @@ class API(base.Base):
     @wrap_check_policy
     def retype(self, context, volume, new_type, migration_policy=None):
         """Attempt to modify the type associated with an existing volume."""
-        if migration_policy and migration_policy not in ('on-demand', 'never'):
+        if volume.status not in ['available', 'in-use']:
+            msg = _('Unable to update type due to incorrect status: '
+                    '%(vol_status)s on volume: %(vol_id)s. Volume status '
+                    'must be available or '
+                    'in-use.') % {'vol_status': volume.status,
+                                  'vol_id': volume.id}
+            LOG.error(msg)
+            raise exception.InvalidVolume(reason=msg)
+
+        if self._is_volume_migrating(volume):
+            msg = (_("Volume %s is already part of an active migration.")
+                   % volume.id)
+            LOG.error(msg)
+            raise exception.InvalidVolume(reason=msg)
+
+        if migration_policy and migration_policy not in ['on-demand', 'never']:
             msg = _('migration_policy must be \'on-demand\' or \'never\', '
                     'passed: %s') % new_type
             LOG.error(msg)
             raise exception.InvalidInput(reason=msg)
+
+        if volume.consistencygroup_id:
+            msg = _("Volume must not be part of a consistency group.")
+            LOG.error(msg)
+            raise exception.InvalidVolume(reason=msg)
 
         # Support specifying volume type by ID or name
         try:
@@ -1467,6 +1441,44 @@ class API(base.Base):
             raise exception.InvalidInput(reason=msg)
 
         vol_type_id = vol_type['id']
+        vol_type_qos_id = vol_type['qos_specs_id']
+
+        old_vol_type = None
+        old_vol_type_id = volume.volume_type_id
+        old_vol_type_qos_id = None
+
+        # Error if the original and new type are the same
+        if volume.volume_type_id == vol_type_id:
+            msg = _('New volume_type same as original: %s.') % new_type
+            LOG.error(msg)
+            raise exception.InvalidInput(reason=msg)
+
+        if volume.volume_type_id:
+            old_vol_type = volume_types.get_volume_type(
+                context, old_vol_type_id)
+            old_vol_type_qos_id = old_vol_type['qos_specs_id']
+
+        # We don't support changing encryption requirements yet
+        old_enc = volume_types.get_volume_type_encryption(context,
+                                                          old_vol_type_id)
+        new_enc = volume_types.get_volume_type_encryption(context,
+                                                          vol_type_id)
+        if old_enc != new_enc:
+            msg = _('Retype cannot change encryption requirements.')
+            raise exception.InvalidInput(reason=msg)
+
+        # We don't support changing QoS at the front-end yet for in-use volumes
+        # TODO(avishay): Call Nova to change QoS setting (libvirt has support
+        # - virDomainSetBlockIoTune() - Nova does not have support yet).
+        if (volume.status != 'available' and
+                old_vol_type_qos_id != vol_type_qos_id):
+            for qos_id in [old_vol_type_qos_id, vol_type_qos_id]:
+                if qos_id:
+                    specs = qos_specs.get_qos_specs(context.elevated(), qos_id)
+                    if specs['consumer'] != 'back-end':
+                        msg = _('Retype cannot change front-end qos specs for '
+                                'in-use volume: %s.') % volume.id
+                        raise exception.InvalidInput(reason=msg)
 
         # We're checking here in so that we can report any quota issues as
         # early as possible, but won't commit until we change the type. We
@@ -1479,7 +1491,7 @@ class API(base.Base):
             reserve_opts = {'volumes': -1, 'gigabytes': -volume.size}
             QUOTAS.add_volume_type_opts(context,
                                         reserve_opts,
-                                        volume.volume_type_id)
+                                        old_vol_type_id)
             # NOTE(wanghao): We don't need to reserve volumes and gigabytes
             # quota for retyping operation since they didn't changed, just
             # reserve volume_type and type gigabytes is fine.
@@ -1495,32 +1507,8 @@ class API(base.Base):
             LOG.exception(msg, resource=volume)
             raise exception.CinderException(msg)
 
-        # Build required conditions for conditional update
-        expected = {'status': ('available', 'in-use'),
-                    'migration_status': self.AVAILABLE_MIGRATION_STATUS,
-                    'consistencygroup_id': (None, ''),
-                    'group_id': (None, ''),
-                    'volume_type_id': db.Not(vol_type_id)}
-
-        # We don't support changing encryption requirements yet
-        # We don't support changing QoS at the front-end yet for in-use volumes
-        # TODO(avishay): Call Nova to change QoS setting (libvirt has support
-        # - virDomainSetBlockIoTune() - Nova does not have support yet).
-        filters = [db.volume_qos_allows_retype(vol_type_id)]
-
-        updates = {'status': 'retyping',
-                   'previous_status': objects.Volume.model.status}
-
-        if not volume.conditional_update(updates, expected, filters):
-            msg = _('Retype needs volume to be in available or in-use state, '
-                    'not be part of an active migration or a consistency '
-                    'group, requested type has to be different that the '
-                    'one from the volume, and for in-use volumes front-end '
-                    'qos specs cannot change.')
-            LOG.error(msg)
-            QUOTAS.rollback(context, reservations + old_reservations,
-                            project_id=volume.project_id)
-            raise exception.InvalidVolume(reason=msg)
+        self.update(context, volume, {'status': 'retyping',
+                                      'previous_status': volume.status})
 
         request_spec = {'volume_properties': volume,
                         'volume_id': volume.id,
@@ -1529,36 +1517,11 @@ class API(base.Base):
                         'quota_reservations': reservations,
                         'old_reservations': old_reservations}
 
-        self.scheduler_rpcapi.retype(context, constants.VOLUME_TOPIC,
-                                     volume.id,
+        self.scheduler_rpcapi.retype(context, CONF.volume_topic, volume.id,
                                      request_spec=request_spec,
                                      filter_properties={}, volume=volume)
         LOG.info(_LI("Retype volume request issued successfully."),
                  resource=volume)
-
-    def _get_service_by_host(self, context, host, resource='volume'):
-        elevated = context.elevated()
-        try:
-            svc_host = volume_utils.extract_host(host, 'backend')
-            service = objects.Service.get_by_args(
-                elevated, svc_host, 'cinder-volume')
-        except exception.ServiceNotFound:
-            with excutils.save_and_reraise_exception():
-                LOG.error(_LE('Unable to find service: %(service)s for '
-                              'given host: %(host)s.'),
-                          {'service': constants.VOLUME_BINARY, 'host': host})
-
-        if service.disabled:
-            LOG.error(_LE('Unable to manage existing %s on a disabled '
-                          'service.'), resource)
-            raise exception.ServiceUnavailable()
-
-        if not utils.service_is_up(service):
-            LOG.error(_LE('Unable to manage existing %s on a service that is '
-                          'down.'), resource)
-            raise exception.ServiceUnavailable()
-
-        return service
 
     def manage_existing(self, context, host, ref, name=None, description=None,
                         volume_type=None, metadata=None,
@@ -1568,10 +1531,24 @@ class API(base.Base):
                 volume_type['id'])
             volume_type['extra_specs'] = extra_specs
 
-        service = self._get_service_by_host(context, host)
+        elevated = context.elevated()
+        try:
+            svc_host = volume_utils.extract_host(host, 'backend')
+            service = objects.Service.get_by_args(
+                elevated, svc_host, 'cinder-volume')
+        except exception.ServiceNotFound:
+            with excutils.save_and_reraise_exception():
+                LOG.error(_LE('Unable to find service: %(service)s for '
+                              'given host: %(host)s.'),
+                          {'service': CONF.volume_topic, 'host': host})
+
+        if service.disabled:
+            LOG.error(_LE('Unable to manage_existing volume on a disabled '
+                          'service.'))
+            raise exception.ServiceUnavailable()
 
         if availability_zone is None:
-            availability_zone = service.availability_zone
+            availability_zone = service.get('availability_zone')
 
         manage_what = {
             'context': context,
@@ -1604,33 +1581,32 @@ class API(base.Base):
                      resource=vol_ref)
             return vol_ref
 
-    def get_manageable_volumes(self, context, host, marker=None, limit=None,
-                               offset=None, sort_keys=None, sort_dirs=None):
-        self._get_service_by_host(context, host)
-        return self.volume_rpcapi.get_manageable_volumes(context, host,
-                                                         marker, limit,
-                                                         offset, sort_keys,
-                                                         sort_dirs)
-
     def manage_existing_snapshot(self, context, ref, volume,
                                  name=None, description=None,
                                  metadata=None):
-        service = self._get_service_by_host(context, volume.host, 'snapshot')
+        host = volume_utils.extract_host(volume['host'])
+        try:
+            # NOTE(jdg): We don't use this, we just make sure it's valid
+            # and exists before sending off the call
+            service = objects.Service.get_by_args(
+                context.elevated(), host, 'cinder-volume')
+        except exception.ServiceNotFound:
+            with excutils.save_and_reraise_exception():
+                LOG.error(_LE('Unable to find service: %(service)s for '
+                              'given host: %(host)s.'),
+                          {'service': CONF.volume_topic, 'host': host})
+        if service.disabled:
+            LOG.error(_LE('Unable to manage_existing snapshot on a disabled '
+                          'service.'))
+            raise exception.ServiceUnavailable()
+
         snapshot_object = self.create_snapshot_in_db(context, volume, name,
                                                      description, False,
                                                      metadata, None,
                                                      commit_quota=False)
         self.volume_rpcapi.manage_existing_snapshot(context, snapshot_object,
-                                                    ref, service.host)
+                                                    ref, host)
         return snapshot_object
-
-    def get_manageable_snapshots(self, context, host, marker=None, limit=None,
-                                 offset=None, sort_keys=None, sort_dirs=None):
-        self._get_service_by_host(context, host, resource='snapshot')
-        return self.volume_rpcapi.get_manageable_snapshots(context, host,
-                                                           marker, limit,
-                                                           offset, sort_keys,
-                                                           sort_dirs)
 
     # FIXME(jdg): Move these Cheesecake methods (freeze, thaw and failover)
     # to a services API because that's what they are
@@ -1639,12 +1615,11 @@ class API(base.Base):
                       host,
                       secondary_id=None):
 
-        check_policy(ctxt, 'failover_host')
-        ctxt = ctxt if ctxt.is_admin else ctxt.elevated()
+        ctxt = context.get_admin_context()
         svc_host = volume_utils.extract_host(host, 'backend')
 
         service = objects.Service.get_by_args(
-            ctxt, svc_host, constants.VOLUME_BINARY)
+            ctxt, svc_host, 'cinder-volume')
         expected = {'replication_status': [fields.ReplicationStatus.ENABLED,
                     fields.ReplicationStatus.FAILED_OVER]}
         result = service.conditional_update(
@@ -1661,12 +1636,11 @@ class API(base.Base):
 
     def freeze_host(self, ctxt, host):
 
-        check_policy(ctxt, 'freeze_host')
-        ctxt = ctxt if ctxt.is_admin else ctxt.elevated()
+        ctxt = context.get_admin_context()
         svc_host = volume_utils.extract_host(host, 'backend')
 
         service = objects.Service.get_by_args(
-            ctxt, svc_host, constants.VOLUME_BINARY)
+            ctxt, svc_host, 'cinder-volume')
         expected = {'frozen': False}
         result = service.conditional_update(
             {'frozen': True}, expected)
@@ -1682,12 +1656,11 @@ class API(base.Base):
 
     def thaw_host(self, ctxt, host):
 
-        check_policy(ctxt, 'thaw_host')
-        ctxt = ctxt if ctxt.is_admin else ctxt.elevated()
+        ctxt = context.get_admin_context()
         svc_host = volume_utils.extract_host(host, 'backend')
 
         service = objects.Service.get_by_args(
-            ctxt, svc_host, constants.VOLUME_BINARY)
+            ctxt, svc_host, 'cinder-volume')
         expected = {'frozen': True}
         result = service.conditional_update(
             {'frozen': False}, expected)
@@ -1698,19 +1671,24 @@ class API(base.Base):
         if not self.volume_rpcapi.thaw_host(ctxt, host):
             return "Backend reported error during thaw_host operation."
 
-    def check_volume_filters(self, filters, strict=False):
-        """Sets the user filter value to accepted format"""
+    def check_volume_filters(self, filters):
+        '''Sets the user filter value to accepted format'''
         booleans = self.db.get_booleans_for_table('volume')
 
         # To translate any true/false equivalent to True/False
         # which is only acceptable format in database queries.
-
-        for key, val in filters.items():
+        accepted_true = ['True', 'true', 'TRUE']
+        accepted_false = ['False', 'false', 'FALSE']
+        for k, v in filters.items():
             try:
-                if key in booleans:
-                    filters[key] = self._check_boolean_filter_value(
-                        key, val, strict)
-                elif key == 'display_name':
+                if k in booleans:
+                    if v in accepted_false:
+                        filters[k] = False
+                    elif v in accepted_true:
+                        filters[k] = True
+                    else:
+                        filters[k] = bool(v)
+                elif k == 'display_name':
                     # Use the raw value of display name as is for the filter
                     # without passing it through ast.literal_eval(). If the
                     # display name is a properly quoted string (e.g. '"foo"')
@@ -1718,49 +1696,15 @@ class API(base.Base):
                     # the filter becomes different from the user input.
                     continue
                 else:
-                    filters[key] = ast.literal_eval(val)
+                    filters[k] = ast.literal_eval(v)
             except (ValueError, SyntaxError):
-                LOG.debug('Could not evaluate value %s, assuming string', val)
-
-    def _check_boolean_filter_value(self, key, val, strict=False):
-        """Boolean filter values in Volume GET.
-
-        Before V3.2, all values other than 'False', 'false', 'FALSE' were
-        trated as True for specific boolean filter parameters in Volume
-        GET request.
-
-        But V3.2 onwards, only true/True/0/1/False/false parameters are
-        supported.
-        All other input values to specific boolean filter parameter will
-        lead to raising exception.
-
-        This changes API behavior. So, micro version introduced for V3.2
-        onwards.
-        """
-        if strict:
-            # for updated behavior, from V3.2 onwards.
-            # To translate any true/false/t/f/0/1 to True/False
-            # which is only acceptable format in database queries.
-            try:
-                return strutils.bool_from_string(val, strict=True)
-            except ValueError:
-                msg = _('\'%(key)s = %(value)s\'') % {'key': key,
-                                                      'value': val}
-                raise exception.InvalidInput(reason=msg)
-        else:
-            # For existing behavior(before version 3.2)
-            accepted_true = ['True', 'true', 'TRUE']
-            accepted_false = ['False', 'false', 'FALSE']
-
-            if val in accepted_false:
-                return False
-            elif val in accepted_true:
-                return True
-            else:
-                return bool(val)
+                LOG.debug('Could not evaluate value %s, assuming string', v)
 
 
 class HostAPI(base.Base):
+    def __init__(self):
+        super(HostAPI, self).__init__()
+
     """Sub-set of the Volume Manager API for managing host operations."""
     def set_host_enabled(self, context, host, enabled):
         """Sets the specified host's ability to accept new volumes."""

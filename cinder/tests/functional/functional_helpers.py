@@ -19,7 +19,6 @@ Provides common functionality for functional tests
 import os.path
 import random
 import string
-import time
 import uuid
 
 import fixtures
@@ -29,7 +28,6 @@ from oslo_config import cfg
 from cinder import service
 from cinder import test  # For the flags
 from cinder.tests.functional.api import client
-from cinder.tests.unit import fake_constants as fake
 
 
 CONF = cfg.CONF
@@ -78,11 +76,7 @@ class _FunctionalTestBase(test.TestCase):
         self._start_api_service()
         self.addCleanup(self.osapi.stop)
 
-        self.api = client.TestOpenStackClient(fake.USER_ID,
-                                              fake.PROJECT_ID, self.auth_url)
-
-    def _update_project(self, new_project_id):
-        self.api.update_project(new_project_id)
+        self.api = client.TestOpenStackClient('fake', 'fake', self.auth_url)
 
     def _start_api_service(self):
         default_conf = os.path.abspath(os.path.join(
@@ -142,28 +136,3 @@ class _FunctionalTestBase(test.TestCase):
         server_name = self.get_unused_server_name()
         server['name'] = server_name
         return server
-
-    def _poll_volume_while(self, volume_id, continue_states,
-                           expected_end_status=None, max_retries=5):
-        """Poll (briefly) while the state is in continue_states.
-
-        Continues until the state changes from continue_states or max_retries
-        are hit. If expected_end_status is specified, we assert that the end
-        status of the volume is expected_end_status.
-        """
-        retries = 0
-        while retries <= max_retries:
-            try:
-                found_volume = self.api.get_volume(volume_id)
-            except client.OpenStackApiException404:
-                return None
-
-            self.assertEqual(volume_id, found_volume['id'])
-            vol_status = found_volume['status']
-            if vol_status not in continue_states:
-                if expected_end_status:
-                    self.assertEqual(expected_end_status, vol_status)
-                return found_volume
-
-            time.sleep(1)
-            retries += 1

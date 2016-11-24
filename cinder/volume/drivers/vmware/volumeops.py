@@ -23,6 +23,7 @@ from oslo_utils import units
 from oslo_vmware import exceptions
 from oslo_vmware import pbm
 from oslo_vmware import vim_util
+import six
 from six.moves import urllib
 
 from cinder.i18n import _, _LE, _LI
@@ -373,7 +374,6 @@ class VMwareVolumeOps(object):
         self._session.invoke_api(vim_util, 'cancel_retrieval',
                                  self._session.vim, retrieve_result)
 
-    # TODO(vbala): move this method to datastore module
     def _is_usable(self, mount_info):
         """Check if a datastore is usable as per the given mount info.
 
@@ -427,7 +427,6 @@ class VMwareVolumeOps(object):
         hosts = self.get_connected_hosts(datastore)
         return host.value in hosts
 
-    # TODO(vbala): move this method to datastore module
     def _in_maintenance(self, summary):
         """Check if a datastore is entering maintenance or in maintenance.
 
@@ -439,6 +438,72 @@ class VMwareVolumeOps(object):
             return summary.maintenanceMode in ['enteringMaintenance',
                                                'inMaintenance']
         return False
+
+    def _is_valid(self, datastore, host):
+        """Check if the datastore is valid for the given host.
+
+        A datastore is considered valid for a host only if the datastore is
+        writable, mounted and accessible. Also, the datastore should not be
+        in maintenance mode.
+
+        :param datastore: Reference to the datastore entity
+        :param host: Reference to the host entity
+        :return: True if datastore can be used for volume creation
+        """
+        summary = self.get_summary(datastore)
+        in_maintenance = self._in_maintenance(summary)
+        if not summary.accessible or in_maintenance:
+            return False
+
+        host_mounts = self._session.invoke_api(vim_util, 'get_object_property',
+                                               self._session.vim, datastore,
+                                               'host')
+        for host_mount in host_mounts.DatastoreHostMount:
+            if host_mount.key.value == host.value:
+                return self._is_usable(host_mount.mountInfo)
+        return False
+
+    def get_dss_rp(self, host):
+        """Get accessible datastores and resource pool of the host.
+
+        :param host: Managed object reference of the host
+        :return: Datastores accessible to the host and resource pool to which
+                 the host belongs to
+        """
+
+        props = self._session.invoke_api(vim_util, 'get_object_properties',
+                                         self._session.vim, host,
+                                         ['datastore', 'parent'])
+        # Get datastores and compute resource or cluster compute resource
+        datastores = []
+        compute_resource = None
+        for elem in props:
+            for prop in elem.propSet:
+                if prop.name == 'datastore' and prop.val:
+                    # Consider only if datastores are present under host
+                    datastores = prop.val.ManagedObjectReference
+                elif prop.name == 'parent':
+                    compute_resource = prop.val
+        LOG.debug("Datastores attached to host %(host)s are: %(ds)s.",
+                  {'host': host, 'ds': datastores})
+        # Filter datastores based on if it is accessible, mounted and writable
+        valid_dss = []
+        for datastore in datastores:
+            if self._is_valid(datastore, host):
+                valid_dss.append(datastore)
+        # Get resource pool from compute resource or cluster compute resource
+        resource_pool = self._session.invoke_api(vim_util,
+                                                 'get_object_property',
+                                                 self._session.vim,
+                                                 compute_resource,
+                                                 'resourcePool')
+        if not valid_dss:
+            msg = _("There are no valid datastores attached to %s.") % host
+            LOG.error(msg)
+            raise exceptions.VimException(msg)
+        else:
+            LOG.debug("Valid datastores are: %s", valid_dss)
+        return (valid_dss, resource_pool)
 
     def _get_parent(self, child, parent_type):
         """Get immediate parent of given type via 'parent' property.
@@ -568,7 +633,7 @@ class VMwareVolumeOps(object):
         :param path: Datastore path of the virtual disk to extend
         :param dc_ref: Reference to datacenter
         :param eager_zero: Boolean determining if the free space
-                           is zeroed out
+        is zeroed out
         """
         LOG.debug("Extending virtual disk: %(path)s to %(size)s GB.",
                   {'path': path, 'size': requested_size_in_gb})
@@ -687,7 +752,7 @@ class VMwareVolumeOps(object):
         cf = self._session.vim.client.factory
         option_values = []
 
-        for key, value in extra_config.items():
+        for key, value in six.iteritems(extra_config):
             opt = cf.create('ns0:OptionValue')
             opt.key = key
             opt.value = value
@@ -1279,17 +1344,6 @@ class VMwareVolumeOps(object):
                   "%(disk_uuid)s.",
                   {'backing': backing,
                    'disk_uuid': disk_uuid})
-
-    def update_backing_extra_config(self, backing, extra_config):
-        cf = self._session.vim.client.factory
-        reconfig_spec = cf.create('ns0:VirtualMachineConfigSpec')
-        reconfig_spec.extraConfig = self._get_extra_config_option_values(
-            extra_config)
-        self._reconfigure_backing(backing, reconfig_spec)
-        LOG.debug("Backing: %(backing)s reconfigured with extra config: "
-                  "%(extra_config)s.",
-                  {'backing': backing,
-                   'extra_config': extra_config})
 
     def delete_file(self, file_path, datacenter=None):
         """Delete file or folder on the datastore.

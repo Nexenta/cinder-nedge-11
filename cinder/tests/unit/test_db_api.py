@@ -16,12 +16,10 @@
 
 import datetime
 
-import ddt
 import enum
 import mock
-from oslo_config import cfg
-from oslo_utils import timeutils
 from oslo_utils import uuidutils
+import six
 
 from cinder.api import common
 from cinder import context
@@ -29,17 +27,13 @@ from cinder import db
 from cinder.db.sqlalchemy import api as sqlalchemy_api
 from cinder import exception
 from cinder import objects
-from cinder.objects import fields
 from cinder import quota
 from cinder import test
-from cinder.tests.unit import fake_constants as fake
-from cinder.tests.unit import utils
+from cinder.tests.unit import fake_constants
 
-CONF = cfg.CONF
 THREE = 3
 THREE_HUNDREDS = 300
 ONE_HUNDREDS = 100
-UTC_NOW = timeutils.utcnow()
 
 
 def _quota_reserve(context, project_id):
@@ -71,7 +65,45 @@ def _quota_reserve(context, project_id):
     )
 
 
-class BaseTest(test.TestCase, test.ModelsObjectComparatorMixin):
+class ModelsObjectComparatorMixin(object):
+    def _dict_from_object(self, obj, ignored_keys):
+        if ignored_keys is None:
+            ignored_keys = []
+        if isinstance(obj, dict):
+            items = obj.items()
+        else:
+            items = obj.iteritems()
+        return {k: v for k, v in items
+                if k not in ignored_keys}
+
+    def _assertEqualObjects(self, obj1, obj2, ignored_keys=None):
+        obj1 = self._dict_from_object(obj1, ignored_keys)
+        obj2 = self._dict_from_object(obj2, ignored_keys)
+
+        self.assertEqual(
+            len(obj1), len(obj2),
+            "Keys mismatch: %s" % six.text_type(
+                set(obj1.keys()) ^ set(obj2.keys())))
+        for key, value in obj1.items():
+            self.assertEqual(value, obj2[key])
+
+    def _assertEqualListsOfObjects(self, objs1, objs2, ignored_keys=None):
+        obj_to_dict = lambda o: self._dict_from_object(o, ignored_keys)
+        sort_key = lambda d: [d[k] for k in sorted(d)]
+        conv_and_sort = lambda obj: sorted(map(obj_to_dict, obj), key=sort_key)
+
+        self.assertEqual(conv_and_sort(objs1), conv_and_sort(objs2))
+
+    def _assertEqualListsOfPrimitivesAsSets(self, primitives1, primitives2):
+        self.assertEqual(len(primitives1), len(primitives2))
+        for primitive in primitives1:
+            self.assertIn(primitive, primitives2)
+
+        for primitive in primitives2:
+            self.assertIn(primitive, primitives1)
+
+
+class BaseTest(test.TestCase, ModelsObjectComparatorMixin):
     def setUp(self):
         super(BaseTest, self).setUp()
         self.ctxt = context.get_admin_context()
@@ -84,7 +116,6 @@ class DBAPIServiceTestCase(BaseTest):
     def _get_base_values(self):
         return {
             'host': 'fake_host',
-            'cluster_name': None,
             'binary': 'fake_binary',
             'topic': 'fake_topic',
             'report_count': 3,
@@ -94,35 +125,23 @@ class DBAPIServiceTestCase(BaseTest):
     def _create_service(self, values):
         v = self._get_base_values()
         v.update(values)
-        service = db.service_create(self.ctxt, v)
-        # We need to read the contents from the DB if we have set updated_at
-        # or created_at fields
-        if 'updated_at' in values or 'created_at' in values:
-            service = db.service_get(self.ctxt, service.id)
-        return service
+        return db.service_create(self.ctxt, v)
 
     def test_service_create(self):
-        # Add a cluster value to the service
-        values = {'cluster_name': 'cluster'}
-        service = self._create_service(values)
-        self.assertIsNotNone(service['id'])
-        expected = self._get_base_values()
-        expected.update(values)
-        for key, value in expected.items():
+        service = self._create_service({})
+        self.assertFalse(service['id'] is None)
+        for key, value in self._get_base_values().items():
             self.assertEqual(value, service[key])
 
     def test_service_destroy(self):
         service1 = self._create_service({})
         service2 = self._create_service({'host': 'fake_host2'})
 
-        self.assertDictEqual(
-            {'deleted': True, 'deleted_at': mock.ANY},
-            db.service_destroy(self.ctxt, service1['id']))
+        db.service_destroy(self.ctxt, service1['id'])
         self.assertRaises(exception.ServiceNotFound,
                           db.service_get, self.ctxt, service1['id'])
-        self._assertEqualObjects(
-            service2,
-            db.service_get(self.ctxt, service2['id']))
+        self._assertEqualObjects(db.service_get(self.ctxt, service2['id']),
+                                 service2)
 
     def test_service_update(self):
         service = self._create_service({})
@@ -147,16 +166,6 @@ class DBAPIServiceTestCase(BaseTest):
         real_service1 = db.service_get(self.ctxt, service1['id'])
         self._assertEqualObjects(service1, real_service1)
 
-    def test_service_get_by_cluster(self):
-        service = self._create_service({'cluster_name': 'cluster@backend'})
-        # Search with an exact match
-        real_service = db.service_get(self.ctxt,
-                                      cluster_name='cluster@backend')
-        self._assertEqualObjects(service, real_service)
-        # Search without the backend
-        real_service = db.service_get(self.ctxt, cluster_name='cluster')
-        self._assertEqualObjects(service, real_service)
-
     def test_service_get_not_found_exception(self):
         self.assertRaises(exception.ServiceNotFound,
                           db.service_get, self.ctxt, 100500)
@@ -164,41 +173,36 @@ class DBAPIServiceTestCase(BaseTest):
     def test_service_get_by_host_and_topic(self):
         service1 = self._create_service({'host': 'host1', 'topic': 'topic1'})
 
-        real_service1 = db.service_get(self.ctxt, host='host1', topic='topic1')
+        real_service1 = db.service_get_by_host_and_topic(self.ctxt,
+                                                         host='host1',
+                                                         topic='topic1')
         self._assertEqualObjects(service1, real_service1)
 
     def test_service_get_all(self):
-        expired = (datetime.datetime.utcnow()
-                   - datetime.timedelta(seconds=CONF.service_down_time + 1))
         values = [
-            # Now we are updating updated_at at creation as well so this one
-            # is up.
-            {'host': 'host1', 'binary': 'b1', 'created_at': expired},
+            {'host': 'host1', 'binary': 'b1'},
             {'host': 'host1@ceph', 'binary': 'b2'},
             {'host': 'host2', 'binary': 'b2'},
-            {'disabled': True, 'created_at': expired, 'updated_at': expired},
+            {'disabled': True}
         ]
         services = [self._create_service(vals) for vals in values]
 
-        disabled_services = services[-1:]
+        disabled_services = [services[-1]]
         non_disabled_services = services[:-1]
-        up_services = services[0:3]
-        down_services = [services[3]]
         expected = services[:2]
         expected_bin = services[1:3]
         compares = [
+            (services, db.service_get_all(self.ctxt, {})),
             (services, db.service_get_all(self.ctxt)),
-            (expected, db.service_get_all(self.ctxt, host='host1')),
-            (expected_bin, db.service_get_all(self.ctxt, binary='b2')),
-            (disabled_services, db.service_get_all(self.ctxt, disabled=True)),
+            (expected, db.service_get_all(self.ctxt, {'host': 'host1'})),
+            (expected_bin, db.service_get_all(self.ctxt, {'binary': 'b2'})),
+            (disabled_services, db.service_get_all(self.ctxt,
+                                                   {'disabled': True})),
             (non_disabled_services, db.service_get_all(self.ctxt,
-                                                       disabled=False)),
-            (up_services, db.service_get_all(self.ctxt, is_up=True)),
-            (down_services, db.service_get_all(self.ctxt, is_up=False)),
+                                                       {'disabled': False})),
         ]
-        for i, comp in enumerate(compares):
-            self._assertEqualListsOfObjects(*comp,
-                                            msg='Error comparing %s' % i)
+        for comp in compares:
+            self._assertEqualListsOfObjects(*comp)
 
     def test_service_get_all_by_topic(self):
         values = [
@@ -209,7 +213,7 @@ class DBAPIServiceTestCase(BaseTest):
         ]
         services = [self._create_service(vals) for vals in values]
         expected = services[:3]
-        real = db.service_get_all(self.ctxt, topic='t1')
+        real = db.service_get_all_by_topic(self.ctxt, 't1')
         self._assertEqualListsOfObjects(expected, real)
 
     def test_service_get_all_by_binary(self):
@@ -221,7 +225,7 @@ class DBAPIServiceTestCase(BaseTest):
         ]
         services = [self._create_service(vals) for vals in values]
         expected = services[:3]
-        real = db.service_get_all(self.ctxt, binary='b1')
+        real = db.service_get_all_by_binary(self.ctxt, 'b1')
         self._assertEqualListsOfObjects(expected, real)
 
     def test_service_get_by_args(self):
@@ -231,45 +235,60 @@ class DBAPIServiceTestCase(BaseTest):
         ]
         services = [self._create_service(vals) for vals in values]
 
-        service1 = db.service_get(self.ctxt, host='host1', binary='a')
+        service1 = db.service_get_by_args(self.ctxt, 'host1', 'a')
         self._assertEqualObjects(services[0], service1)
 
-        service2 = db.service_get(self.ctxt, host='host2', binary='b')
+        service2 = db.service_get_by_args(self.ctxt, 'host2', 'b')
         self._assertEqualObjects(services[1], service2)
-
-    def test_service_get_all_by_cluster(self):
-        values = [
-            {'host': 'host1', 'cluster_name': 'cluster'},
-            {'host': 'host2', 'cluster_name': 'cluster'},
-            {'host': 'host3', 'cluster_name': 'cluster@backend'},
-            {'host': 'host4', 'cluster_name': 'cluster2'},
-        ]
-        services = [self._create_service(vals) for vals in values]
-        expected = services[:3]
-        real = db.service_get_all(self.ctxt, cluster_name='cluster')
-        self._assertEqualListsOfObjects(expected, real)
 
     def test_service_get_by_args_not_found_exception(self):
         self.assertRaises(exception.ServiceNotFound,
-                          db.service_get,
-                          self.ctxt, host='non-exists-host', binary='a')
+                          db.service_get_by_args,
+                          self.ctxt, 'non-exists-host', 'a')
 
-    @mock.patch('sqlalchemy.orm.query.Query.filter_by')
-    def test_service_get_by_args_with_case_insensitive(self, filter_by):
-        CONF.set_default('connection', 'mysql://', 'database')
-        db.service_get(self.ctxt, host='host', binary='a')
+    @mock.patch('cinder.db.sqlalchemy.api.model_query')
+    def test_service_get_by_args_with_case_insensitive(self, model_query):
+        class case_insensitive_filter(object):
+            def __init__(self, records):
+                self.records = records
 
-        self.assertNotEqual(0, filter_by.call_count)
-        self.assertEqual(1, filter_by.return_value.filter.call_count)
-        or_op = filter_by.return_value.filter.call_args[0][0].clauses[0]
-        self.assertIsInstance(or_op,
-                              sqlalchemy_api.sql.elements.BinaryExpression)
-        binary_op = or_op.right
-        self.assertIsInstance(binary_op, sqlalchemy_api.sql.functions.Function)
-        self.assertEqual('binary', binary_op.name)
+            def filter_by(self, **kwargs):
+                ret = mock.Mock()
+                ret.all = mock.Mock()
+
+                results = []
+                for record in self.records:
+                    for key, value in kwargs.items():
+                        if record[key].lower() != value.lower():
+                            break
+                    else:
+                        results.append(record)
+
+                ret.filter_by = case_insensitive_filter(results).filter_by
+                ret.all.return_value = results
+                return ret
+
+        values = [
+            {'host': 'host', 'binary': 'a'},
+            {'host': 'HOST', 'binary': 'a'}
+        ]
+        services = [self._create_service(vals) for vals in values]
+
+        query = mock.Mock()
+        query.filter_by = case_insensitive_filter(services).filter_by
+        model_query.return_value = query
+
+        service1 = db.service_get_by_args(self.ctxt, 'host', 'a')
+        self._assertEqualObjects(services[0], service1)
+
+        service2 = db.service_get_by_args(self.ctxt, 'HOST', 'a')
+        self._assertEqualObjects(services[1], service2)
+
+        self.assertRaises(exception.ServiceNotFound,
+                          db.service_get_by_args,
+                          self.ctxt, 'Host', 'a')
 
 
-@ddt.ddt
 class DBAPIVolumeTestCase(BaseTest):
 
     """Unit tests for cinder.db.api.volume_*."""
@@ -390,13 +409,9 @@ class DBAPIVolumeTestCase(BaseTest):
         self._assertEqualObjects(volume, db.volume_get(self.ctxt,
                                                        volume['id']))
 
-    @mock.patch('oslo_utils.timeutils.utcnow', return_value=UTC_NOW)
-    def test_volume_destroy(self, utcnow_mock):
+    def test_volume_destroy(self):
         volume = db.volume_create(self.ctxt, {})
-        self.assertDictEqual(
-            {'status': 'deleted', 'deleted': True, 'deleted_at': UTC_NOW,
-             'migration_status': None},
-            db.volume_destroy(self.ctxt, volume['id']))
+        db.volume_destroy(self.ctxt, volume['id'])
         self.assertRaises(exception.VolumeNotFound, db.volume_get,
                           self.ctxt, volume['id'])
 
@@ -1165,117 +1180,6 @@ class DBAPIVolumeTestCase(BaseTest):
                                                       'deleted', 'deleted_at',
                                                       'updated_at'])
 
-    def _create_volume_with_image_metadata(self):
-        vol1 = db.volume_create(self.ctxt, {'display_name': 'test1'})
-        db.volume_glance_metadata_create(self.ctxt, vol1.id, 'image_name',
-                                         'imageTestOne')
-        db.volume_glance_metadata_create(self.ctxt, vol1.id, 'test_image_key',
-                                         'test_image_value')
-        vol2 = db.volume_create(self.ctxt, {'display_name': 'test2'})
-        db.volume_glance_metadata_create(self.ctxt, vol2.id, 'image_name',
-                                         'imageTestTwo')
-        db.volume_glance_metadata_create(self.ctxt, vol2.id, 'disk_format',
-                                         'qcow2')
-        return [vol1, vol2]
-
-    def test_volume_get_all_by_image_name_and_key(self):
-        vols = self._create_volume_with_image_metadata()
-        filters = {'glance_metadata': {'image_name': 'imageTestOne',
-                                       'test_image_key': 'test_image_value'}}
-        volumes = db.volume_get_all(self.ctxt, None, None, ['created_at'],
-                                    ['desc'], filters=filters)
-        self._assertEqualListsOfObjects([vols[0]], volumes)
-
-    def test_volume_get_all_by_image_name_and_disk_format(self):
-        vols = self._create_volume_with_image_metadata()
-        filters = {'glance_metadata': {'image_name': 'imageTestTwo',
-                                       'disk_format': 'qcow2'}}
-        volumes = db.volume_get_all(self.ctxt, None, None, ['created_at'],
-                                    ['desc'], filters=filters)
-        self._assertEqualListsOfObjects([vols[1]], volumes)
-
-    def test_volume_get_all_by_invalid_image_metadata(self):
-        # Test with invalid image metadata
-        self._create_volume_with_image_metadata()
-        filters = {'glance_metadata': {'invalid_key': 'invalid_value',
-                                       'test_image_key': 'test_image_value'}}
-        volumes = db.volume_get_all(self.ctxt, None, None, ['created_at'],
-                                    ['desc'], filters=filters)
-        self._assertEqualListsOfObjects([], volumes)
-
-    def _create_volumes_to_test_include_in(self):
-        """Helper method for test_volume_include_in_* tests."""
-        return [
-            db.volume_create(self.ctxt,
-                             {'host': 'host1@backend1#pool1',
-                              'cluster_name': 'cluster1@backend1#pool1'}),
-            db.volume_create(self.ctxt,
-                             {'host': 'host1@backend2#pool2',
-                              'cluster_name': 'cluster1@backend2#pool2'}),
-            db.volume_create(self.ctxt,
-                             {'host': 'host2@backend#poo1',
-                              'cluster_name': 'cluster2@backend#pool'}),
-        ]
-
-    @ddt.data('host1@backend1#pool1', 'host1@backend1')
-    def test_volume_include_in_cluster_by_host(self, host):
-        """Basic volume include test filtering by host and with full rename."""
-        vol = self._create_volumes_to_test_include_in()[0]
-
-        cluster_name = 'my_cluster'
-        result = db.volume_include_in_cluster(self.ctxt, cluster_name,
-                                              partial_rename=False,
-                                              host=host)
-        self.assertEqual(1, result)
-        db_vol = db.volume_get(self.ctxt, vol.id)
-        self.assertEqual(cluster_name, db_vol.cluster_name)
-
-    def test_volume_include_in_cluster_by_host_multiple(self):
-        """Partial cluster rename filtering with host level info."""
-        vols = self._create_volumes_to_test_include_in()[0:2]
-
-        host = 'host1'
-        cluster_name = 'my_cluster'
-        result = db.volume_include_in_cluster(self.ctxt, cluster_name,
-                                              partial_rename=True,
-                                              host=host)
-        self.assertEqual(2, result)
-        db_vols = [db.volume_get(self.ctxt, vols[0].id),
-                   db.volume_get(self.ctxt, vols[1].id)]
-        for i in range(2):
-            self.assertEqual(cluster_name + vols[i].host[len(host):],
-                             db_vols[i].cluster_name)
-
-    @ddt.data('cluster1@backend1#pool1', 'cluster1@backend1')
-    def test_volume_include_in_cluster_by_cluster_name(self, cluster_name):
-        """Basic volume include test filtering by cluster with full rename."""
-        vol = self._create_volumes_to_test_include_in()[0]
-
-        new_cluster_name = 'cluster_new@backend1#pool'
-        result = db.volume_include_in_cluster(self.ctxt, new_cluster_name,
-                                              partial_rename=False,
-                                              cluster_name=cluster_name)
-        self.assertEqual(1, result)
-        db_vol = db.volume_get(self.ctxt, vol.id)
-        self.assertEqual(new_cluster_name, db_vol.cluster_name)
-
-    def test_volume_include_in_cluster_by_cluster_multiple(self):
-        """Partial rename filtering with cluster with host level info."""
-        vols = self._create_volumes_to_test_include_in()[0:2]
-
-        cluster_name = 'cluster1'
-        new_cluster_name = 'my_cluster'
-        result = db.volume_include_in_cluster(self.ctxt, new_cluster_name,
-                                              partial_rename=True,
-                                              cluster_name=cluster_name)
-        self.assertEqual(2, result)
-        db_vols = [db.volume_get(self.ctxt, vols[0].id),
-                   db.volume_get(self.ctxt, vols[1].id)]
-        for i in range(2):
-            self.assertEqual(
-                new_cluster_name + vols[i].cluster_name[len(cluster_name):],
-                db_vols[i].cluster_name)
-
 
 class DBAPISnapshotTestCase(BaseTest):
 
@@ -1296,21 +1200,15 @@ class DBAPISnapshotTestCase(BaseTest):
     def test_snapshot_get_all_by_filter(self):
         db.volume_create(self.ctxt, {'id': 1})
         db.volume_create(self.ctxt, {'id': 2})
-        snapshot1 = db.snapshot_create(self.ctxt,
-                                       {'id': 1, 'volume_id': 1,
-                                        'display_name': 'one',
-                                        'status':
-                                            fields.SnapshotStatus.AVAILABLE})
-        snapshot2 = db.snapshot_create(self.ctxt,
-                                       {'id': 2, 'volume_id': 1,
-                                        'display_name': 'two',
-                                        'status':
-                                            fields.SnapshotStatus.CREATING})
-        snapshot3 = db.snapshot_create(self.ctxt,
-                                       {'id': 3, 'volume_id': 2,
-                                        'display_name': 'three',
-                                        'status':
-                                            fields.SnapshotStatus.AVAILABLE})
+        snapshot1 = db.snapshot_create(self.ctxt, {'id': 1, 'volume_id': 1,
+                                                   'display_name': 'one',
+                                                   'status': 'available'})
+        snapshot2 = db.snapshot_create(self.ctxt, {'id': 2, 'volume_id': 1,
+                                                   'display_name': 'two',
+                                                   'status': 'creating'})
+        snapshot3 = db.snapshot_create(self.ctxt, {'id': 3, 'volume_id': 2,
+                                                   'display_name': 'three',
+                                                   'status': 'available'})
         # no filter
         filters = {}
         snapshots = db.snapshot_get_all(self.ctxt, filters=filters)
@@ -1335,7 +1233,7 @@ class DBAPISnapshotTestCase(BaseTest):
                                             self.ctxt,
                                             filters),
                                         ignored_keys=['metadata', 'volume'])
-        filters = {'status': fields.SnapshotStatus.ERROR}
+        filters = {'status': 'error'}
         self._assertEqualListsOfObjects([],
                                         db.snapshot_get_all(
                                             self.ctxt,
@@ -1348,13 +1246,13 @@ class DBAPISnapshotTestCase(BaseTest):
                                             self.ctxt,
                                             filters),
                                         ignored_keys=['metadata', 'volume'])
-        filters = {'status': fields.SnapshotStatus.AVAILABLE}
+        filters = {'status': 'available'}
         self._assertEqualListsOfObjects([snapshot1, snapshot3],
                                         db.snapshot_get_all(
                                             self.ctxt,
                                             filters),
                                         ignored_keys=['metadata', 'volume'])
-        filters = {'volume_id': 1, 'status': fields.SnapshotStatus.AVAILABLE}
+        filters = {'volume_id': 1, 'status': 'available'}
         self._assertEqualListsOfObjects([snapshot1],
                                         db.snapshot_get_all(
                                             self.ctxt,
@@ -1371,11 +1269,8 @@ class DBAPISnapshotTestCase(BaseTest):
         db.volume_create(self.ctxt, {'id': 1, 'host': 'host1'})
         db.volume_create(self.ctxt, {'id': 2, 'host': 'host2'})
         snapshot1 = db.snapshot_create(self.ctxt, {'id': 1, 'volume_id': 1})
-        snapshot2 = db.snapshot_create(self.ctxt,
-                                       {'id': 2,
-                                        'volume_id': 2,
-                                        'status':
-                                            fields.SnapshotStatus.ERROR})
+        snapshot2 = db.snapshot_create(self.ctxt, {'id': 2, 'volume_id': 2,
+                                                   'status': 'error'})
 
         self._assertEqualListsOfObjects([snapshot1],
                                         db.snapshot_get_by_host(
@@ -1387,14 +1282,16 @@ class DBAPISnapshotTestCase(BaseTest):
                                             self.ctxt,
                                             'host2'),
                                         ignored_keys='volume')
-        self._assertEqualListsOfObjects(
-            [], db.snapshot_get_by_host(self.ctxt, 'host2', {
-                'status': fields.SnapshotStatus.AVAILABLE}),
-            ignored_keys='volume')
-        self._assertEqualListsOfObjects(
-            [snapshot2], db.snapshot_get_by_host(self.ctxt, 'host2', {
-                'status': fields.SnapshotStatus.ERROR}),
-            ignored_keys='volume')
+        self._assertEqualListsOfObjects([],
+                                        db.snapshot_get_by_host(
+                                            self.ctxt,
+                                            'host2', {'status': 'available'}),
+                                        ignored_keys='volume')
+        self._assertEqualListsOfObjects([snapshot2],
+                                        db.snapshot_get_by_host(
+                                            self.ctxt,
+                                            'host2', {'status': 'error'}),
+                                        ignored_keys='volume')
         self._assertEqualListsOfObjects([],
                                         db.snapshot_get_by_host(
                                             self.ctxt,
@@ -1433,9 +1330,9 @@ class DBAPISnapshotTestCase(BaseTest):
         db.volume_create(self.ctxt, {'id': 2})
         snapshot1 = db.snapshot_create(self.ctxt, {'id': 1, 'volume_id': 1,
                                                    'project_id': 'project1'})
-        snapshot2 = db.snapshot_create(
-            self.ctxt, {'id': 2, 'volume_id': 2, 'status':
-                        fields.SnapshotStatus.ERROR, 'project_id': 'project2'})
+        snapshot2 = db.snapshot_create(self.ctxt, {'id': 2, 'volume_id': 2,
+                                                   'status': 'error',
+                                                   'project_id': 'project2'})
 
         self._assertEqualListsOfObjects([snapshot1],
                                         db.snapshot_get_all_by_project(
@@ -1447,17 +1344,18 @@ class DBAPISnapshotTestCase(BaseTest):
                                             self.ctxt,
                                             'project2'),
                                         ignored_keys='volume')
-        self._assertEqualListsOfObjects(
-            [], db.snapshot_get_all_by_project(
-                self.ctxt,
-                'project2',
-                {'status': fields.SnapshotStatus.AVAILABLE}),
-            ignored_keys='volume')
-        self._assertEqualListsOfObjects(
-            [snapshot2], db.snapshot_get_all_by_project(
-                self.ctxt, 'project2', {
-                    'status': fields.SnapshotStatus.ERROR}),
-            ignored_keys='volume')
+        self._assertEqualListsOfObjects([],
+                                        db.snapshot_get_all_by_project(
+                                            self.ctxt,
+                                            'project2',
+                                            {'status': 'available'}),
+                                        ignored_keys='volume')
+        self._assertEqualListsOfObjects([snapshot2],
+                                        db.snapshot_get_all_by_project(
+                                            self.ctxt,
+                                            'project2',
+                                            {'status': 'error'}),
+                                        ignored_keys='volume')
         self._assertEqualListsOfObjects([],
                                         db.snapshot_get_all_by_project(
                                             self.ctxt,
@@ -1509,107 +1407,19 @@ class DBAPISnapshotTestCase(BaseTest):
         self.assertEqual(should_be, db.snapshot_metadata_get(self.ctxt, 1))
 
 
-@ddt.ddt
-class DBAPIConsistencygroupTestCase(BaseTest):
-    def _create_cgs_to_test_include_in(self):
-        """Helper method for test_consistencygroup_include_in_* tests."""
-        return [
-            db.consistencygroup_create(
-                self.ctxt, {'host': 'host1@backend1#pool1',
-                            'cluster_name': 'cluster1@backend1#pool1'}),
-            db.consistencygroup_create(
-                self.ctxt, {'host': 'host1@backend2#pool2',
-                            'cluster_name': 'cluster1@backend2#pool1'}),
-            db.consistencygroup_create(
-                self.ctxt, {'host': 'host2@backend#poo1',
-                            'cluster_name': 'cluster2@backend#pool'}),
-        ]
-
-    @ddt.data('host1@backend1#pool1', 'host1@backend1')
-    def test_consistencygroup_include_in_cluster_by_host(self, host):
-        """Basic CG include test filtering by host and with full rename."""
-        cg = self._create_cgs_to_test_include_in()[0]
-
-        cluster_name = 'my_cluster'
-        result = db.consistencygroup_include_in_cluster(self.ctxt,
-                                                        cluster_name,
-                                                        partial_rename=False,
-                                                        host=host)
-        self.assertEqual(1, result)
-        db_cg = db.consistencygroup_get(self.ctxt, cg.id)
-        self.assertEqual(cluster_name, db_cg.cluster_name)
-
-    def test_consistencygroup_include_in_cluster_by_host_multiple(self):
-        """Partial cluster rename filtering with host level info."""
-        cgs = self._create_cgs_to_test_include_in()[0:2]
-
-        host = 'host1'
-        cluster_name = 'my_cluster'
-        result = db.consistencygroup_include_in_cluster(self.ctxt,
-                                                        cluster_name,
-                                                        partial_rename=True,
-                                                        host=host)
-        self.assertEqual(2, result)
-        db_cgs = [db.consistencygroup_get(self.ctxt, cgs[0].id),
-                  db.consistencygroup_get(self.ctxt, cgs[1].id)]
-        for i in range(2):
-            self.assertEqual(cluster_name + cgs[i].host[len(host):],
-                             db_cgs[i].cluster_name)
-
-    @ddt.data('cluster1@backend1#pool1', 'cluster1@backend1')
-    def test_consistencygroup_include_in_cluster_by_cluster_name(self,
-                                                                 cluster_name):
-        """Basic CG include test filtering by cluster with full rename."""
-        cg = self._create_cgs_to_test_include_in()[0]
-
-        new_cluster_name = 'cluster_new@backend1#pool'
-        result = db.consistencygroup_include_in_cluster(
-            self.ctxt, new_cluster_name, partial_rename=False,
-            cluster_name=cluster_name)
-
-        self.assertEqual(1, result)
-        db_cg = db.consistencygroup_get(self.ctxt, cg.id)
-        self.assertEqual(new_cluster_name, db_cg.cluster_name)
-
-    def test_consistencygroup_include_in_cluster_by_cluster_multiple(self):
-        """Partial rename filtering with cluster with host level info."""
-        cgs = self._create_cgs_to_test_include_in()[0:2]
-
-        cluster_name = 'cluster1'
-        new_cluster_name = 'my_cluster'
-        result = db.consistencygroup_include_in_cluster(
-            self.ctxt, new_cluster_name, partial_rename=True,
-            cluster_name=cluster_name)
-
-        self.assertEqual(2, result)
-        db_cgs = [db.consistencygroup_get(self.ctxt, cgs[0].id),
-                  db.consistencygroup_get(self.ctxt, cgs[1].id)]
-        for i in range(2):
-            self.assertEqual(
-                new_cluster_name + cgs[i].cluster_name[len(cluster_name):],
-                db_cgs[i].cluster_name)
-
-
 class DBAPICgsnapshotTestCase(BaseTest):
     """Tests for cinder.db.api.cgsnapshot_*."""
 
-    def _cgsnapshot_create(self, values):
-        return utils.create_cgsnapshot(self.ctxt, return_vo=False, **values)
-
     def test_cgsnapshot_get_all_by_filter(self):
-        cgsnapshot1 = self._cgsnapshot_create(
-            {'id': fake.CGSNAPSHOT_ID,
-             'consistencygroup_id': fake.CONSISTENCY_GROUP_ID})
-        cgsnapshot2 = self._cgsnapshot_create(
-            {'id': fake.CGSNAPSHOT2_ID,
-             'consistencygroup_id': fake.CONSISTENCY_GROUP_ID})
-        cgsnapshot3 = self._cgsnapshot_create(
-            {'id': fake.CGSNAPSHOT3_ID,
-             'consistencygroup_id': fake.CONSISTENCY_GROUP2_ID})
+        cgsnapshot1 = db.cgsnapshot_create(self.ctxt, {'id': 1,
+                                           'consistencygroup_id': 'g1'})
+        cgsnapshot2 = db.cgsnapshot_create(self.ctxt, {'id': 2,
+                                           'consistencygroup_id': 'g1'})
+        cgsnapshot3 = db.cgsnapshot_create(self.ctxt, {'id': 3,
+                                           'consistencygroup_id': 'g2'})
         tests = [
-            ({'consistencygroup_id': fake.CONSISTENCY_GROUP_ID},
-             [cgsnapshot1, cgsnapshot2]),
-            ({'id': fake.CGSNAPSHOT3_ID}, [cgsnapshot3]),
+            ({'consistencygroup_id': 'g1'}, [cgsnapshot1, cgsnapshot2]),
+            ({'id': 3}, [cgsnapshot3]),
             ({'fake_key': 'fake'}, [])
         ]
 
@@ -1625,20 +1435,17 @@ class DBAPICgsnapshotTestCase(BaseTest):
                                                 filters))
 
     def test_cgsnapshot_get_all_by_group(self):
-        cgsnapshot1 = self._cgsnapshot_create(
-            {'id': fake.CGSNAPSHOT_ID,
-             'consistencygroup_id': fake.CONSISTENCY_GROUP_ID})
-        cgsnapshot2 = self._cgsnapshot_create(
-            {'id': fake.CGSNAPSHOT2_ID,
-             'consistencygroup_id': fake.CONSISTENCY_GROUP_ID})
-        self._cgsnapshot_create(
-            {'id': fake.CGSNAPSHOT3_ID,
-             'consistencygroup_id': fake.CONSISTENCY_GROUP2_ID})
+        cgsnapshot1 = db.cgsnapshot_create(self.ctxt, {'id': 1,
+                                           'consistencygroup_id': 'g1'})
+        cgsnapshot2 = db.cgsnapshot_create(self.ctxt, {'id': 2,
+                                           'consistencygroup_id': 'g1'})
+        db.cgsnapshot_create(self.ctxt, {'id': 3,
+                             'consistencygroup_id': 'g2'})
         tests = [
-            ({'consistencygroup_id': fake.CONSISTENCY_GROUP_ID},
-             [cgsnapshot1, cgsnapshot2]),
-            ({'id': fake.CGSNAPSHOT3_ID}, []),
-            ({'consistencygroup_id': fake.CONSISTENCY_GROUP2_ID}, []),
+            ({'consistencygroup_id': 'g1'}, [cgsnapshot1, cgsnapshot2]),
+            ({'id': 3}, []),
+            ({'fake_key': 'fake'}, []),
+            ({'consistencygroup_id': 'g2'}, []),
             (None, [cgsnapshot1, cgsnapshot2]),
         ]
 
@@ -1646,7 +1453,7 @@ class DBAPICgsnapshotTestCase(BaseTest):
             self._assertEqualListsOfObjects(expected,
                                             db.cgsnapshot_get_all_by_group(
                                                 self.ctxt,
-                                                fake.CONSISTENCY_GROUP_ID,
+                                                'g1',
                                                 filters))
 
         db.cgsnapshot_destroy(self.ctxt, '1')
@@ -1654,18 +1461,18 @@ class DBAPICgsnapshotTestCase(BaseTest):
         db.cgsnapshot_destroy(self.ctxt, '3')
 
     def test_cgsnapshot_get_all_by_project(self):
-        cgsnapshot1 = self._cgsnapshot_create(
-            {'id': fake.CGSNAPSHOT_ID,
-             'consistencygroup_id': fake.CONSISTENCY_GROUP_ID,
-             'project_id': fake.PROJECT_ID})
-        cgsnapshot2 = self._cgsnapshot_create(
-            {'id': fake.CGSNAPSHOT2_ID,
-             'consistencygroup_id': fake.CONSISTENCY_GROUP_ID,
-             'project_id': fake.PROJECT_ID})
+        cgsnapshot1 = db.cgsnapshot_create(self.ctxt,
+                                           {'id': 1,
+                                            'consistencygroup_id': 'g1',
+                                            'project_id': 1})
+        cgsnapshot2 = db.cgsnapshot_create(self.ctxt,
+                                           {'id': 2,
+                                            'consistencygroup_id': 'g1',
+                                            'project_id': 1})
+        project_id = 1
         tests = [
-            ({'id': fake.CGSNAPSHOT_ID}, [cgsnapshot1]),
-            ({'consistencygroup_id': fake.CONSISTENCY_GROUP_ID},
-             [cgsnapshot1, cgsnapshot2]),
+            ({'id': 1}, [cgsnapshot1]),
+            ({'consistencygroup_id': 'g1'}, [cgsnapshot1, cgsnapshot2]),
             ({'fake_key': 'fake'}, [])
         ]
 
@@ -1673,7 +1480,7 @@ class DBAPICgsnapshotTestCase(BaseTest):
             self._assertEqualListsOfObjects(expected,
                                             db.cgsnapshot_get_all_by_project(
                                                 self.ctxt,
-                                                fake.PROJECT_ID,
+                                                project_id,
                                                 filters))
 
 
@@ -1958,11 +1765,8 @@ class DBAPIQuotaClassTestCase(BaseTest):
         qc = db.quota_class_get(self.ctxt, 'test_qc', 'test_resource')
         self._assertEqualObjects(self.sample_qc, qc)
 
-    @mock.patch('oslo_utils.timeutils.utcnow', return_value=UTC_NOW)
-    def test_quota_class_destroy(self, utcnow_mock):
-        self.assertDictEqual(
-            {'deleted': True, 'deleted_at': UTC_NOW},
-            db.quota_class_destroy(self.ctxt, 'test_qc', 'test_resource'))
+    def test_quota_class_destroy(self):
+        db.quota_class_destroy(self.ctxt, 'test_qc', 'test_resource')
         self.assertRaises(exception.QuotaClassNotFound,
                           db.quota_class_get, self.ctxt,
                           'test_qc', 'test_resource')
@@ -2067,12 +1871,10 @@ class DBAPIQuotaTestCase(BaseTest):
                           'volumes': {'reserved': 1, 'in_use': 0}},
                          quota_usage)
 
-    @mock.patch('oslo_utils.timeutils.utcnow', return_value=UTC_NOW)
-    def test_quota_destroy(self, utcnow_mock):
+    def test_quota_destroy(self):
         db.quota_create(self.ctxt, 'project1', 'resource1', 41)
-        self.assertDictEqual(
-            {'deleted': True, 'deleted_at': UTC_NOW},
-            db.quota_destroy(self.ctxt, 'project1', 'resource1'))
+        self.assertIsNone(db.quota_destroy(self.ctxt, 'project1',
+                                           'resource1'))
         self.assertRaises(exception.ProjectQuotaNotFound, db.quota_get,
                           self.ctxt, 'project1', 'resource1')
 
@@ -2166,8 +1968,8 @@ class DBAPIBackupTestCase(BaseTest):
 
     def _get_values(self, one=False):
         base_values = {
-            'user_id': fake.USER_ID,
-            'project_id': fake.PROJECT_ID,
+            'user_id': 'user',
+            'project_id': 'project',
             'volume_id': 'volume',
             'host': 'host',
             'availability_zone': 'zone',
@@ -2211,9 +2013,9 @@ class DBAPIBackupTestCase(BaseTest):
             self._assertEqualObjects(backup, backup_get)
 
     def test_backup_get_deleted(self):
-        backup_dic = {'user_id': fake.USER_ID,
-                      'project_id': fake.PROJECT_ID,
-                      'volume_id': fake.VOLUME_ID,
+        backup_dic = {'user_id': 'user',
+                      'project_id': 'project',
+                      'volume_id': fake_constants.volume_id,
                       'size': 1,
                       'object_count': 1}
         backup = objects.Backup(self.ctxt, **backup_dic)
@@ -2294,13 +2096,9 @@ class DBAPIBackupTestCase(BaseTest):
         self._assertEqualObjects(updated_values, updated_backup,
                                  self._ignored_keys)
 
-    @mock.patch('oslo_utils.timeutils.utcnow', return_value=UTC_NOW)
-    def test_backup_destroy(self, utcnow_mock):
+    def test_backup_destroy(self):
         for backup in self.created:
-            self.assertDictEqual(
-                {'status': fields.BackupStatus.DELETED, 'deleted': True,
-                 'deleted_at': UTC_NOW},
-                db.backup_destroy(self.ctxt, backup['id']))
+            db.backup_destroy(self.ctxt, backup['id'])
         self.assertFalse(db.backup_get_all(self.ctxt))
 
     def test_backup_not_found(self):
@@ -2420,22 +2218,61 @@ class DBAPIDriverInitiatorDataTestCase(BaseTest):
     initiator = 'iqn.1993-08.org.debian:01:222'
     namespace = 'test_ns'
 
-    def _test_insert(self, key, value, expected_result=True):
-        result = db.driver_initiator_data_insert_by_key(
-            self.ctxt, self.initiator, self.namespace, key, value)
-        self.assertEqual(expected_result, result)
+    def test_driver_initiator_data_set_and_remove(self):
+        data_key = 'key1'
+        data_value = 'value1'
+        update = {
+            'set_values': {
+                data_key: data_value
+            }
+        }
 
+        db.driver_initiator_data_update(self.ctxt, self.initiator,
+                                        self.namespace, update)
         data = db.driver_initiator_data_get(self.ctxt, self.initiator,
                                             self.namespace)
-        self.assertEqual(data[0].key, key)
-        self.assertEqual(data[0].value, value)
 
-    def test_insert(self):
-        self._test_insert('key1', 'foo')
+        self.assertIsNotNone(data)
+        self.assertEqual(data_key, data[0]['key'])
+        self.assertEqual(data_value, data[0]['value'])
 
-    def test_insert_already_exists(self):
-        self._test_insert('key2', 'bar')
-        self._test_insert('key2', 'bar', expected_result=False)
+        update = {'remove_values': [data_key]}
+
+        db.driver_initiator_data_update(self.ctxt, self.initiator,
+                                        self.namespace, update)
+        data = db.driver_initiator_data_get(self.ctxt, self.initiator,
+                                            self.namespace)
+
+        self.assertIsNotNone(data)
+        self.assertEqual([], data)
+
+    def test_driver_initiator_data_no_changes(self):
+        db.driver_initiator_data_update(self.ctxt, self.initiator,
+                                        self.namespace, {})
+        data = db.driver_initiator_data_get(self.ctxt, self.initiator,
+                                            self.namespace)
+
+        self.assertIsNotNone(data)
+        self.assertEqual([], data)
+
+    def test_driver_initiator_data_update_existing_values(self):
+        data_key = 'key1'
+        data_value = 'value1'
+        update = {'set_values': {data_key: data_value}}
+        db.driver_initiator_data_update(self.ctxt, self.initiator,
+                                        self.namespace, update)
+        data_value = 'value2'
+        update = {'set_values': {data_key: data_value}}
+        db.driver_initiator_data_update(self.ctxt, self.initiator,
+                                        self.namespace, update)
+        data = db.driver_initiator_data_get(self.ctxt, self.initiator,
+                                            self.namespace)
+        self.assertEqual(data_value, data[0]['value'])
+
+    def test_driver_initiator_data_remove_not_existing(self):
+        update = {'remove_values': ['key_that_doesnt_exist']}
+        db.driver_initiator_data_update(self.ctxt, self.initiator,
+                                        self.namespace, update)
 
 
 class DBAPIImageVolumeCacheEntryTestCase(BaseTest):
@@ -2573,94 +2410,3 @@ class DBAPIImageVolumeCacheEntryTestCase(BaseTest):
         host = 'abc@123#poolz'
         entries = db.image_volume_cache_get_all_for_host(self.ctxt, host)
         self.assertEqual([], entries)
-
-
-class DBAPIGenericTestCase(BaseTest):
-    def test_resource_exists_volume(self):
-        # NOTE(geguileo): We create 2 volumes in this test (even if the second
-        # one is not being used) to confirm that the DB exists subquery is
-        # properly formulated and doesn't result in multiple rows, as such
-        # case would raise an exception when converting the result to an
-        # scalar.  This would happen if for example the query wasn't generated
-        # directly using get_session but using model_query like this:
-        #  query = model_query(context, model,
-        #                      sql.exists().where(and_(*conditions)))
-        # Instead of what we do:
-        #  query = get_session().query(sql.exists().where(and_(*conditions)))
-        db.volume_create(self.ctxt, {'id': fake.VOLUME_ID})
-        db.volume_create(self.ctxt, {'id': fake.VOLUME2_ID})
-        model = db.get_model_for_versioned_object(objects.Volume)
-        res = sqlalchemy_api.resource_exists(self.ctxt, model, fake.VOLUME_ID)
-        self.assertTrue(res, msg="Couldn't find existing Volume")
-
-    def test_resource_exists_volume_fails(self):
-        db.volume_create(self.ctxt, {'id': fake.VOLUME_ID})
-        model = db.get_model_for_versioned_object(objects.Volume)
-        res = sqlalchemy_api.resource_exists(self.ctxt, model, fake.VOLUME2_ID)
-        self.assertFalse(res, msg='Found nonexistent Volume')
-
-    def test_resource_exists_snapshot(self):
-        # Read NOTE in test_resource_exists_volume on why we create 2 snapshots
-        vol = db.volume_create(self.ctxt, {'id': fake.VOLUME_ID})
-        db.snapshot_create(self.ctxt, {'id': fake.SNAPSHOT_ID,
-                                       'volume_id': vol.id})
-        db.snapshot_create(self.ctxt, {'id': fake.SNAPSHOT2_ID,
-                                       'volume_id': vol.id})
-        model = db.get_model_for_versioned_object(objects.Snapshot)
-        res = sqlalchemy_api.resource_exists(self.ctxt, model,
-                                             fake.SNAPSHOT_ID)
-        self.assertTrue(res, msg="Couldn't find existing Snapshot")
-
-    def test_resource_exists_snapshot_fails(self):
-        vol = db.volume_create(self.ctxt, {'id': fake.VOLUME_ID})
-        db.snapshot_create(self.ctxt, {'id': fake.SNAPSHOT_ID,
-                                       'volume_id': vol.id})
-        model = db.get_model_for_versioned_object(objects.Snapshot)
-        res = sqlalchemy_api.resource_exists(self.ctxt, model,
-                                             fake.SNAPSHOT2_ID)
-        self.assertFalse(res, msg='Found nonexistent Snapshot')
-
-    def test_resource_exists_volume_project_separation(self):
-        user_context = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
-                                              is_admin=False)
-        user2_context = context.RequestContext(fake.USER2_ID, fake.PROJECT2_ID,
-                                               is_admin=False)
-        volume = db.volume_create(user_context,
-                                  {'project_id': fake.PROJECT_ID})
-        model = db.get_model_for_versioned_object(objects.Volume)
-
-        # Owner can find it
-        res = sqlalchemy_api.resource_exists(user_context, model, volume.id)
-        self.assertTrue(res, msg='Owner cannot find its own Volume')
-
-        # Non admin user that is not the owner cannot find it
-        res = sqlalchemy_api.resource_exists(user2_context, model, volume.id)
-        self.assertFalse(res, msg="Non admin user can find somebody else's "
-                                  "volume")
-
-        # Admin can find it
-        res = sqlalchemy_api.resource_exists(self.ctxt, model, volume.id)
-        self.assertTrue(res, msg="Admin cannot find the volume")
-
-    def test_resource_exists_snapshot_project_separation(self):
-        user_context = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
-                                              is_admin=False)
-        user2_context = context.RequestContext(fake.USER2_ID, fake.PROJECT2_ID,
-                                               is_admin=False)
-        vol = db.volume_create(user_context, {'project_id': fake.PROJECT_ID})
-        snap = db.snapshot_create(self.ctxt, {'project_id': fake.PROJECT_ID,
-                                              'volume_id': vol.id})
-        model = db.get_model_for_versioned_object(objects.Snapshot)
-
-        # Owner can find it
-        res = sqlalchemy_api.resource_exists(user_context, model, snap.id)
-        self.assertTrue(res, msg='Owner cannot find its own Snapshot')
-
-        # Non admin user that is not the owner cannot find it
-        res = sqlalchemy_api.resource_exists(user2_context, model, snap.id)
-        self.assertFalse(res, msg="Non admin user can find somebody else's "
-                                  "Snapshot")
-
-        # Admin can find it
-        res = sqlalchemy_api.resource_exists(self.ctxt, model, snap.id)
-        self.assertTrue(res, msg="Admin cannot find the Snapshot")

@@ -24,7 +24,6 @@ from cinder import db
 from cinder import exception
 from cinder.i18n import _
 from cinder import objects
-from cinder.objects import fields
 from cinder import rpc
 from cinder import utils
 from cinder import volume
@@ -84,7 +83,7 @@ class AdminController(wsgi.Controller):
 
         def _clean_volume_attachment(context, id):
             attachments = (
-                db.volume_attachment_get_all_by_volume_id(context, id))
+                db.volume_attachment_get_used_by_volume_id(context, id))
             for attachment in attachments:
                 db.volume_detached(context, id, attachment.id)
             db.volume_admin_metadata_delete(context, id,
@@ -102,10 +101,12 @@ class AdminController(wsgi.Controller):
         notifier.info(context, self.collection + '.reset_status.start',
                       notifier_info)
 
-        # Not found exception will be handled at the wsgi level
-        self._update(context, id, update)
-        if update.get('attach_status') == 'detached':
-            _clean_volume_attachment(context, id)
+        try:
+            self._update(context, id, update)
+            if update.get('attach_status') == 'detached':
+                _clean_volume_attachment(context, id)
+        except exception.VolumeNotFound as e:
+            raise exc.HTTPNotFound(explanation=e.msg)
 
         notifier.info(context, self.collection + '.reset_status.end',
                       notifier_info)
@@ -117,8 +118,10 @@ class AdminController(wsgi.Controller):
         """Delete a resource, bypassing the check that it must be available."""
         context = req.environ['cinder.context']
         self.authorize(context, 'force_delete')
-        # Not found exception will be handled at the wsgi level
-        resource = self._get(context, id)
+        try:
+            resource = self._get(context, id)
+        except exception.VolumeNotFound as e:
+            raise exc.HTTPNotFound(explanation=e.msg)
         self._delete(context, resource, force=True)
         return webob.Response(status_int=202)
 
@@ -189,8 +192,10 @@ class VolumeAdminController(AdminController):
         """Roll back a bad detach after the volume been disconnected."""
         context = req.environ['cinder.context']
         self.authorize(context, 'force_detach')
-        # Not found exception will be handled at the wsgi level
-        volume = self._get(context, id)
+        try:
+            volume = self._get(context, id)
+        except exception.VolumeNotFound as e:
+            raise exc.HTTPNotFound(explanation=e.msg)
         try:
             connector = body['os-force_detach'].get('connector', None)
         except KeyError:
@@ -226,8 +231,10 @@ class VolumeAdminController(AdminController):
         """Migrate a volume to the specified host."""
         context = req.environ['cinder.context']
         self.authorize(context, 'migrate_volume')
-        # Not found exception will be handled at the wsgi level
-        volume = self._get(context, id)
+        try:
+            volume = self._get(context, id)
+        except exception.VolumeNotFound as e:
+            raise exc.HTTPNotFound(explanation=e.msg)
         params = body['os-migrate_volume']
         try:
             host = params['host']
@@ -244,16 +251,20 @@ class VolumeAdminController(AdminController):
         """Complete an in-progress migration."""
         context = req.environ['cinder.context']
         self.authorize(context, 'migrate_volume_completion')
-        # Not found exception will be handled at the wsgi level
-        volume = self._get(context, id)
+        try:
+            volume = self._get(context, id)
+        except exception.VolumeNotFound as e:
+            raise exc.HTTPNotFound(explanation=e.msg)
         params = body['os-migrate_volume_completion']
         try:
             new_volume_id = params['new_volume']
         except KeyError:
             raise exc.HTTPBadRequest(
                 explanation=_("Must specify 'new_volume'"))
-        # Not found exception will be handled at the wsgi level
-        new_volume = self._get(context, new_volume_id)
+        try:
+            new_volume = self._get(context, new_volume_id)
+        except exception.VolumeNotFound as e:
+            raise exc.HTTPNotFound(explanation=e.msg)
         error = params.get('error', False)
         ret = self.volume_api.migrate_volume_completion(context, volume,
                                                         new_volume, error)
@@ -264,7 +275,6 @@ class SnapshotAdminController(AdminController):
     """AdminController for Snapshots."""
 
     collection = 'snapshots'
-    valid_status = fields.SnapshotStatus.ALL
 
     def _update(self, *args, **kwargs):
         context = args[0]
@@ -311,9 +321,11 @@ class BackupAdminController(AdminController):
         notifier.info(context, self.collection + '.reset_status.start',
                       notifier_info)
 
-        # Not found exception will be handled at the wsgi level
-        self.backup_api.reset_status(context=context, backup_id=id,
-                                     status=update['status'])
+        try:
+            self.backup_api.reset_status(context=context, backup_id=id,
+                                         status=update['status'])
+        except exception.BackupNotFound as e:
+            raise exc.HTTPNotFound(explanation=e.msg)
         return webob.Response(status_int=202)
 
 
@@ -322,6 +334,7 @@ class Admin_actions(extensions.ExtensionDescriptor):
 
     name = "AdminActions"
     alias = "os-admin-actions"
+    namespace = "http://docs.openstack.org/volume/ext/admin-actions/api/v1.1"
     updated = "2012-08-25T00:00:00+00:00"
 
     def get_controller_extensions(self):

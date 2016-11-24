@@ -14,7 +14,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import collections
 import hashlib
 import inspect
 import json
@@ -29,10 +28,8 @@ from oslo_utils import units
 import six
 
 from cinder import compute
-from cinder import coordination
 from cinder import db
 from cinder import exception
-from cinder.objects import fields
 from cinder import utils
 from cinder.i18n import _, _LE, _LI, _LW
 from cinder.image import image_utils
@@ -40,12 +37,11 @@ from cinder.volume import driver
 
 LOG = logging.getLogger(__name__)
 
-
 nas_opts = [
-    cfg.StrOpt('nas_host',
+    # TODO(eharney): deprecate nas_ip and change this to nas_host
+    cfg.StrOpt('nas_ip',
                default='',
-               help='IP address or Hostname of NAS system.',
-               deprecated_name='nas_ip'),
+               help='IP address or Hostname of NAS system.'),
     cfg.StrOpt('nas_login',
                default='admin',
                help='User name to connect to NAS system.'),
@@ -105,7 +101,6 @@ CONF.register_opts(nas_opts)
 CONF.register_opts(volume_opts)
 
 
-# TODO(bluex): remove when drivers stop using it
 def locked_volume_id_operation(f, external=False):
     """Lock decorator for volume operations.
 
@@ -121,9 +116,9 @@ def locked_volume_id_operation(f, external=False):
         call_args = inspect.getcallargs(f, inst, *args, **kwargs)
 
         if call_args.get('volume'):
-            volume_id = call_args['volume'].id
+            volume_id = call_args['volume']['id']
         elif call_args.get('snapshot'):
-            volume_id = call_args['snapshot'].volume.id
+            volume_id = call_args['snapshot']['volume']['id']
         else:
             err_msg = _('The decorated method must accept either a volume or '
                         'a snapshot object')
@@ -160,17 +155,16 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
         """Just to override parent behavior."""
         pass
 
-    @utils.trace
     def initialize_connection(self, volume, connector):
         """Allow connection to connector and return connection info.
 
         :param volume: volume reference
         :param connector: connector reference
         """
-        data = {'export': volume.provider_location,
-                'name': volume.name}
-        if volume.provider_location in self.shares:
-            data['options'] = self.shares[volume.provider_location]
+        data = {'export': volume['provider_location'],
+                'name': volume['name']}
+        if volume['provider_location'] in self.shares:
+            data['options'] = self.shares[volume['provider_location']]
         return {
             'driver_volume_type': self.driver_volume_type,
             'data': data,
@@ -228,7 +222,6 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
                   " mount_point_base.")
         return None
 
-    @utils.trace
     def create_volume(self, volume):
         """Creates a volume.
 
@@ -237,13 +230,13 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
         """
         self._ensure_shares_mounted()
 
-        volume.provider_location = self._find_share(volume.size)
+        volume['provider_location'] = self._find_share(volume['size'])
 
-        LOG.info(_LI('casted to %s'), volume.provider_location)
+        LOG.info(_LI('casted to %s'), volume['provider_location'])
 
         self._do_create_volume(volume)
 
-        return {'provider_location': volume.provider_location}
+        return {'provider_location': volume['provider_location']}
 
     def _do_create_volume(self, volume):
         """Create a volume on given remote share.
@@ -251,7 +244,7 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
         :param volume: volume reference
         """
         volume_path = self.local_path(volume)
-        volume_size = volume.size
+        volume_size = volume['size']
 
         if getattr(self.configuration,
                    self.driver_prefix + '_sparsed_volumes'):
@@ -280,19 +273,18 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
 
         LOG.debug('Available shares %s', self._mounted_shares)
 
-    @utils.trace
     def delete_volume(self, volume):
         """Deletes a logical volume.
 
         :param volume: volume reference
         """
-        if not volume.provider_location:
+        if not volume['provider_location']:
             LOG.warning(_LW('Volume %s does not have '
                             'provider_location specified, '
-                            'skipping'), volume.name)
+                            'skipping'), volume['name'])
             return
 
-        self._ensure_share_mounted(volume.provider_location)
+        self._ensure_share_mounted(volume['provider_location'])
 
         mounted_path = self.local_path(volume)
 
@@ -300,7 +292,7 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
 
     def ensure_export(self, ctx, volume):
         """Synchronously recreates an export for a logical volume."""
-        self._ensure_share_mounted(volume.provider_location)
+        self._ensure_share_mounted(volume['provider_location'])
 
     def create_export(self, ctx, volume, connector):
         """Exports the volume.
@@ -393,9 +385,9 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
 
         :param volume: volume reference
         """
-        remotefs_share = volume.provider_location
+        remotefs_share = volume['provider_location']
         return os.path.join(self._get_mount_point_for_share(remotefs_share),
-                            volume.name)
+                            volume['name'])
 
     def copy_image_to_volume(self, context, volume, image_service, image_id):
         """Fetch the image from image_service and write it to the volume."""
@@ -406,7 +398,7 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
                                  image_id,
                                  self.local_path(volume),
                                  self.configuration.volume_dd_blocksize,
-                                 size=volume.size,
+                                 size=volume['size'],
                                  run_as_root=run_as_root)
 
         # NOTE (leseb): Set the virtual size of the image
@@ -416,16 +408,16 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
         # thus the initial 'size' parameter is not honored
         # this sets the size to the one asked in the first place by the user
         # and then verify the final virtual size
-        image_utils.resize_image(self.local_path(volume), volume.size,
+        image_utils.resize_image(self.local_path(volume), volume['size'],
                                  run_as_root=run_as_root)
 
         data = image_utils.qemu_img_info(self.local_path(volume),
                                          run_as_root=run_as_root)
         virt_size = data.virtual_size / units.Gi
-        if virt_size != volume.size:
+        if virt_size != volume['size']:
             raise exception.ImageUnacceptable(
                 image_id=image_id,
-                reason=(_("Expected volume size was %d") % volume.size)
+                reason=(_("Expected volume size was %d") % volume['size'])
                 + (_(" but size is now %d") % virt_size))
 
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
@@ -443,19 +435,19 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
     def _load_shares_config(self, share_file=None):
         self.shares = {}
 
-        if all((self.configuration.nas_host,
+        if all((self.configuration.nas_ip,
                 self.configuration.nas_share_path)):
-            LOG.debug('Using nas_host and nas_share_path configuration.')
+            LOG.debug('Using nas_ip and nas_share_path configuration.')
 
-            nas_host = self.configuration.nas_host
+            nas_ip = self.configuration.nas_ip
             nas_share_path = self.configuration.nas_share_path
 
-            share_address = '%s:%s' % (nas_host, nas_share_path)
+            share_address = '%s:%s' % (nas_ip, nas_share_path)
 
             if not re.match(self.SHARE_FORMAT_REGEX, share_address):
                 msg = (_("Share %s ignored due to invalid format. Must "
                          "be of form address:/export. Please check the "
-                         "nas_host and nas_share_path settings."),
+                         "nas_ip and nas_share_path settings."),
                        share_address)
                 raise exception.InvalidConfigurationValue(msg)
 
@@ -564,7 +556,7 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
         NAS file operations. This base method will set the NAS security
         options to false.
         """
-        doc_html = "http://docs.openstack.org/admin-guide" \
+        doc_html = "http://docs.openstack.org/admin-guide-cloud" \
                    "/blockstorage_nfs_backend.html"
         self.configuration.nas_secure_file_operations = 'false'
         LOG.warning(_LW("The NAS file operations will be run as root: "
@@ -632,41 +624,39 @@ class RemoteFSDriver(driver.LocalVD, driver.TransferVD, driver.BaseVD):
         return nas_option
 
 
-class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
+class RemoteFSSnapDriver(RemoteFSDriver, driver.SnapshotVD):
     """Base class for remotefs drivers implementing qcow2 snapshots.
 
        Driver must implement:
          _local_volume_dir(self, volume)
     """
 
-    _VALID_IMAGE_EXTENSIONS = []
-
     def __init__(self, *args, **kwargs):
         self._remotefsclient = None
         self.base = None
         self._nova = None
-        super(RemoteFSSnapDriverBase, self).__init__(*args, **kwargs)
+        super(RemoteFSSnapDriver, self).__init__(*args, **kwargs)
 
     def do_setup(self, context):
-        super(RemoteFSSnapDriverBase, self).do_setup(context)
+        super(RemoteFSSnapDriver, self).do_setup(context)
 
         self._nova = compute.API()
 
     def _local_volume_dir(self, volume):
-        share = volume.provider_location
+        share = volume['provider_location']
         local_dir = self._get_mount_point_for_share(share)
         return local_dir
 
     def _local_path_volume(self, volume):
         path_to_disk = os.path.join(
             self._local_volume_dir(volume),
-            volume.name)
+            volume['name'])
 
         return path_to_disk
 
     def _get_new_snap_path(self, snapshot):
-        vol_path = self.local_path(snapshot.volume)
-        snap_path = '%s.%s' % (vol_path, snapshot.id)
+        vol_path = self.local_path(snapshot['volume'])
+        snap_path = '%s.%s' % (vol_path, snapshot['id'])
         return snap_path
 
     def _local_path_volume_info(self, volume):
@@ -699,18 +689,11 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
         if info.image:
             info.image = os.path.basename(info.image)
         if info.backing_file:
-            if self._VALID_IMAGE_EXTENSIONS:
-                valid_ext = r'(\.(%s))?' % '|'.join(
-                    self._VALID_IMAGE_EXTENSIONS)
-            else:
-                valid_ext = ''
-
             backing_file_template = \
                 "(%(basedir)s/[0-9a-f]+/)?%" \
-                "(volname)s(.(tmp-snap-)?[0-9a-f-]+)?%(valid_ext)s$" % {
+                "(volname)s(.(tmp-snap-)?[0-9a-f-]+)?$" % {
                     'basedir': basedir,
-                    'volname': volume_name,
-                    'valid_ext': valid_ext,
+                    'volname': volume_name
                 }
             if not re.match(backing_file_template, info.backing_file):
                 msg = _("File %(path)s has invalid backing file "
@@ -747,24 +730,6 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
 
         return json.loads(self._read_file(info_path))
 
-    def _get_higher_image_path(self, snapshot):
-        volume = snapshot.volume
-        info_path = self._local_path_volume_info(volume)
-        snap_info = self._read_info_file(info_path)
-
-        snapshot_file = snap_info[snapshot.id]
-        active_file = self.get_active_image_from_info(volume)
-        active_file_path = os.path.join(self._local_volume_dir(volume),
-                                        active_file)
-        backing_chain = self._get_backing_chain_for_path(
-            volume, active_file_path)
-        higher_file = next((os.path.basename(f['filename'])
-                            for f in backing_chain
-                            if f.get('backing-filename', '') ==
-                            snapshot_file),
-                           None)
-        return higher_file
-
     def _get_backing_chain_for_path(self, volume, path):
         """Returns list of dicts containing backing-chain information.
 
@@ -781,7 +746,7 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
 
         output = []
 
-        info = self._qemu_img_info(path, volume.name)
+        info = self._qemu_img_info(path, volume['name'])
         new_info = {}
         new_info['filename'] = os.path.basename(path)
         new_info['backing-filename'] = info.backing_file
@@ -791,7 +756,7 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
         while new_info['backing-filename']:
             filename = new_info['backing-filename']
             path = os.path.join(self._local_volume_dir(volume), filename)
-            info = self._qemu_img_info(path, volume.name)
+            info = self._qemu_img_info(path, volume['name'])
             backing_filename = info.backing_file
             new_info = {}
             new_info['filename'] = filename
@@ -870,13 +835,13 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
         active_file = self.get_active_image_from_info(volume)
         active_file_path = os.path.join(self._local_volume_dir(volume),
                                         active_file)
-        info = self._qemu_img_info(active_file_path, volume.name)
+        info = self._qemu_img_info(active_file_path, volume['name'])
         backing_file = info.backing_file
 
         root_file_fmt = info.file_format
 
         tmp_params = {
-            'prefix': '%s.temp_image.%s' % (volume.id, image_meta['id']),
+            'prefix': '%s.temp_image.%s' % (volume['id'], image_meta['id']),
             'suffix': '.img'
         }
         with image_utils.temporary_file(**tmp_params) as temp_path:
@@ -910,64 +875,52 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
 
     def _create_cloned_volume(self, volume, src_vref):
         LOG.info(_LI('Cloning volume %(src)s to volume %(dst)s'),
-                 {'src': src_vref.id,
-                  'dst': volume.id})
+                 {'src': src_vref['id'],
+                  'dst': volume['id']})
 
-        if src_vref.status != 'available':
+        if src_vref['status'] != 'available':
             msg = _("Volume status must be 'available'.")
             raise exception.InvalidVolume(msg)
 
-        volume_name = CONF.volume_name_template % volume.id
+        volume_name = CONF.volume_name_template % volume['id']
 
-        # Create fake volume and snapshot objects
-        vol_attrs = ['provider_location', 'size', 'id', 'name', 'status',
-                     'volume_type', 'metadata']
-        Volume = collections.namedtuple('Volume', vol_attrs)
-
-        snap_attrs = ['volume_name', 'volume_size', 'name',
-                      'volume_id', 'id', 'volume']
-        Snapshot = collections.namedtuple('Snapshot', snap_attrs)
-
-        volume_info = Volume(provider_location=src_vref.provider_location,
-                             size=src_vref.size,
-                             id=volume.id,
-                             name=volume_name,
-                             status=src_vref.status,
-                             volume_type=src_vref.volume_type,
-                             metadata=src_vref.metadata)
-
-        temp_snapshot = Snapshot(volume_name=volume_name,
-                                 volume_size=src_vref.size,
-                                 name='clone-snap-%s' % src_vref.id,
-                                 volume_id=src_vref.id,
-                                 id='tmp-snap-%s' % src_vref.id,
-                                 volume=src_vref)
-
+        volume_info = {'provider_location': src_vref['provider_location'],
+                       'size': src_vref['size'],
+                       'id': volume['id'],
+                       'name': volume_name,
+                       'status': src_vref['status']}
+        temp_snapshot = {'volume_name': volume_name,
+                         'size': src_vref['size'],
+                         'volume_size': src_vref['size'],
+                         'name': 'clone-snap-%s' % src_vref['id'],
+                         'volume_id': src_vref['id'],
+                         'id': 'tmp-snap-%s' % src_vref['id'],
+                         'volume': src_vref}
         self._create_snapshot(temp_snapshot)
         try:
             self._copy_volume_from_snapshot(temp_snapshot,
                                             volume_info,
-                                            volume.size)
+                                            volume['size'])
 
         finally:
             self._delete_snapshot(temp_snapshot)
 
-        return {'provider_location': src_vref.provider_location}
+        return {'provider_location': src_vref['provider_location']}
 
     def _delete_stale_snapshot(self, snapshot):
-        info_path = self._local_path_volume_info(snapshot.volume)
+        info_path = self._local_path_volume_info(snapshot['volume'])
         snap_info = self._read_info_file(info_path)
 
-        snapshot_file = snap_info[snapshot.id]
-        active_file = self.get_active_image_from_info(snapshot.volume)
+        snapshot_file = snap_info[snapshot['id']]
+        active_file = self.get_active_image_from_info(snapshot['volume'])
         snapshot_path = os.path.join(
-            self._local_volume_dir(snapshot.volume), snapshot_file)
+            self._local_volume_dir(snapshot['volume']), snapshot_file)
         if (snapshot_file == active_file):
             return
 
-        LOG.info(_LI('Deleting stale snapshot: %s'), snapshot.id)
+        LOG.info(_LI('Deleting stale snapshot: %s'), snapshot['id'])
         self._delete(snapshot_path)
-        del(snap_info[snapshot.id])
+        del(snap_info[snapshot['id']])
         self._write_info_file(info_path, snap_info)
 
     def _delete_snapshot(self, snapshot):
@@ -985,39 +938,39 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
 
         """
 
-        LOG.debug('Deleting snapshot %s:', snapshot.id)
+        LOG.debug('Deleting snapshot %s:', snapshot['id'])
 
-        volume_status = snapshot.volume.status
+        volume_status = snapshot['volume']['status']
         if volume_status not in ['available', 'in-use']:
             msg = _('Volume status must be "available" or "in-use".')
             raise exception.InvalidVolume(msg)
 
-        vol_path = self._local_volume_dir(snapshot.volume)
+        vol_path = self._local_volume_dir(snapshot['volume'])
         self._ensure_share_writable(vol_path)
 
         # Determine the true snapshot file for this snapshot
         # based on the .info file
-        info_path = self._local_path_volume_info(snapshot.volume)
+        info_path = self._local_path_volume_info(snapshot['volume'])
         snap_info = self._read_info_file(info_path, empty_if_missing=True)
 
-        if snapshot.id not in snap_info:
+        if snapshot['id'] not in snap_info:
             # If snapshot info file is present, but snapshot record does not
             # exist, do not attempt to delete.
             # (This happens, for example, if snapshot_create failed due to lack
             # of permission to write to the share.)
             LOG.info(_LI('Snapshot record for %s is not present, allowing '
-                         'snapshot_delete to proceed.'), snapshot.id)
+                         'snapshot_delete to proceed.'), snapshot['id'])
             return
 
-        snapshot_file = snap_info[snapshot.id]
+        snapshot_file = snap_info[snapshot['id']]
         LOG.debug('snapshot_file for this snap is: %s', snapshot_file)
         snapshot_path = os.path.join(
-            self._local_volume_dir(snapshot.volume),
+            self._local_volume_dir(snapshot['volume']),
             snapshot_file)
 
         snapshot_path_img_info = self._qemu_img_info(
             snapshot_path,
-            snapshot.volume.name)
+            snapshot['volume']['name'])
 
         base_file = snapshot_path_img_info.backing_file
         if base_file is None:
@@ -1032,14 +985,15 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
 
         base_path = os.path.join(vol_path, base_file)
         base_file_img_info = self._qemu_img_info(base_path,
-                                                 snapshot.volume.name)
+                                                 snapshot['volume']['name'])
 
         # Find what file has this as its backing file
-        active_file = self.get_active_image_from_info(snapshot.volume)
+        active_file = self.get_active_image_from_info(snapshot['volume'])
+        active_file_path = os.path.join(vol_path, active_file)
 
         if volume_status == 'in-use':
             # Online delete
-            context = snapshot._context
+            context = snapshot['context']
 
             new_base_file = base_file_img_info.backing_file
 
@@ -1082,9 +1036,15 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
             #   exist, not   | committed down) |  exist, needs  |
             #   used here)   |                 |   ptr update)  |
 
+            backing_chain = self._get_backing_chain_for_path(
+                snapshot['volume'], active_file_path)
             # This file is guaranteed to exist since we aren't operating on
             # the active file.
-            higher_file = self._get_higher_image_path(snapshot)
+            higher_file = next((os.path.basename(f['filename'])
+                                for f in backing_chain
+                                if f.get('backing-filename', '') ==
+                                snapshot_file),
+                               None)
             if higher_file is None:
                 msg = _('No file found with %s as backing file.') %\
                     snapshot_file
@@ -1106,7 +1066,7 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
             self._rebase_img(higher_file_path, base_file, base_file_fmt)
 
         # Remove snapshot_file from info
-        del(snap_info[snapshot.id])
+        del(snap_info[snapshot['id']])
         self._write_info_file(info_path, snap_info)
 
     def _create_volume_from_snapshot(self, volume, snapshot):
@@ -1115,21 +1075,21 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
         Snapshot must not be the active snapshot. (offline)
         """
 
-        if snapshot.status != 'available':
+        if snapshot['status'] != 'available':
             msg = _('Snapshot status must be "available" to clone.')
             raise exception.InvalidSnapshot(msg)
 
         self._ensure_shares_mounted()
 
-        volume.provider_location = self._find_share(volume.size)
+        volume['provider_location'] = self._find_share(volume['size'])
 
         self._do_create_volume(volume)
 
         self._copy_volume_from_snapshot(snapshot,
                                         volume,
-                                        volume.size)
+                                        volume['size'])
 
-        return {'provider_location': volume.provider_location}
+        return {'provider_location': volume['provider_location']}
 
     def _copy_volume_from_snapshot(self, snapshot, volume, volume_size):
         raise NotImplementedError()
@@ -1143,19 +1103,18 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
             new qcow2 file
         :param new_snap_path: filename of new qcow2 file
         """
+
         backing_path_full_path = os.path.join(
-            self._local_volume_dir(snapshot.volume),
+            self._local_volume_dir(snapshot['volume']),
             backing_filename)
-        info = self._qemu_img_info(backing_path_full_path,
-                                   snapshot.volume.name)
-        backing_fmt = info.file_format
 
         command = ['qemu-img', 'create', '-f', 'qcow2', '-o',
-                   'backing_file=%s,backing_fmt=%s' %
-                   (backing_path_full_path, backing_fmt),
-                   new_snap_path,
-                   "%dG" % snapshot.volume.size]
+                   'backing_file=%s' % backing_path_full_path, new_snap_path]
         self._execute(*command, run_as_root=self._execute_as_root)
+
+        info = self._qemu_img_info(backing_path_full_path,
+                                   snapshot['volume']['name'])
+        backing_fmt = info.file_format
 
         command = ['qemu-img', 'rebase', '-u',
                    '-b', backing_filename,
@@ -1269,16 +1228,16 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
               info file: { 'active': 'volume-1234' }  (* changed!)
         """
 
-        status = snapshot.volume.status
+        status = snapshot['volume']['status']
         if status not in ['available', 'in-use']:
             msg = _('Volume status must be "available" or "in-use"'
                     ' for snapshot. (is %s)') % status
             raise exception.InvalidVolume(msg)
 
-        info_path = self._local_path_volume_info(snapshot.volume)
+        info_path = self._local_path_volume_info(snapshot['volume'])
         snap_info = self._read_info_file(info_path, empty_if_missing=True)
         backing_filename = self.get_active_image_from_info(
-            snapshot.volume)
+            snapshot['volume'])
         new_snap_path = self._get_new_snap_path(snapshot)
 
         if status == 'in-use':
@@ -1291,13 +1250,13 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
                                      new_snap_path)
 
         snap_info['active'] = os.path.basename(new_snap_path)
-        snap_info[snapshot.id] = os.path.basename(new_snap_path)
+        snap_info[snapshot['id']] = os.path.basename(new_snap_path)
         self._write_info_file(info_path, snap_info)
 
     def _create_snapshot_online(self, snapshot, backing_filename,
                                 new_snap_path):
         # Perform online snapshot via Nova
-        context = snapshot._context
+        context = snapshot['context']
 
         self._do_create_snapshot(snapshot,
                                  backing_filename,
@@ -1306,13 +1265,13 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
         connection_info = {
             'type': 'qcow2',
             'new_file': os.path.basename(new_snap_path),
-            'snapshot_id': snapshot.id
+            'snapshot_id': snapshot['id']
         }
 
         try:
             result = self._nova.create_volume_snapshot(
                 context,
-                snapshot.volume_id,
+                snapshot['volume_id'],
                 connection_info)
             LOG.debug('nova call result: %s', result)
         except Exception:
@@ -1326,31 +1285,30 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
         increment = 1
         timeout = 600
         while True:
-            s = db.snapshot_get(context, snapshot.id)
+            s = db.snapshot_get(context, snapshot['id'])
 
             LOG.debug('Status of snapshot %(id)s is now %(status)s',
                       {'id': snapshot['id'],
                        'status': s['status']})
 
-            if s['status'] == fields.SnapshotStatus.CREATING:
+            if s['status'] == 'creating':
                 if s['progress'] == '90%':
                     # Nova tasks completed successfully
                     break
 
                 time.sleep(increment)
                 seconds_elapsed += increment
-            elif s['status'] == fields.SnapshotStatus.ERROR:
+            elif s['status'] == 'error':
 
                 msg = _('Nova returned "error" status '
                         'while creating snapshot.')
                 raise exception.RemoteFSException(msg)
 
-            elif (s['status'] == fields.SnapshotStatus.DELETING or
-                  s['status'] == fields.SnapshotStatus.ERROR_DELETING):
+            elif s['status'] == 'deleting' or s['status'] == 'error_deleting':
                 msg = _('Snapshot %(id)s has been asked to be deleted while '
                         'waiting for it to become available. Perhaps a '
                         'concurrent request was made.') % {'id':
-                                                           snapshot.id}
+                                                           snapshot['id']}
                 raise exception.RemoteFSConcurrentRequest(msg)
 
             if 10 < seconds_elapsed <= 20:
@@ -1362,13 +1320,13 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
 
             if seconds_elapsed > timeout:
                 msg = _('Timed out while waiting for Nova update '
-                        'for creation of snapshot %s.') % snapshot.id
+                        'for creation of snapshot %s.') % snapshot['id']
                 raise exception.RemoteFSException(msg)
 
     def _delete_snapshot_online(self, context, snapshot, info):
         # Update info over the course of this method
         # active file never changes
-        info_path = self._local_path_volume_info(snapshot.volume)
+        info_path = self._local_path_volume(snapshot['volume']) + '.info'
         snap_info = self._read_info_file(info_path)
 
         if info['active_file'] == info['snapshot_file']:
@@ -1387,9 +1345,9 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
             delete_info = {'file_to_merge': new_base,
                            'merge_target_file': None,  # current
                            'type': 'qcow2',
-                           'volume_id': snapshot.volume.id}
+                           'volume_id': snapshot['volume']['id']}
 
-            del(snap_info[snapshot.id])
+            del(snap_info[snapshot['id']])
         else:
             # blockCommit snapshot into base
             # info['base'] <= snapshot_file
@@ -1399,14 +1357,14 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
             delete_info = {'file_to_merge': info['snapshot_file'],
                            'merge_target_file': info['base_file'],
                            'type': 'qcow2',
-                           'volume_id': snapshot.volume.id}
+                           'volume_id': snapshot['volume']['id']}
 
-            del(snap_info[snapshot.id])
+            del(snap_info[snapshot['id']])
 
         try:
             self._nova.delete_volume_snapshot(
                 context,
-                snapshot.id,
+                snapshot['id'],
                 delete_info)
         except Exception:
             LOG.exception(_LE('Call to Nova delete snapshot failed'))
@@ -1419,20 +1377,20 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
         increment = 1
         timeout = 7200
         while True:
-            s = db.snapshot_get(context, snapshot.id)
+            s = db.snapshot_get(context, snapshot['id'])
 
-            if s['status'] == fields.SnapshotStatus.DELETING:
+            if s['status'] == 'deleting':
                 if s['progress'] == '90%':
                     # Nova tasks completed successfully
                     break
                 else:
                     LOG.debug('status of snapshot %s is still "deleting"... '
-                              'waiting', snapshot.id)
+                              'waiting', snapshot['id'])
                     time.sleep(increment)
                     seconds_elapsed += increment
             else:
                 msg = _('Unable to delete snapshot %(id)s, '
-                        'status: %(status)s.') % {'id': snapshot.id,
+                        'status: %(status)s.') % {'id': snapshot['id'],
                                                   'status': s['status']}
                 raise exception.RemoteFSException(msg)
 
@@ -1446,7 +1404,7 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
             if seconds_elapsed > timeout:
                 msg = _('Timed out while waiting for Nova update '
                         'for deletion of snapshot %(id)s.') %\
-                    {'id': snapshot.id}
+                    {'id': snapshot['id']}
                 raise exception.RemoteFSException(msg)
 
         # Write info file updated above
@@ -1454,11 +1412,9 @@ class RemoteFSSnapDriverBase(RemoteFSDriver, driver.SnapshotVD):
 
         # Delete stale file
         path_to_delete = os.path.join(
-            self._local_volume_dir(snapshot.volume), file_to_delete)
+            self._local_volume_dir(snapshot['volume']), file_to_delete)
         self._execute('rm', '-f', path_to_delete, run_as_root=True)
 
-
-class RemoteFSSnapDriver(RemoteFSSnapDriverBase):
     @locked_volume_id_operation
     def create_snapshot(self, snapshot):
         """Apply locking to the create snapshot operation."""
@@ -1478,43 +1434,13 @@ class RemoteFSSnapDriver(RemoteFSSnapDriverBase):
     @locked_volume_id_operation
     def create_cloned_volume(self, volume, src_vref):
         """Creates a clone of the specified volume."""
-
         return self._create_cloned_volume(volume, src_vref)
 
     @locked_volume_id_operation
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
         """Copy the volume to the specified image."""
 
-        return self._copy_volume_to_image(context, volume, image_service,
-                                          image_meta)
-
-
-class RemoteFSSnapDriverDistributed(RemoteFSSnapDriverBase):
-    @coordination.synchronized('{self.driver_prefix}-{snapshot.volume.id}')
-    def create_snapshot(self, snapshot):
-        """Apply locking to the create snapshot operation."""
-
-        return self._create_snapshot(snapshot)
-
-    @coordination.synchronized('{self.driver_prefix}-{snapshot.volume.id}')
-    def delete_snapshot(self, snapshot):
-        """Apply locking to the delete snapshot operation."""
-
-        return self._delete_snapshot(snapshot)
-
-    @coordination.synchronized('{self.driver_prefix}-{volume.id}')
-    def create_volume_from_snapshot(self, volume, snapshot):
-        return self._create_volume_from_snapshot(volume, snapshot)
-
-    @coordination.synchronized('{self.driver_prefix}-{volume.id}')
-    def create_cloned_volume(self, volume, src_vref):
-        """Creates a clone of the specified volume."""
-
-        return self._create_cloned_volume(volume, src_vref)
-
-    @coordination.synchronized('{self.driver_prefix}-{volume.id}')
-    def copy_volume_to_image(self, context, volume, image_service, image_meta):
-        """Copy the volume to the specified image."""
-
-        return self._copy_volume_to_image(context, volume, image_service,
+        return self._copy_volume_to_image(context,
+                                          volume,
+                                          image_service,
                                           image_meta)

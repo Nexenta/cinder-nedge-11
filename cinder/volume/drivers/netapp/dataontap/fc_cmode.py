@@ -16,13 +16,16 @@
 Volume driver for NetApp Data ONTAP (C-mode) FibreChannel storage systems.
 """
 
-from cinder import interface
+from oslo_log import log as logging
+
 from cinder.volume import driver
 from cinder.volume.drivers.netapp.dataontap import block_cmode
 from cinder.zonemanager import utils as fczm_utils
 
 
-@interface.volumedriver
+LOG = logging.getLogger(__name__)
+
+
 class NetAppCmodeFibreChannelDriver(driver.BaseVD,
                                     driver.ConsistencyGroupVD,
                                     driver.ManageableVD,
@@ -32,10 +35,6 @@ class NetAppCmodeFibreChannelDriver(driver.BaseVD,
     """NetApp C-mode FibreChannel volume driver."""
 
     DRIVER_NAME = 'NetApp_FibreChannel_Cluster_direct'
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "NetApp_CI"
-    VERSION = block_cmode.NetAppBlockStorageCmodeLibrary.VERSION
 
     def __init__(self, *args, **kwargs):
         super(NetAppCmodeFibreChannelDriver, self).__init__(*args, **kwargs)
@@ -133,7 +132,3 @@ class NetAppCmodeFibreChannelDriver(driver.BaseVD,
         return self.library.create_consistencygroup_from_src(
             group, volumes, cgsnapshot=cgsnapshot, snapshots=snapshots,
             source_cg=source_cg, source_vols=source_vols)
-
-    def failover_host(self, context, volumes, secondary_id=None):
-        return self.library.failover_host(
-            context, volumes, secondary_id=secondary_id)

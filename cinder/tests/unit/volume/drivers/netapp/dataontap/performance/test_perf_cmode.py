@@ -43,17 +43,20 @@ class PerformanceCmodeLibraryTestCase(test.TestCase):
 
     def _set_up_fake_pools(self):
 
-        self.fake_volumes = {
-            'pool1': {
-                'netapp_aggregate': 'aggr1',
-            },
-            'pool2': {
-                'netapp_aggregate': 'aggr2',
-            },
-            'pool3': {
-                'netapp_aggregate': 'aggr2',
-            },
-        }
+        class test_volume(object):
+            self.id = None
+            self.aggr = None
+
+        volume1 = test_volume()
+        volume1.id = {'name': 'pool1'}
+        volume1.aggr = {'name': 'aggr1'}
+        volume2 = test_volume()
+        volume2.id = {'name': 'pool2'}
+        volume2.aggr = {'name': 'aggr2'}
+        volume3 = test_volume()
+        volume3.id = {'name': 'pool3'}
+        volume3.aggr = {'name': 'aggr2'}
+        self.fake_volumes = [volume1, volume2, volume3]
 
         self.fake_aggrs = set(['aggr1', 'aggr2', 'aggr3'])
         self.fake_nodes = set(['node1', 'node2'])
@@ -331,19 +334,20 @@ class PerformanceCmodeLibraryTestCase(test.TestCase):
 
         self.assertAlmostEqual(expected, result)
 
-    def test__update_for_failover(self):
-        self.mock_object(self.perf_library, 'update_performance_cache')
-        mock_client = mock.Mock(name='FAKE_ZAPI_CLIENT')
-
-        self.perf_library._update_for_failover(mock_client, self.fake_volumes)
-
-        self.assertEqual(mock_client, self.perf_library.zapi_client)
-        self.perf_library.update_performance_cache.assert_called_once_with(
-            self.fake_volumes)
-
     def test_get_aggregates_for_pools(self):
 
-        result = self.perf_library._get_aggregates_for_pools(self.fake_volumes)
+        class test_volume(object):
+            self.aggr = None
+
+        volume1 = test_volume()
+        volume1.aggr = {'name': 'aggr1'}
+        volume2 = test_volume()
+        volume2.aggr = {'name': 'aggr2'}
+        volume3 = test_volume()
+        volume3.aggr = {'name': 'aggr2'}
+        volumes = [volume1, volume2, volume3]
+
+        result = self.perf_library._get_aggregates_for_pools(volumes)
 
         expected_aggregate_names = set(['aggr1', 'aggr2'])
         self.assertEqual(expected_aggregate_names, result)

@@ -43,7 +43,6 @@ import six
 
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
-from cinder import interface
 from cinder.volume import driver
 from cinder.volume.drivers.vmware import datastore as hub
 from cinder.volume.drivers.vmware import exceptions as vmdk_exceptions
@@ -87,7 +86,7 @@ vmdk_opts = [
                help='Number of times VMware vCenter server API must be '
                     'retried upon connection related issues.'),
     cfg.FloatOpt('vmware_task_poll_interval',
-                 default=2.0,
+                 default=0.5,
                  help='The interval (in seconds) for polling remote tasks '
                       'invoked on VMware vCenter server.'),
     cfg.StrOpt('vmware_volume_folder',
@@ -208,7 +207,6 @@ class ImageDiskType(object):
                                               extra_spec_disk_type)
 
 
-@interface.volumedriver
 class VMwareVcVmdkDriver(driver.VolumeDriver):
     """Manage volumes on VMware vCenter server."""
 
@@ -220,9 +218,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     # 1.5.0 - restrict volume placement to specific vCenter clusters
     # 1.6.0 - support for manage existing
     VERSION = '1.6.0'
-
-    # ThirdaPartySystems wiki page
-    CI_WIKI_NAME = "VMware_CI"
 
     # Minimum supported vCenter version.
     MIN_SUPPORTED_VC_VERSION = dist_version.LooseVersion('5.1')
@@ -252,10 +247,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     @property
     def ds_sel(self):
         if not self._ds_sel:
-            max_objects = self.configuration.vmware_max_objects_retrieval
             self._ds_sel = hub.DatastoreSelector(self.volumeops,
-                                                 self.session,
-                                                 max_objects)
+                                                 self.session)
         return self._ds_sel
 
     def _validate_params(self):
@@ -502,51 +495,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         return (host_ref, resource_pool, folder, summary)
 
-    def _get_connection_info(self, volume, backing, connector):
-        connection_info = {'driver_volume_type': 'vmdk'}
-        connection_info['data'] = {
-            'volume': backing.value,
-            'volume_id': volume.id,
-            'name': volume.name,
-        }
-
-        # vmdk connector in os-brick needs additional connection info.
-        if 'platform' in connector and 'os_type' in connector:
-            connection_info['data']['vmdk_size'] = volume['size'] * units.Gi
-
-            vmdk_path = self.volumeops.get_vmdk_path(backing)
-            connection_info['data']['vmdk_path'] = vmdk_path
-
-            datastore = self.volumeops.get_datastore(backing)
-            connection_info['data']['datastore'] = datastore.value
-
-            datacenter = self.volumeops.get_dc(backing)
-            connection_info['data']['datacenter'] = datacenter.value
-
-            config = self.configuration
-            vmdk_connector_config = {
-                'vmware_host_ip': config.vmware_host_ip,
-                'vmware_host_port': config.vmware_host_port,
-                'vmware_host_username': config.vmware_host_username,
-                'vmware_host_password': config.vmware_host_password,
-                'vmware_api_retry_count': config.vmware_api_retry_count,
-                'vmware_task_poll_interval': config.vmware_task_poll_interval,
-                'vmware_ca_file': config.vmware_ca_file,
-                'vmware_insecure': config.vmware_insecure,
-                'vmware_tmp_dir': config.vmware_tmp_dir,
-                'vmware_image_transfer_timeout_secs':
-                    config.vmware_image_transfer_timeout_secs,
-            }
-            connection_info['data']['config'] = vmdk_connector_config
-
-        LOG.debug("Returning connection_info (volume: '%(volume)s', volume_id:"
-                  " '%(volume_id)s') for connector: %(connector)s.",
-                  {'volume': connection_info['data']['volume'],
-                   'volume_id': volume.id,
-                   'connector': connector})
-
-        return connection_info
-
     def _initialize_connection(self, volume, connector):
         """Get information of volume's backing.
 
@@ -556,7 +504,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         :param connector: Connector information
         :return: Return connection information
         """
-        backing = self.volumeops.get_backing(volume.name)
+        connection_info = {'driver_volume_type': 'vmdk'}
+
+        backing = self.volumeops.get_backing(volume['name'])
         if 'instance' in connector:
             # The instance exists
             instance = vim_util.get_moref(connector['instance'],
@@ -569,7 +519,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 # Create a backing in case it does not exist under the
                 # host managing the instance.
                 LOG.info(_LI("There is no backing for the volume: %s. "
-                             "Need to create one."), volume.name)
+                             "Need to create one."), volume['name'])
                 backing = self._create_backing(volume, host)
             else:
                 # Relocate volume is necessary
@@ -582,25 +532,32 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 # Create a backing in case it does not exist. It is a bad use
                 # case to boot from an empty volume.
                 LOG.warning(_LW("Trying to boot from an empty volume: %s."),
-                            volume.name)
+                            volume['name'])
                 # Create backing
                 backing = self._create_backing(volume)
 
-        return self._get_connection_info(volume, backing, connector)
+        # Set volume ID and backing moref value and name.
+        connection_info['data'] = {'volume': backing.value,
+                                   'volume_id': volume['id'],
+                                   'name': volume['name']}
+
+        LOG.info(_LI("Returning connection_info: %(info)s for volume: "
+                     "%(volume)s with connector: %(connector)s."),
+                 {'info': connection_info,
+                  'volume': volume['name'],
+                  'connector': connector})
+
+        return connection_info
 
     def initialize_connection(self, volume, connector):
         """Allow connection to connector and return connection info.
 
         The implementation returns the following information:
-
-        .. code-block:: json
-
-            {
-                'driver_volume_type': 'vmdk'
-                'data': {'volume': $VOLUME_MOREF_VALUE
-                         'volume_id': $VOLUME_ID
-                        }
-            }
+        {'driver_volume_type': 'vmdk'
+         'data': {'volume': $VOLUME_MOREF_VALUE
+                  'volume_id': $VOLUME_ID
+                 }
+        }
 
         :param volume: Volume object
         :param connector: Connector information
@@ -722,6 +679,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         LOG.debug("Copying image: %(image_id)s to %(path)s.",
                   {'image_id': image_id,
                    'path': upload_file_path})
+        # TODO(vbala): add config option to override non-default port
 
         # ca_file is used for verifying vCenter certificate if it is set.
         # If ca_file is unset and insecure is False, the default CA truststore
@@ -1128,11 +1086,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         metadata = image_service.show(context, image_id)
         VMwareVcVmdkDriver._validate_disk_format(metadata['disk_format'])
 
-        # Validate container format; only 'bare' and 'ova' are supported.
+        # Validate container format; only 'bare' is supported currently.
         container_format = metadata.get('container_format')
-        if (container_format and container_format not in ['bare', 'ova']):
-            msg = _("Container format: %s is unsupported, only 'bare' and "
-                    "'ova' are supported.") % container_format
+        if (container_format and container_format != 'bare'):
+            msg = _("Container format: %s is unsupported by the VMDK driver, "
+                    "only 'bare' is supported.") % container_format
             LOG.error(msg)
             raise exception.ImageUnacceptable(image_id=image_id, reason=msg)
 
@@ -1194,14 +1152,15 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         has a vmdk disk type of "streamOptimized" that can only be downloaded
         using the HttpNfc API.
         Steps followed are:
-        1. Get the name of the vmdk file which the volume points to right
-        now. Can be a chain of snapshots, so we need to know the last in the
-        chain.
+        1. Get the name of the vmdk file which the volume points to right now.
+           Can be a chain of snapshots, so we need to know the last in the
+           chain.
         2. Use Nfc APIs to upload the contents of the vmdk file to glance.
         """
 
         # if volume is attached raise exception
-        if self._in_use(volume):
+        if (volume['volume_attachment'] and
+                len(volume['volume_attachment']) > 0):
             msg = _("Upload to glance of attached volume is not supported.")
             LOG.error(msg)
             raise exception.InvalidVolume(msg)
@@ -1235,7 +1194,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                     vmdk_file_path=vmdk_file_path,
                                     vmdk_size=volume['size'] * units.Gi,
                                     image_name=image_meta['name'],
-                                    image_version=1)
+                                    image_version=1,
+                                    is_public=image_meta['is_public'])
         LOG.info(_LI("Done copying volume %(vol)s to a new image %(img)s"),
                  {'vol': volume['name'], 'img': image_meta['name']})
 
@@ -1332,9 +1292,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 req[hub.DatastoreSelector.PROFILE_NAME] = new_profile
 
             # Select datastore satisfying the requirements.
-            try:
-                best_candidate = self._select_datastore(req)
-            except vmdk_exceptions.NoValidDatastoreException:
+            best_candidate = self.ds_sel.select_datastore(req)
+            if not best_candidate:
                 # No candidate datastores; can't retype.
                 LOG.warning(_LW("There are no datastores matching new "
                                 "requirements; can't retype volume: %s."),
@@ -1747,7 +1706,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         :param volume: Cinder volume to manage
         :param existing_ref: Driver-specific information used to identify a
-                             volume
+        volume
         """
         (_vm, disk) = self._get_existing(existing_ref)
         return int(math.ceil(disk.capacityInKB * units.Ki / float(units.Gi)))
@@ -1760,7 +1719,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         :param volume: Cinder volume to manage
         :param existing_ref: Driver-specific information used to identify a
-                             volume
+        volume
         """
         (vm, disk) = self._get_existing(existing_ref)
 
@@ -1792,14 +1751,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             profile_id,
             dest_path.get_descriptor_ds_file_path())
         self.volumeops.update_backing_disk_uuid(backing, volume['id'])
-
-    def unmanage(self, volume):
-        backing = self.volumeops.get_backing(volume['name'])
-        if backing:
-            extra_config = self._get_extra_config(volume)
-            for key in extra_config:
-                extra_config[key] = ''
-            self.volumeops.update_backing_extra_config(backing, extra_config)
 
     @property
     def session(self):
@@ -1853,12 +1804,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                     '%s is not allowed.') % self.MIN_SUPPORTED_VC_VERSION
             LOG.error(msg)
             raise exceptions.VMwareDriverException(message=msg)
-        elif vc_version == self.MIN_SUPPORTED_VC_VERSION:
-            # TODO(vbala): enforce vCenter version 5.5 in Ocata release.
-            LOG.warning(_LW('Running Cinder with a VMware vCenter version '
-                            '%s is deprecated. The minimum required version '
-                            'of vCenter server will be raised to 5.5 in the '
-                            '10.0.0 release.'), self.MIN_SUPPORTED_VC_VERSION)
 
     def do_setup(self, context):
         """Any initialization the volume driver does while starting."""
@@ -1884,8 +1829,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         # TODO(vbala) remove properties: session, volumeops and ds_sel
         max_objects = self.configuration.vmware_max_objects_retrieval
         self._volumeops = volumeops.VMwareVolumeOps(self.session, max_objects)
-        self._ds_sel = hub.DatastoreSelector(
-            self.volumeops, self.session, max_objects)
+        self._ds_sel = hub.DatastoreSelector(self.volumeops, self.session)
 
         # Get clusters to be used for backing VM creation.
         cluster_names = self.configuration.vmware_cluster_name

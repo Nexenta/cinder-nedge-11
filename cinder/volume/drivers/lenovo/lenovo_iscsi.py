@@ -14,12 +14,10 @@
 #    under the License.
 #
 
-from cinder import interface
 from cinder.volume.drivers.dothill import dothill_iscsi
 from cinder.volume.drivers.lenovo import lenovo_common
 
 
-@interface.volumedriver
 class LenovoISCSIDriver(dothill_iscsi.DotHillISCSIDriver):
     """OpenStack iSCSI cinder drivers for Lenovo Storage arrays.
 
@@ -29,9 +27,6 @@ class LenovoISCSIDriver(dothill_iscsi.DotHillISCSIDriver):
     """
 
     VERSION = "1.0"
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Vedams-LenovoStorage_FCISCSI_CI"
 
     def __init__(self, *args, **kwargs):
         super(LenovoISCSIDriver, self).__init__(*args, **kwargs)

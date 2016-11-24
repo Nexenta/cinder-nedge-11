@@ -31,7 +31,6 @@ from cinder import context
 from cinder import exception
 from cinder.i18n import _, _LE, _LI
 from cinder.image import image_utils
-from cinder import interface
 from cinder.objects import fields
 from cinder import utils
 from cinder.volume import driver
@@ -106,7 +105,6 @@ def _sizestr(size_in_g):
     return '%sG' % size_in_g
 
 
-@interface.volumedriver
 class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
                  driver.LocalVD, driver.TransferVD,
                  driver.CloneableImageVD, driver.SnapshotVD,
@@ -123,9 +121,6 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
     """
 
     VERSION = "1.3.1"
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "IBM_GPFS_CI"
 
     def __init__(self, *args, **kwargs):
         super(GPFSDriver, self).__init__(*args, **kwargs)
@@ -516,6 +511,14 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         if fstype:
             self._mkfs(volume, fstype, fslabel)
 
+    def _get_volume_metadata(self, volume):
+        volume_metadata = {}
+        if 'volume_metadata' in volume:
+            for metadata in volume['volume_metadata']:
+                volume_metadata[metadata['key']] = metadata['value']
+            return volume_metadata
+        return volume['metadata'] if 'metadata' in volume else {}
+
     def create_volume(self, volume):
         """Creates a GPFS volume."""
         # Check if GPFS is mounted
@@ -529,7 +532,8 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         self._set_rw_permission(volume_path)
         # Set the attributes prior to allocating any blocks so that
         # they are allocated according to the policy
-        self._set_volume_attributes(volume, volume_path, volume.metadata)
+        v_metadata = self._get_volume_metadata(volume)
+        self._set_volume_attributes(volume, volume_path, v_metadata)
 
         if not self.configuration.gpfs_sparse_volumes:
             self._allocate_file_blocks(volume_path, volume_size)
@@ -552,7 +556,8 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
             self._gpfs_full_copy(snapshot_path, volume_path)
 
         self._set_rw_permission(volume_path)
-        self._set_volume_attributes(volume, volume_path, volume.metadata)
+        v_metadata = self._get_volume_metadata(volume)
+        self._set_volume_attributes(volume, volume_path, v_metadata)
 
     def create_volume_from_snapshot(self, volume, snapshot):
         """Creates a GPFS volume from a snapshot."""
@@ -571,7 +576,8 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         else:
             self._gpfs_full_copy(src, dest)
         self._set_rw_permission(dest)
-        self._set_volume_attributes(volume, dest, volume.metadata)
+        v_metadata = self._get_volume_metadata(volume)
+        self._set_volume_attributes(volume, dest, v_metadata)
 
     def create_cloned_volume(self, volume, src_vref):
         """Create a GPFS volume from another volume."""
@@ -712,7 +718,7 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         """Creates a GPFS snapshot."""
         snapshot_path = self._get_snapshot_path(snapshot)
         volume_path = os.path.join(os.path.dirname(snapshot_path),
-                                   snapshot.volume.name)
+                                   snapshot['volume_name'])
         self._create_gpfs_snap(src=volume_path, dest=snapshot_path)
         self._set_rw_permission(snapshot_path, modebits='640')
         self._gpfs_redirect(volume_path)
@@ -731,9 +737,11 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
                           check_exit_code=False)
 
     def _get_snapshot_path(self, snapshot):
-        snap_parent_vol_path = self.local_path(snapshot.volume)
+        ctxt = context.get_admin_context()
+        snap_parent_vol = self.db.volume_get(ctxt, snapshot['volume_id'])
+        snap_parent_vol_path = self.local_path(snap_parent_vol)
         snapshot_path = os.path.join(os.path.dirname(snap_parent_vol_path),
-                                     snapshot.name)
+                                     snapshot['name'])
         return snapshot_path
 
     def local_path(self, volume):
@@ -1172,6 +1180,7 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
 
         model_update = {}
         model_update['status'] = group['status']
+        volumes = self.db.volume_get_all_by_group(context, group['id'])
 
         # Unlink and delete the fileset associated with the consistency group.
         # All of the volumes and volume snapshot data will also be deleted.
@@ -1202,50 +1211,31 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
 
     def create_cgsnapshot(self, context, cgsnapshot, snapshots):
         """Create snapshot of a consistency group of GPFS volumes."""
-        model_update = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
-        snapshots_model_update = []
-
-        try:
-            for snapshot in snapshots:
-                self.create_snapshot(snapshot)
-        except exception.VolumeBackendAPIException as err:
-            model_update['status'] = (
-                fields.ConsistencyGroupStatus.ERROR)
-            LOG.error(_LE("Failed to create the snapshot %(snap)s of "
-                          "CGSnapshot. Exception: %(exception)s."),
-                      {'snap': snapshot.name, 'exception': err})
+        snapshots = self.db.snapshot_get_all_for_cgsnapshot(
+            context, cgsnapshot['id'])
 
         for snapshot in snapshots:
-            snapshots_model_update.append(
-                {'id': snapshot.id,
-                 'status': model_update['status']})
+            self.create_snapshot(snapshot)
+            snapshot['status'] = 'available'
 
-        return model_update, snapshots_model_update
+        model_update = {'status': 'available'}
+
+        return model_update, snapshots
 
     def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
         """Delete snapshot of a consistency group of GPFS volumes."""
-        model_update = {'status': fields.ConsistencyGroupStatus.DELETED}
-        snapshots_model_update = []
-
-        try:
-            for snapshot in snapshots:
-                self.delete_snapshot(snapshot)
-        except exception.VolumeBackendAPIException as err:
-            model_update['status'] = (
-                fields.ConsistencyGroupStatus.ERROR_DELETING)
-            LOG.error(_LE("Failed to delete the snapshot %(snap)s of "
-                          "CGSnapshot. Exception: %(exception)s."),
-                      {'snap': snapshot.name, 'exception': err})
+        snapshots = self.db.snapshot_get_all_for_cgsnapshot(
+            context, cgsnapshot['id'])
 
         for snapshot in snapshots:
-            snapshots_model_update.append(
-                {'id': snapshot.id,
-                 'status': model_update['status']})
+            self.delete_snapshot(snapshot)
+            snapshot['status'] = 'deleted'
 
-        return model_update, snapshots_model_update
+        model_update = {'status': cgsnapshot['status']}
+
+        return model_update, snapshots
 
 
-@interface.volumedriver
 class GPFSNFSDriver(GPFSDriver, nfs.NfsDriver, san.SanDriver):
     """GPFS cinder driver extension.
 
@@ -1261,7 +1251,7 @@ class GPFSNFSDriver(GPFSDriver, nfs.NfsDriver, san.SanDriver):
         super(GPFSNFSDriver, self).__init__(*args, **kwargs)
         self.gpfs_execute = self._gpfs_remote_execute
         self.configuration.append_config_values(remotefs.nas_opts)
-        self.configuration.san_ip = self.configuration.nas_host
+        self.configuration.san_ip = self.configuration.nas_ip
         self.configuration.san_login = self.configuration.nas_login
         self.configuration.san_password = self.configuration.nas_password
         self.configuration.san_private_key = (

@@ -17,8 +17,8 @@
 """Implementation of a fake key manager."""
 
 
-from castellan.tests.unit.key_manager import mock_key_manager
+from cinder.tests.unit.keymgr import mock_key_mgr
 
 
-def fake_api(configuration=None):
-    return mock_key_manager.MockKeyManager(configuration)
+def fake_api():
+    return mock_key_mgr.MockKeyManager()

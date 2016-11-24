@@ -18,14 +18,12 @@ iSCSI Driver for Infortrend Eonstor based on CLI.
 
 from oslo_log import log as logging
 
-from cinder import interface
 from cinder.volume import driver
 from cinder.volume.drivers.infortrend.eonstor_ds_cli import common_cli
 
 LOG = logging.getLogger(__name__)
 
 
-@interface.volumedriver
 class InfortrendCLIISCSIDriver(driver.ISCSIDriver):
 
     """Infortrend iSCSI Driver for Eonstor DS using CLI.
@@ -34,10 +32,6 @@ class InfortrendCLIISCSIDriver(driver.ISCSIDriver):
         1.0.0 - Initial driver
         1.0.1 - Support DS4000
     """
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Infortrend_Storage_CI"
-    VERSION = common_cli.InfortrendCommon.VERSION
 
     def __init__(self, *args, **kwargs):
         super(InfortrendCLIISCSIDriver, self).__init__(*args, **kwargs)
@@ -190,11 +184,9 @@ class InfortrendCLIISCSIDriver(driver.ISCSIDriver):
         volume['name'] which is how drivers traditionally map between a
         cinder volume and the associated backend storage object.
 
-        .. code-block:: json
-
-            existing_ref:{
-                'id':lun_id
-            }
+        existing_ref:{
+            'id':lun_id
+        }
         """
         LOG.debug(
             'manage_existing volume id=%(volume_id)s '

@@ -18,8 +18,8 @@ import ast
 from oslo_log import log as logging
 import six
 
+from cinder import context
 from cinder.i18n import _LW
-from cinder import interface
 from cinder.volume import driver
 from cinder.volume.drivers.emc import emc_vmax_common
 from cinder.zonemanager import utils as fczm_utils
@@ -27,14 +27,10 @@ from cinder.zonemanager import utils as fczm_utils
 LOG = logging.getLogger(__name__)
 
 
-@interface.volumedriver
 class EMCVMAXFCDriver(driver.FibreChannelDriver):
     """EMC FC Drivers for VMAX using SMI-S.
 
     Version history:
-
-    .. code-block:: none
-
         1.0.0 - Initial driver
         1.1.0 - Multiple pools and thick/thin provisioning,
                 performance enhancement.
@@ -65,17 +61,9 @@ class EMCVMAXFCDriver(driver.FibreChannelDriver):
               - Getting iscsi ip from port in existing masking view
               - Replacement of EMCGetTargetEndpoints api (bug #1512791)
               - VMAX3 snapvx improvements (bug #1522821)
-              - Operations and timeout issues (bug #1538214)
-        2.4.0 - EMC VMAX - locking SG for concurrent threads (bug #1554634)
-              - SnapVX licensing checks for VMAX3 (bug #1587017)
-              - VMAX oversubscription Support (blueprint vmax-oversubscription)
-              - QoS support (blueprint vmax-qos)
     """
 
-    VERSION = "2.4.0"
-
-    # ThirdPartySystems wiki
-    CI_WIKI_NAME = "EMC_VMAX_CI"
+    VERSION = "2.3.0"
 
     def __init__(self, *args, **kwargs):
 
@@ -122,8 +110,13 @@ class EMCVMAXFCDriver(driver.FibreChannelDriver):
 
     def create_snapshot(self, snapshot):
         """Creates a snapshot."""
-        src_volume = snapshot['volume']
-        volpath = self.common.create_snapshot(snapshot, src_volume)
+        ctxt = context.get_admin_context()
+        volumename = snapshot['volume_name']
+        index = volumename.index('-')
+        volumeid = volumename[index + 1:]
+        volume = self.db.volume_get(ctxt, volumeid)
+
+        volpath = self.common.create_snapshot(snapshot, volume)
 
         model_update = {}
         snapshot['provider_location'] = six.text_type(volpath)
@@ -132,9 +125,13 @@ class EMCVMAXFCDriver(driver.FibreChannelDriver):
 
     def delete_snapshot(self, snapshot):
         """Deletes a snapshot."""
-        src_volume = snapshot['volume']
+        ctxt = context.get_admin_context()
+        volumename = snapshot['volume_name']
+        index = volumename.index('-')
+        volumeid = volumename[index + 1:]
+        volume = self.db.volume_get(ctxt, volumeid)
 
-        self.common.delete_snapshot(snapshot, src_volume)
+        self.common.delete_snapshot(snapshot, volume)
 
     def ensure_export(self, context, volume):
         """Driver entry point to get the export info for an existing volume."""

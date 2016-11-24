@@ -31,7 +31,6 @@ driver documentation for more information.
 import math
 import re
 import six
-import socket
 import time
 
 from oslo_config import cfg
@@ -42,7 +41,7 @@ from oslo_utils import units
 from cinder import context
 from cinder.db.sqlalchemy import api
 from cinder import exception
-from cinder.i18n import _, _LE, _LI, _LW
+from cinder.i18n import _, _LE, _LI
 from cinder import utils
 from cinder.volume import volume_types
 
@@ -68,29 +67,12 @@ CONCERTO_DEFAULT_SRA_EXPANSION_MAX_SIZE = None
 CONCERTO_DEFAULT_SRA_ENABLE_SHRINK = False
 CONCERTO_DEFAULT_POLICY_MAX_SNAPSHOTS = 1000
 CONCERTO_DEFAULT_POLICY_RETENTION_MODE = 'All'
-CONCERTO_LUN_TYPE_THICK = 'THICK'
-LUN_ALLOC_SZ = 10
+
 
 violin_opts = [
     cfg.IntOpt('violin_request_timeout',
                default=300,
                help='Global backend request timeout, in seconds.'),
-    cfg.ListOpt('violin_dedup_only_pools',
-                default=[],
-                help='Storage pools to be used to setup dedup luns only.'
-                     '(Comma separated list)'),
-    cfg.ListOpt('violin_dedup_capable_pools',
-                default=[],
-                help='Storage pools capable of dedup and other luns.'
-                     '(Comma separated list)'),
-    cfg.StrOpt('violin_pool_allocation_method',
-               default='random',
-               choices=['random', 'largest', 'smallest'],
-               help='Method of choosing a storage pool for a lun.'),
-    cfg.ListOpt('violin_iscsi_target_ips',
-                default=[],
-                help='Target iSCSI addresses to use.'
-                     '(Comma separated list)'),
 ]
 
 CONF = cfg.CONF
@@ -111,25 +93,14 @@ class V7000Common(object):
             raise exception.InvalidInput(
                 reason=_('Gateway VIP is not set'))
 
-        if vmemclient:
-            self.vmem_mg = vmemclient.open(self.config.san_ip,
-                                           self.config.san_login,
-                                           self.config.san_password,
-                                           keepalive=True)
+        self.vmem_mg = vmemclient.open(self.config.san_ip,
+                                       self.config.san_login,
+                                       self.config.san_password,
+                                       keepalive=True)
 
         if self.vmem_mg is None:
             msg = _('Failed to connect to array')
             raise exception.VolumeBackendAPIException(data=msg)
-
-        if self.vmem_mg.utility.is_external_head:
-            # With an external storage pool configuration is a must
-            if (self.config.violin_dedup_only_pools == [] and
-                    self.config.violin_dedup_capable_pools == []):
-
-                LOG.warning(_LW("Storage pools not configured."))
-                raise exception.InvalidInput(
-                    reason=_('Storage pool configuration is '
-                             'mandatory for external head'))
 
     def check_for_setup_error(self):
         """Returns an error if prerequisites aren't met."""
@@ -149,30 +120,43 @@ class V7000Common(object):
 
         :param volume:  volume object provided by the Manager
         """
-        spec_dict = {}
-        selected_pool = {}
-
+        thin_lun = False
+        dedup = False
         size_mb = volume['size'] * units.Ki
         full_size_mb = size_mb
+        pool = None
 
         LOG.debug("Creating LUN %(name)s, %(size)s MB.",
                   {'name': volume['name'], 'size': size_mb})
 
-        spec_dict = self._process_extra_specs(volume)
+        if self.config.san_thin_provision:
+            thin_lun = True
+            # Set the actual allocation size for thin lun
+            # default here is 10%
+            size_mb = size_mb // 10
 
-        try:
-            selected_pool = self._get_storage_pool(
-                volume,
-                size_mb,
-                spec_dict['pool_type'],
-                "create_lun")
+        typeid = volume['volume_type_id']
+        if typeid:
+            # extra_specs with thin specified overrides san_thin_provision
+            spec_value = self._get_volume_type_extra_spec(volume, "thin")
+            if spec_value and spec_value.lower() == "true":
+                thin_lun = True
+                # Set the actual allocation size for thin lun
+                # default here is 10%
+                size_mb = size_mb // 10
 
-        except exception.ViolinResourceNotFound:
-            raise
-        except Exception:
-            msg = _('No suitable storage pool found')
-            LOG.exception(msg)
-            raise exception.ViolinBackendErr(message=msg)
+            spec_value = self._get_volume_type_extra_spec(volume, "dedup")
+            if spec_value and spec_value.lower() == "true":
+                dedup = True
+                # A dedup lun is always a thin lun
+                thin_lun = True
+                # Set the actual allocation size for thin lun
+                # default here is 10%. The actual allocation may
+                # different, depending on other factors
+                size_mb = full_size_mb // 10
+
+            # Extract the storage_pool name if one is specified
+            pool = self._get_violin_extra_spec(volume, "storage_pool")
 
         try:
             # Note: In the following create_lun command for setting up a dedup
@@ -185,15 +169,8 @@ class V7000Common(object):
 
             self._send_cmd(self.vmem_mg.lun.create_lun,
                            "Create resource successfully.",
-                           volume['id'],
-                           spec_dict['size_mb'],
-                           selected_pool['dedup'],
-                           selected_pool['thin'],
-                           full_size_mb,
-                           storage_pool_id=selected_pool['storage_pool_id'])
-
-        except exception.ViolinBackendErrExists:
-            LOG.debug("Lun %s already exists, continuing.", volume['id'])
+                           volume['id'], size_mb, dedup,
+                           thin_lun, full_size_mb, storage_pool=pool)
 
         except Exception:
             LOG.exception(_LE("Lun create for %s failed!"), volume['id'])
@@ -209,18 +186,17 @@ class V7000Common(object):
 
         LOG.debug("Deleting lun %s.", volume['id'])
 
-        # If the LUN has ever had a snapshot, it has an SRA and
-        # policy that must be deleted first.
-        self._delete_lun_snapshot_bookkeeping(volume['id'])
-
         try:
+            # If the LUN has ever had a snapshot, it has an SRA and
+            # policy that must be deleted first.
+            self._delete_lun_snapshot_bookkeeping(volume['id'])
+
+            # TODO(rdl) force the delete for now to deal with pending
+            # snapshot issues.  Should revisit later for a better fix.
             self._send_cmd(self.vmem_mg.lun.delete_lun,
-                           success_msgs, volume['id'])
+                           success_msgs, volume['id'], True)
 
-        except vmemclient.core.error.NoMatchingObjectIdError:
-            LOG.debug("Lun %s already deleted, continuing.", volume['id'])
-
-        except exception.ViolinBackendErrExists:
+        except exception.VolumeBackendAPIException:
             LOG.exception(_LE("Lun %s has dependent snapshots, "
                               "skipping lun deletion."), volume['id'])
             raise exception.VolumeIsBusy(volume_name=volume['id'])
@@ -238,8 +214,7 @@ class V7000Common(object):
         v = self.vmem_mg
 
         typeid = volume['volume_type_id']
-
-        if typeid and not self.vmem_mg.utility.is_external_head:
+        if typeid:
             spec_value = self._get_volume_type_extra_spec(volume, "dedup")
             if spec_value and spec_value.lower() == "true":
                 # A Dedup lun's size cannot be modified in Concerto.
@@ -276,7 +251,7 @@ class V7000Common(object):
 
         :param snapshot:  cinder snapshot object provided by the Manager
 
-        :raises:
+        Exceptions:
             VolumeBackendAPIException: If SRA could not be created, or
                 snapshot policy could not be created
             RequestRetryTimeout: If backend could not complete the request
@@ -318,19 +293,33 @@ class V7000Common(object):
 
         :param snapshot:  cinder snapshot object provided by the Manager
 
-        :raises:
+        Exceptions:
             RequestRetryTimeout: If backend could not complete the request
                 within the allotted timeout.
             ViolinBackendErr: If backend reports an error during the
                 delete snapshot phase.
         """
+        cinder_volume_id = snapshot['volume_id']
+        cinder_snapshot_id = snapshot['id']
         LOG.debug("Deleting snapshot %(snap_id)s on volume "
                   "%(vol_id)s %(dpy_name)s",
-                  {'snap_id': snapshot['id'],
-                   'vol_id': snapshot['volume_id'],
+                  {'snap_id': cinder_snapshot_id,
+                   'vol_id': cinder_volume_id,
                    'dpy_name': snapshot['display_name']})
 
-        return self._wait_run_delete_lun_snapshot(snapshot)
+        try:
+            self._send_cmd(
+                self.vmem_mg.snapshot.delete_lun_snapshot,
+                "Delete TimeMark successfully",
+                lun=cinder_volume_id,
+                comment=self._compress_snapshot_id(cinder_snapshot_id))
+
+        except Exception:
+            LOG.exception(_LE("Lun delete snapshot for "
+                              "volume %(vol)s snapshot %(snap)s failed!"),
+                          {'vol': cinder_volume_id,
+                           'snap': cinder_snapshot_id})
+            raise
 
     def _create_volume_from_snapshot(self, snapshot, volume):
         """Create a new cinder volume from a given snapshot of a lun
@@ -341,42 +330,27 @@ class V7000Common(object):
         :param snapshot:  cinder snapshot object provided by the Manager
         :param volume:  cinder volume to be created
         """
+
         cinder_volume_id = volume['id']
         cinder_snapshot_id = snapshot['id']
-        size_mb = volume['size'] * units.Ki
+        pool = None
         result = None
-        spec_dict = {}
 
-        LOG.debug("Copying snapshot %(snap_id)s onto volume %(vol_id)s "
-                  "%(dpy_name)s",
+        LOG.debug("Copying snapshot %(snap_id)s onto volume %(vol_id)s.",
                   {'snap_id': cinder_snapshot_id,
-                   'vol_id': cinder_volume_id,
-                   'dpy_name': snapshot['display_name']})
+                   'vol_id': cinder_volume_id})
 
-        source_lun_info = self.vmem_mg.lun.get_lun_info(snapshot['volume_id'])
-        self._validate_lun_type_for_copy(source_lun_info['subType'])
-
-        spec_dict = self._process_extra_specs(volume)
-        try:
-            selected_pool = self._get_storage_pool(volume,
-                                                   size_mb,
-                                                   spec_dict['pool_type'],
-                                                   "create_lun")
-
-        except exception.ViolinResourceNotFound:
-            raise
-        except Exception:
-            msg = _('No suitable storage pool found')
-            LOG.exception(msg)
-            raise exception.ViolinBackendErr(message=msg)
+        typeid = volume['volume_type_id']
+        if typeid:
+            pool = self._get_violin_extra_spec(volume, "storage_pool")
 
         try:
             result = self.vmem_mg.lun.copy_snapshot_to_new_lun(
                 source_lun=snapshot['volume_id'],
-                source_snapshot_comment=self._compress_snapshot_id(
-                    cinder_snapshot_id),
+                source_snapshot_comment=
+                self._compress_snapshot_id(cinder_snapshot_id),
                 destination=cinder_volume_id,
-                storage_pool_id=selected_pool['storage_pool_id'])
+                storage_pool=pool)
 
             if not result['success']:
                 self._check_error_code(result)
@@ -400,32 +374,26 @@ class V7000Common(object):
         :param src_vol:  cinder volume to clone
         :param dest_vol:  cinder volume to be created
         """
-        size_mb = dest_vol['size'] * units.Ki
-        src_vol_mb = src_vol['size'] * units.Ki
+        pool = None
         result = None
-        spec_dict = {}
 
         LOG.debug("Copying lun %(src_vol_id)s onto lun %(dest_vol_id)s.",
                   {'src_vol_id': src_vol['id'],
                    'dest_vol_id': dest_vol['id']})
 
-        try:
-            source_lun_info = self.vmem_mg.lun.get_lun_info(src_vol['id'])
-            self._validate_lun_type_for_copy(source_lun_info['subType'])
+        # Extract the storage_pool name if one is specified
+        typeid = dest_vol['volume_type_id']
+        if typeid:
+            pool = self._get_violin_extra_spec(dest_vol, "storage_pool")
 
+        try:
             # in order to do a full clone the source lun must have a
             # snapshot resource
             self._ensure_snapshot_resource_area(src_vol['id'])
 
-            spec_dict = self._process_extra_specs(dest_vol)
-            selected_pool = self._get_storage_pool(dest_vol,
-                                                   size_mb,
-                                                   spec_dict['pool_type'],
-                                                   None)
-
             result = self.vmem_mg.lun.copy_lun_to_new_lun(
                 source=src_vol['id'], destination=dest_vol['id'],
-                storage_pool_id=selected_pool['storage_pool_id'])
+                storage_pool=pool)
 
             if not result['success']:
                 self._check_error_code(result)
@@ -438,14 +406,6 @@ class V7000Common(object):
 
         self._wait_for_lun_or_snap_copy(
             src_vol['id'], dest_obj_id=result['object_id'])
-
-        # extend the copied lun if requested size is larger then original
-        if size_mb > src_vol_mb:
-            # dest_vol size has to be set to reflect what it is currently
-            dest_vol_size = dest_vol['size']
-            dest_vol['size'] = src_vol['size']
-            self._extend_lun(dest_vol, dest_vol_size)
-            dest_vol['size'] = dest_vol_size
 
     def _send_cmd(self, request_func, success_msgs, *args, **kwargs):
         """Run an XG request function, and retry as needed.
@@ -567,14 +527,14 @@ class V7000Common(object):
 
         :param volume_id:  Cinder volume ID corresponding to the backend LUN
 
-        :raises:
+        Exceptions:
             VolumeBackendAPIException: if cinder volume does not exist
                on backnd, or SRA could not be created.
         """
+
         ctxt = context.get_admin_context()
         volume = api.volume_get(ctxt, volume_id)
-        spec_dict = {}
-
+        pool = None
         if not volume:
             msg = (_("Failed to ensure snapshot resource area, could not "
                    "locate volume for id %s") % volume_id)
@@ -598,28 +558,15 @@ class V7000Common(object):
                 snap_size_mb = 0.2 * lun_size_mb
 
             snap_size_mb = int(math.ceil(snap_size_mb))
+            typeid = volume['volume_type_id']
+            if typeid:
+                pool = self._get_violin_extra_spec(volume, "storage_pool")
 
-            spec_dict = self._process_extra_specs(volume)
-
-            try:
-                selected_pool = self._get_storage_pool(
-                    volume,
-                    snap_size_mb,
-                    spec_dict['pool_type'],
-                    None)
-
-                LOG.debug("Creating SRA of %(ssmb)sMB for lun of %(lsmb)sMB "
-                          "on %(vol_id)s",
-                          {'ssmb': snap_size_mb,
-                           'lsmb': lun_size_mb,
-                           'vol_id': volume_id})
-
-            except exception.ViolinResourceNotFound:
-                raise
-            except Exception:
-                msg = _('No suitable storage pool found')
-                LOG.exception(msg)
-                raise exception.ViolinBackendErr(message=msg)
+            LOG.debug("Creating SRA of %(ssmb)sMB for lun of %(lsmb)sMB "
+                      "on %(vol_id)s.",
+                      {'ssmb': snap_size_mb,
+                       'lsmb': lun_size_mb,
+                       'vol_id': volume_id})
 
             res = self.vmem_mg.snapshot.create_snapshot_resource(
                 lun=volume_id,
@@ -631,7 +578,7 @@ class V7000Common(object):
                 expansion_increment=CONCERTO_DEFAULT_SRA_EXPANSION_INCREMENT,
                 expansion_max_size=CONCERTO_DEFAULT_SRA_EXPANSION_MAX_SIZE,
                 enable_shrink=CONCERTO_DEFAULT_SRA_ENABLE_SHRINK,
-                storage_pool_id=selected_pool['storage_pool_id'])
+                storage_pool=pool)
 
             if (not res['success']):
                 msg = (_("Failed to create snapshot resource area on "
@@ -646,9 +593,10 @@ class V7000Common(object):
 
         :param volume_id:  Cinder volume ID corresponding to the backend LUN
 
-        :raises:
+        Exceptions:
             VolumeBackendAPIException: when snapshot policy cannot be created.
         """
+
         if not self.vmem_mg.snapshot.lun_has_a_snapshot_policy(
                 lun=volume_id):
 
@@ -670,7 +618,7 @@ class V7000Common(object):
     def _delete_lun_snapshot_bookkeeping(self, volume_id):
         """Clear residual snapshot support resources from LUN.
 
-        :raises:
+        Exceptions:
             VolumeBackendAPIException: If snapshots still exist on the LUN.
         """
 
@@ -769,35 +717,35 @@ class V7000Common(object):
             LOG.debug("Entering _wait_for_lun_or_snap_copy loop: "
                       "vdev=%s, objid=%s", dest_vdev_id, dest_obj_id)
 
-            target_id, mb_copied, percent = wait_func(src_vol_id)
+            status = wait_func(src_vol_id)
 
-            if target_id is None:
-                # pre-copy transient result
+            if status[0] is None:
+                # pre-copy transient result, status=(None, None, 0)
                 LOG.debug("lun or snap copy prepping.")
                 pass
-            elif target_id != wait_id:
-                # the copy is complete, another lun is being copied
+            elif status[0] != wait_id:
+                # the copy must be complete since another lun is being copied
                 LOG.debug("lun or snap copy complete.")
                 raise loopingcall.LoopingCallDone(retvalue=True)
-            elif mb_copied is not None:
-                # copy is in progress
-                LOG.debug("MB copied: %(copied)d, percent done: %(percent)d.",
-                          {'copied': mb_copied, 'percent': percent})
+            elif status[1] is not None:
+                # copy is in progress, status = ('12345', 1700, 10)
+                LOG.debug("MB copied:%d, percent done: %d.",
+                          status[1], status[2])
                 pass
-            elif percent == 0:
-                # copy has just started
+            elif status[2] == 0:
+                # copy has just started, status = ('12345', None, 0)
                 LOG.debug("lun or snap copy started.")
                 pass
-            elif percent == 100:
-                # copy is complete
+            elif status[2] == 100:
+                # copy is complete, status = ('12345', None, 100)
                 LOG.debug("lun or snap copy complete.")
                 raise loopingcall.LoopingCallDone(retvalue=True)
             else:
                 # unexpected case
-                LOG.debug("unexpected case (%(id)s, %(bytes)s, %(percent)s)",
-                          {'id': target_id,
-                           'bytes': mb_copied,
-                           'percent': six.text_type(percent)})
+                LOG.debug("unexpected case (%{id}s, %{bytes}s, %{percent}s)",
+                          {'id': six.text_type(status[0]),
+                           'bytes': six.text_type(status[1]),
+                           'percent': six.text_type(status[2])})
                 raise loopingcall.LoopingCallDone(retvalue=False)
 
         timer = loopingcall.FixedIntervalLoopingCall(_loop_func)
@@ -826,7 +774,7 @@ class V7000Common(object):
         individually. Not all of them are fatal. For example, lun attach
         failing becase the client is already attached is not a fatal error.
 
-        :param response: a response dict result from the vmemclient request
+        :param response:  a response dict result from the vmemclient request
         """
         if "Error: 0x9001003c" in response['msg']:
             # This error indicates a duplicate attempt to attach lun,
@@ -904,187 +852,3 @@ class V7000Common(object):
                         spec_value = val
                         break
         return spec_value
-
-    def _get_storage_pool(self, volume, size_in_mb, pool_type, usage):
-        # User-specified pool takes precedence over others
-
-        pool = None
-        typeid = volume.get('volume_type_id')
-        if typeid:
-            # Extract the storage_pool name if one is specified
-            pool = self._get_violin_extra_spec(volume, "storage_pool")
-
-        # Select a storage pool
-        selected_pool = self.vmem_mg.pool.select_storage_pool(
-            size_in_mb,
-            pool_type,
-            pool,
-            self.config.violin_dedup_only_pools,
-            self.config.violin_dedup_capable_pools,
-            self.config.violin_pool_allocation_method,
-            usage)
-        if selected_pool is None:
-            # Backend has not provided a suitable storage pool
-            msg = _("Backend does not have a suitable storage pool.")
-            raise exception.ViolinResourceNotFound(message=msg)
-
-        LOG.debug("Storage pool returned is %s",
-                  selected_pool['storage_pool'])
-
-        return selected_pool
-
-    def _process_extra_specs(self, volume):
-        spec_dict = {}
-        thin_lun = False
-        thick_lun = False
-        dedup = False
-        size_mb = volume['size'] * units.Ki
-        full_size_mb = size_mb
-
-        if self.config.san_thin_provision:
-            thin_lun = True
-            # Set the actual allocation size for thin lun
-            # default here is 10%
-            size_mb = int(math.ceil(float(size_mb) / LUN_ALLOC_SZ))
-
-        typeid = volume.get('volume_type_id')
-        if typeid:
-            # extra_specs with thin specified overrides san_thin_provision
-            spec_value = self._get_volume_type_extra_spec(volume, "thin")
-            if not thin_lun and spec_value and spec_value.lower() == "true":
-                thin_lun = True
-                # Set the actual allocation size for thin lun
-                # default here is 10%
-                size_mb = int(math.ceil(float(size_mb) / LUN_ALLOC_SZ))
-
-            # Set thick lun before checking for dedup,
-            # since dedup is always thin
-            if not thin_lun:
-                thick_lun = True
-
-            spec_value = self._get_volume_type_extra_spec(volume, "dedup")
-            if spec_value and spec_value.lower() == "true":
-                dedup = True
-                # A dedup lun is always a thin lun
-                thin_lun = True
-                thick_lun = False
-                # Set the actual allocation size for thin lun
-                # default here is 10%. The actual allocation may
-                # different, depending on other factors
-                size_mb = int(math.ceil(float(full_size_mb) / LUN_ALLOC_SZ))
-
-        if dedup:
-            spec_dict['pool_type'] = "dedup"
-        elif thin_lun:
-            spec_dict['pool_type'] = "thin"
-        else:
-            spec_dict['pool_type'] = "thick"
-            thick_lun = True
-
-        spec_dict['size_mb'] = size_mb
-        spec_dict['thick'] = thick_lun
-        spec_dict['thin'] = thin_lun
-        spec_dict['dedup'] = dedup
-
-        return spec_dict
-
-    def _get_volume_stats(self, san_ip):
-        """Gathers array stats and converts them to GB values."""
-        free_gb = 0
-        total_gb = 0
-
-        owner = socket.getfqdn(san_ip)
-        # Store DNS lookups to prevent asking the same question repeatedly
-        owner_lookup = {san_ip: owner}
-        pools = self.vmem_mg.pool.get_storage_pools(
-            verify=True,
-            include_full_info=True,
-        )
-
-        for short_info, full_info in pools:
-            mod = ''
-            pool_free_mb = 0
-            pool_total_mb = 0
-            for dev in full_info.get('physicaldevices', []):
-                if dev['owner'] not in owner_lookup:
-                    owner_lookup[dev['owner']] = socket.getfqdn(dev['owner'])
-                if owner_lookup[dev['owner']] == owner:
-                    pool_free_mb += dev['availsize_mb']
-                    pool_total_mb += dev['size_mb']
-                elif not mod:
-                    mod = ' *'
-            LOG.debug('pool %(pool)s: %(avail)s / %(total)s MB free %(mod)s',
-                      {'pool': short_info['name'], 'avail': pool_free_mb,
-                       'total': pool_total_mb, 'mod': mod})
-            free_gb += int(pool_free_mb / units.Ki)
-            total_gb += int(pool_total_mb / units.Ki)
-
-        data = {
-            'vendor_name': 'Violin Memory, Inc.',
-            'reserved_percentage': self.config.reserved_percentage,
-            'QoS_support': False,
-            'free_capacity_gb': free_gb,
-            'total_capacity_gb': total_gb,
-            'consistencygroup_support': False,
-        }
-
-        return data
-
-    def _wait_run_delete_lun_snapshot(self, snapshot):
-        """Run and wait for LUN snapshot to complete.
-
-        :param snapshot -- cinder snapshot object provided by the Manager
-        """
-        cinder_volume_id = snapshot['volume_id']
-        cinder_snapshot_id = snapshot['id']
-
-        comment = self._compress_snapshot_id(cinder_snapshot_id)
-        oid = self.vmem_mg.snapshot.snapshot_comment_to_object_id(
-            cinder_volume_id, comment)
-
-        def _loop_func():
-            LOG.debug("Entering _wait_run_delete_lun_snapshot loop: "
-                      "vol=%(vol)s, snap_id=%(snap_id)s, oid=%(oid)s",
-                      {'vol': cinder_volume_id,
-                       'oid': oid,
-                       'snap_id': cinder_snapshot_id})
-
-            try:
-                ans = self.vmem_mg.snapshot.delete_lun_snapshot(
-                    snapshot_object_id=oid)
-            except Exception:
-                msg = (_("Failed to delete snapshot "
-                         "%(snap)s of volume %(vol)s") %
-                       {'snap': cinder_snapshot_id, 'vol': cinder_volume_id})
-                raise exception.ViolinBackendErr(msg)
-
-            if ans['success']:
-                LOG.debug("Delete snapshot %(snap_id)s of %(vol)s: "
-                          "success", {'vol': cinder_volume_id,
-                                      'snap_id': cinder_snapshot_id})
-                raise loopingcall.LoopingCallDone(retvalue=True)
-            else:
-                LOG.warning(_LW("Delete snapshot %(snap)s of %(vol)s "
-                                "encountered temporary error: %(msg)s"),
-                            {'snap': cinder_snapshot_id,
-                             'vol': cinder_volume_id,
-                             'msg': ans['msg']})
-
-        timer = loopingcall.FixedIntervalLoopingCall(_loop_func)
-        success = timer.start(interval=1).wait()
-
-        return success
-
-    def _validate_lun_type_for_copy(self, lun_type):
-        """Make sure volume type is thick.
-
-        :param lun_type:  Cinder volume type
-
-        :raises:
-            VolumeBackendAPIException: if volume type is not thick,
-               copying the lun is not possible.
-        """
-        if lun_type != CONCERTO_LUN_TYPE_THICK:
-            msg = _('Lun copy currently only supported for thick luns')
-            LOG.error(msg)
-            raise exception.ViolinBackendErr(message=msg)

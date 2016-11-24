@@ -58,7 +58,6 @@ from six.moves import range
 from cinder.backup import driver
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
-from cinder import interface
 from cinder import utils
 import cinder.volume.drivers.rbd as rbd_driver
 
@@ -153,7 +152,6 @@ class VolumeMetadataBackup(object):
                       self.name)
 
 
-@interface.backupdriver
 class CephBackupDriver(driver.BackupDriver):
     """Backup Cinder volumes to Ceph Object Store.
 
@@ -283,7 +281,7 @@ class CephBackupDriver(driver.BackupDriver):
             if self._file_is_rbd(volume):
                 volume.rbd_image.discard(offset, length)
             else:
-                zeroes = '\0' * self.chunk_size
+                zeroes = '\0' * length
                 chunks = int(length / self.chunk_size)
                 for chunk in range(0, chunks):
                     LOG.debug("Writing zeroes chunk %d", chunk)
@@ -860,7 +858,6 @@ class CephBackupDriver(driver.BackupDriver):
         do_full_backup = False
         if self._file_is_rbd(volume_file):
             # If volume an RBD, attempt incremental backup.
-            LOG.debug("Volume file is RBD: attempting incremental backup.")
             try:
                 self._backup_rbd(backup_id, volume_id, volume_file,
                                  volume_name, length)
@@ -868,7 +865,6 @@ class CephBackupDriver(driver.BackupDriver):
                 LOG.debug("Forcing full backup of volume %s.", volume_id)
                 do_full_backup = True
         else:
-            LOG.debug("Volume file is NOT RBD: will do full backup.")
             do_full_backup = True
 
         if do_full_backup:
@@ -1052,7 +1048,7 @@ class CephBackupDriver(driver.BackupDriver):
 
         if restore_point:
             if self._file_is_rbd(volume_file):
-                LOG.debug("Volume file is RBD.")
+
                 # If the volume we are restoring to is the volume the backup
                 # was made from, force a full restore since a diff will not
                 # work in this case.
@@ -1070,8 +1066,6 @@ class CephBackupDriver(driver.BackupDriver):
                     return False, restore_point
 
                 return True, restore_point
-            else:
-                LOG.debug("Volume file is NOT RBD.")
         else:
             LOG.info(_LI("No restore point found for backup="
                          "'%(backup)s' of volume %(volume)s "
@@ -1103,7 +1097,6 @@ class CephBackupDriver(driver.BackupDriver):
         if diff_allowed:
             # Attempt diff
             try:
-                LOG.debug("Attempting differential restore.")
                 self._diff_restore_rbd(base_name, volume_file, volume_name,
                                        restore_point, length)
                 do_full_restore = False
@@ -1113,7 +1106,6 @@ class CephBackupDriver(driver.BackupDriver):
 
         if do_full_restore:
             # Otherwise full copy
-            LOG.debug("Running full restore.")
             self._full_restore(backup_id, backup_volume_id, volume_file,
                                volume_name, length, src_snap=restore_point)
 

@@ -45,6 +45,9 @@ class TgtAdm(iscsi.ISCSITarget):
                 </target>
                   """)
 
+    def __init__(self, *args, **kwargs):
+        super(TgtAdm, self).__init__(*args, **kwargs)
+
     def _get_target(self, iqn):
         (out, err) = utils.execute('tgt-admin', '--show', run_as_root=True)
         lines = out.split('\n')
@@ -171,7 +174,7 @@ class TgtAdm(iscsi.ISCSITarget):
         old_name = kwargs.get('old_name', None)
         if old_name is not None:
             LOG.debug('Detected old persistence file for volume '
-                      '%(vol)s at %(old_name)s',
+                      '%{vol}s at %{old_name}s',
                       {'vol': vol_id, 'old_name': old_name})
             old_persist_file = os.path.join(volumes_dir, old_name)
 

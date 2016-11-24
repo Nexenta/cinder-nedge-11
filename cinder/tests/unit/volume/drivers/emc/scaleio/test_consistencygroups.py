@@ -18,8 +18,7 @@ import json
 import mock
 
 from cinder import context
-from cinder.tests.unit.consistencygroup import fake_consistencygroup
-from cinder.tests.unit import fake_constants as fake
+from cinder.tests.unit import fake_consistencygroup
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit.volume.drivers.emc import scaleio
@@ -37,29 +36,29 @@ class TestConsistencyGroups(scaleio.TestScaleIODriver):
         super(TestConsistencyGroups, self).setUp()
         self.ctx = context.RequestContext('fake', 'fake', auth_token=True)
         self.consistency_group = (
-            fake_consistencygroup.fake_consistencyobject_obj(
-                self.ctx, **{'id': fake.CONSISTENCY_GROUP_ID}))
+            fake_consistencygroup.fake_consistencyobject_obj(self.ctx,
+                                                             **{'id': 'cgid'}))
         fake_volume1 = fake_volume.fake_volume_obj(
             self.ctx,
-            **{'id': fake.VOLUME_ID, 'provider_id': fake.PROVIDER_ID})
+            **{'id': 'volid1', 'provider_id': 'pid_1'})
         fake_volume2 = fake_volume.fake_volume_obj(
             self.ctx,
-            **{'id': fake.VOLUME2_ID, 'provider_id': fake.PROVIDER2_ID})
+            **{'id': 'volid2', 'provider_id': 'pid_2'})
         fake_volume3 = fake_volume.fake_volume_obj(
             self.ctx,
-            **{'id': fake.VOLUME3_ID, 'provider_id': fake.PROVIDER3_ID})
+            **{'id': 'volid3', 'provider_id': 'pid_3'})
         fake_volume4 = fake_volume.fake_volume_obj(
             self.ctx,
-            **{'id': fake.VOLUME4_ID, 'provider_id': fake.PROVIDER4_ID})
+            **{'id': 'volid4', 'provider_id': 'pid_4'})
         self.volumes = [fake_volume1, fake_volume2]
         self.volumes2 = [fake_volume3, fake_volume4]
         fake_snapshot1 = fake_snapshot.fake_snapshot_obj(
             self.ctx,
-            **{'id': fake.SNAPSHOT_ID, 'volume_id': fake.VOLUME_ID,
+            **{'id': 'snapid1', 'volume_id': 'volid1',
                'volume': fake_volume1})
         fake_snapshot2 = fake_snapshot.fake_snapshot_obj(
             self.ctx,
-            **{'id': fake.SNAPSHOT2_ID, 'volume_id': fake.VOLUME2_ID, 'volume':
+            **{'id': 'snapid2', 'volume_id': 'volid2', 'volume':
                 fake_volume2})
         self.snapshots = [fake_snapshot1, fake_snapshot2]
         self.snapshot_reply = json.dumps({
@@ -106,8 +105,7 @@ class TestConsistencyGroups(scaleio.TestScaleIODriver):
 
     def _fake_cgsnapshot(self):
         cgsnap = {'id': 'cgsid', 'name': 'testsnap',
-                  'consistencygroup_id': fake.CONSISTENCY_GROUP_ID,
-                  'status': 'available'}
+                  'consistencygroup_id': 'cgid', 'status': 'available'}
         return cgsnap
 
     def test_create_consistencygroup(self):
@@ -136,8 +134,8 @@ class TestConsistencyGroups(scaleio.TestScaleIODriver):
                                                 self.volumes))
         self.assertTrue(any(volume['status'] == 'error_deleting' for volume in
                             result_volumes_update))
-        self.assertIn(result_model_update['status'],
-                      ['error_deleting', 'error'])
+        self.assertTrue(result_model_update['status'] in ['error_deleting',
+                                                          'error'])
 
     def test_create_consistencygroup_from_cg(self):
         self.set_https_response_mode(self.RESPONSE_MODE.Valid)
@@ -151,8 +149,8 @@ class TestConsistencyGroups(scaleio.TestScaleIODriver):
         self.assertListEqual(volume_provider_list, ['sid1', 'sid2'])
 
     def test_create_consistencygroup_from_cgs(self):
-        self.snapshots[0]['provider_id'] = fake.PROVIDER_ID
-        self.snapshots[1]['provider_id'] = fake.PROVIDER2_ID
+        self.snapshots[0]['provider_id'] = 'pid_1'
+        self.snapshots[1]['provider_id'] = 'pid_2'
         self.set_https_response_mode(self.RESPONSE_MODE.Valid)
         result_model_update, result_volumes_model_update = (
             self.driver.create_consistencygroup_from_src(
@@ -195,9 +193,9 @@ class TestConsistencyGroups(scaleio.TestScaleIODriver):
         type(snapshot2).volume = mock.PropertyMock(
             return_value=self.volumes[1])
         type(snapshot1).provider_id = mock.PropertyMock(
-            return_value=fake.PROVIDER_ID)
+            return_value='pid_1')
         type(snapshot2).provider_id = mock.PropertyMock(
-            return_value=fake.PROVIDER2_ID)
+            return_value='pid_2')
         snapshots = [snapshot1, snapshot2]
         self.set_https_response_mode(self.RESPONSE_MODE.Valid)
         result_model_update, result_snapshot_model_update = (

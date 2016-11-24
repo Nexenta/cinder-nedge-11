@@ -27,7 +27,6 @@ import cinder.db
 from cinder import exception
 from cinder import test
 from cinder.tests.unit.api import fakes
-from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
 from cinder import volume
@@ -86,7 +85,7 @@ def return_snapshot(context, snapshot_id):
 
 
 def stub_get(context, *args, **kwargs):
-    vol = {'id': fake.VOLUME_ID,
+    vol = {'id': 'fake-vol-id',
            'size': 100,
            'name': 'fake',
            'host': 'fake-host',
@@ -124,11 +123,10 @@ class SnapshotMetaDataTest(test.TestCase):
         self.snapshot_controller = snapshots.SnapshotsController(self.ext_mgr)
         self.controller = snapshot_metadata.Controller()
         self.req_id = str(uuid.uuid4())
-        self.url = '/v2/%s/snapshots/%s/metadata' % (
-            fake.PROJECT_ID, self.req_id)
+        self.url = '/v2/fake/snapshots/%s/metadata' % self.req_id
 
         snap = {"volume_size": 100,
-                "volume_id": fake.VOLUME_ID,
+                "volume_id": "fake-vol-id",
                 "display_name": "Volume Test Name",
                 "display_description": "Volume Test Desc",
                 "availability_zone": "zone1:host1",
@@ -144,7 +142,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_obj['metadata'] = {'key1': 'value1',
                                     'key2': 'value2',
@@ -169,7 +167,7 @@ class SnapshotMetaDataTest(test.TestCase):
             exception.SnapshotNotFound(snapshot_id=self.req_id)
 
         req = fakes.HTTPRequest.blank(self.url)
-        self.assertRaises(exception.SnapshotNotFound,
+        self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.index, req, self.url)
 
     @mock.patch('cinder.objects.Snapshot.get_by_id')
@@ -178,7 +176,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 
@@ -193,7 +191,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_obj['metadata'] = {'key2': 'value2'}
         snapshot_get_by_id.return_value = snapshot_obj
@@ -209,7 +207,7 @@ class SnapshotMetaDataTest(test.TestCase):
             exception.SnapshotNotFound(snapshot_id=self.req_id)
 
         req = fakes.HTTPRequest.blank(self.url + '/key2')
-        self.assertRaises(exception.SnapshotNotFound,
+        self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.show, req, self.req_id, 'key2')
 
     @mock.patch('cinder.objects.Snapshot.get_by_id')
@@ -218,12 +216,12 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 
         req = fakes.HTTPRequest.blank(self.url + '/key6')
-        self.assertRaises(exception.SnapshotMetadataNotFound,
+        self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.show, req, self.req_id, 'key6')
 
     @mock.patch('cinder.db.snapshot_metadata_delete')
@@ -233,7 +231,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_obj['metadata'] = {'key2': 'value2'}
         snapshot_get_by_id.return_value = snapshot_obj
@@ -249,7 +247,7 @@ class SnapshotMetaDataTest(test.TestCase):
                        return_snapshot_nonexistent)
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'DELETE'
-        self.assertRaises(exception.SnapshotNotFound,
+        self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.delete, req, self.req_id, 'key1')
 
     @mock.patch('cinder.objects.Snapshot.get_by_id')
@@ -258,13 +256,13 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 
         req = fakes.HTTPRequest.blank(self.url + '/key6')
         req.method = 'DELETE'
-        self.assertRaises(exception.SnapshotMetadataNotFound,
+        self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.delete, req, self.req_id, 'key6')
 
     @mock.patch('cinder.db.snapshot_update')
@@ -276,7 +274,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         fake_volume_obj = fake_volume.fake_volume_obj(ctx)
         snapshot_get_by_id.return_value = snapshot_obj
@@ -303,7 +301,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 
@@ -375,7 +373,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req.content_type = "application/json"
         body = {"metadata": {"key9": "value9"}}
         req.body = jsonutils.dump_as_bytes(body)
-        self.assertRaises(exception.SnapshotNotFound,
+        self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.create, req, self.req_id, body)
 
     @mock.patch('cinder.db.snapshot_update')
@@ -385,7 +383,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': []
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 
@@ -417,7 +415,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 
@@ -454,7 +452,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': []
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 
@@ -503,7 +501,7 @@ class SnapshotMetaDataTest(test.TestCase):
         body = {'metadata': {'key10': 'value10'}}
         req.body = jsonutils.dump_as_bytes(body)
 
-        self.assertRaises(exception.SnapshotNotFound,
+        self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.update_all, req, '100', body)
 
     @mock.patch('cinder.db.snapshot_metadata_update', return_value=dict())
@@ -515,7 +513,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 
@@ -532,13 +530,13 @@ class SnapshotMetaDataTest(test.TestCase):
         self.stubs.Set(cinder.db, 'snapshot_get',
                        return_snapshot_nonexistent)
         req = fakes.HTTPRequest.blank(
-            '/v2/%s/snapshots/asdf/metadata/key1' % fake.PROJECT_ID)
+            '/v2/fake/snapshots/asdf/metadata/key1')
         req.method = 'PUT'
         body = {"meta": {"key1": "value1"}}
         req.body = jsonutils.dump_as_bytes(body)
         req.headers["content-type"] = "application/json"
 
-        self.assertRaises(exception.SnapshotNotFound,
+        self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.update, req, self.req_id, 'key1',
                           body)
 
@@ -572,7 +570,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 
@@ -594,7 +592,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 
@@ -642,7 +640,7 @@ class SnapshotMetaDataTest(test.TestCase):
             'id': self.req_id,
             'expected_attrs': ['metadata']
         }
-        ctx = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        ctx = context.RequestContext('admin', 'fake', True)
         snapshot_obj = fake_snapshot.fake_snapshot_obj(ctx, **snapshot)
         snapshot_get_by_id.return_value = snapshot_obj
 

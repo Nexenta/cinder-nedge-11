@@ -17,7 +17,6 @@
 import mock
 
 from oslo_concurrency import processutils
-from oslo_utils import units
 
 from cinder import context
 from cinder import exception
@@ -36,7 +35,7 @@ class HGSTTestCase(test.TestCase):
     def setUp(self, mock_ghn, mock_grnam, mock_pwnam):
         """Set up UUT and all the flags required for later fake_executes."""
         super(HGSTTestCase, self).setUp()
-        self.mock_object(processutils, 'execute', self._fake_execute)
+        self.stubs.Set(processutils, 'execute', self._fake_execute)
         self._fail_vgc_cluster = False
         self._fail_ip = False
         self._fail_network_list = False
@@ -230,8 +229,6 @@ class HGSTTestCase(test.TestCase):
             for p in cmdlist:
                 if 'count=' in p:
                     self.dd_count = int(p[6:])
-                elif 'bs=' in p:
-                    self.bs = p[3:]
             return DD_OUTPUT, ''
         else:
             return '', ''
@@ -447,7 +444,7 @@ class HGSTTestCase(test.TestCase):
                     'storageserver': 'stor1:gbd0,stor2:gbd0,',
                     'size': '12'}
         self.assertDictMatch(expected, self.created)
-        # Check the returned provider, note that provider_id is hashed
+        # Check the returned provider, note the the provider_id is hashed
         expected_pid = {'provider_id': 'volume10'}
         self.assertDictMatch(expected_pid, ret)
 
@@ -475,8 +472,7 @@ class HGSTTestCase(test.TestCase):
                     'volume': {'provider_id': 'space10'}}
         ret = self.driver.create_snapshot(snapshot)
         # We must copy entier underlying storage, ~12GB, not just 10GB
-        self.assertEqual(11444 * units.Mi, self.dd_count)
-        self.assertEqual('1M', self.bs)
+        self.assertEqual(11444, self.dd_count)
         # Check space-create command
         expected = {'redundancy': '0', 'group': 'xanadu',
                     'name': snapshot['display_name'], 'mode': '0777',
@@ -501,8 +497,7 @@ class HGSTTestCase(test.TestCase):
                  'volume_type_id': type_ref['id'], 'size': 10}
         pid = self.driver.create_cloned_volume(clone, orig)
         # We must copy entier underlying storage, ~12GB, not just 10GB
-        self.assertEqual(11444 * units.Mi, self.dd_count)
-        self.assertEqual('1M', self.bs)
+        self.assertEqual(11444, self.dd_count)
         # Check space-create command
         expected = {'redundancy': '0', 'group': 'xanadu',
                     'name': 'clone1', 'mode': '0777',
@@ -542,8 +537,7 @@ class HGSTTestCase(test.TestCase):
                   'volume_type_id': type_ref['id'], 'size': 10}
         pid = self.driver.create_volume_from_snapshot(volume, snap)
         # We must copy entier underlying storage, ~12GB, not just 10GB
-        self.assertEqual(11444 * units.Mi, self.dd_count)
-        self.assertEqual('1M', self.bs)
+        self.assertEqual(11444, self.dd_count)
         # Check space-create command
         expected = {'redundancy': '0', 'group': 'xanadu',
                     'name': 'volume2', 'mode': '0777',

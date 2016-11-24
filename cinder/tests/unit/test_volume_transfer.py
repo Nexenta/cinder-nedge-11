@@ -33,8 +33,8 @@ class VolumeTransferTestCase(test.TestCase):
     """Test cases for volume transfer code."""
     def setUp(self):
         super(VolumeTransferTestCase, self).setUp()
-        self.ctxt = context.RequestContext(user_id=fake.USER_ID,
-                                           project_id=fake.PROJECT_ID)
+        self.ctxt = context.RequestContext(user_id=fake.user_id,
+                                           project_id=fake.project_id)
         self.updated_at = datetime.datetime(1, 1, 1, 1, 1, 1)
 
     @mock.patch('cinder.volume.utils.notify_about_volume_usage')
@@ -133,28 +133,27 @@ class VolumeTransferTestCase(test.TestCase):
                           tx_api.accept,
                           self.ctxt, transfer['id'], transfer['auth_key'])
 
-    @mock.patch.object(QUOTAS, "limit_check")
     @mock.patch.object(QUOTAS, "reserve")
     @mock.patch.object(QUOTAS, "add_volume_type_opts")
     @mock.patch('cinder.volume.utils.notify_about_volume_usage')
     def test_transfer_accept(self, mock_notify, mock_quota_voltype,
-                             mock_quota_reserve, mock_quota_limit):
+                             mock_quota_reserve):
         svc = self.start_service('volume', host='test_host')
         self.addCleanup(svc.stop)
         tx_api = transfer_api.API()
         volume = utils.create_volume(self.ctxt,
-                                     volume_type_id=fake.VOLUME_TYPE_ID,
+                                     volume_type_id=fake.volume_type_id,
                                      updated_at=self.updated_at)
         transfer = tx_api.create(self.ctxt, volume.id, 'Description')
 
-        self.ctxt.user_id = fake.USER2_ID
-        self.ctxt.project_id = fake.PROJECT2_ID
+        self.ctxt.user_id = fake.user2_id
+        self.ctxt.project_id = fake.project2_id
         response = tx_api.accept(self.ctxt,
                                  transfer['id'],
                                  transfer['auth_key'])
         volume = objects.Volume.get_by_id(self.ctxt, volume.id)
-        self.assertEqual(fake.PROJECT2_ID, volume.project_id)
-        self.assertEqual(fake.USER2_ID, volume.user_id)
+        self.assertEqual(fake.project2_id, volume.project_id)
+        self.assertEqual(fake.user2_id, volume.user_id)
 
         self.assertEqual(response['volume_id'], volume.id,
                          'Unexpected volume id in response.')
@@ -172,21 +171,15 @@ class VolumeTransferTestCase(test.TestCase):
         # QUOTAS.add_volume_type_opts
         reserve_opt = {'volumes': 1, 'gigabytes': 1}
         release_opt = {'volumes': -1, 'gigabytes': -1}
-        calls = [mock.call(self.ctxt, reserve_opt, fake.VOLUME_TYPE_ID),
-                 mock.call(self.ctxt, release_opt, fake.VOLUME_TYPE_ID)]
+        calls = [mock.call(self.ctxt, reserve_opt, fake.volume_type_id),
+                 mock.call(self.ctxt, release_opt, fake.volume_type_id)]
         mock_quota_voltype.assert_has_calls(calls)
 
         # QUOTAS.reserve
         calls = [mock.call(mock.ANY, **reserve_opt),
-                 mock.call(mock.ANY, project_id=fake.PROJECT_ID,
+                 mock.call(mock.ANY, project_id=fake.project_id,
                            **release_opt)]
         mock_quota_reserve.assert_has_calls(calls)
-
-        # QUOTAS.limit_check
-        values = {'per_volume_gigabytes': 1}
-        mock_quota_limit.assert_called_once_with(self.ctxt,
-                                                 project_id=fake.PROJECT2_ID,
-                                                 **values)
 
     @mock.patch.object(QUOTAS, "reserve")
     @mock.patch.object(QUOTAS, "add_volume_type_opts")
@@ -197,7 +190,7 @@ class VolumeTransferTestCase(test.TestCase):
         self.addCleanup(svc.stop)
         tx_api = transfer_api.API()
         volume = utils.create_volume(self.ctxt,
-                                     volume_type_id=fake.VOLUME_TYPE_ID,
+                                     volume_type_id=fake.volume_type_id,
                                      updated_at=self.updated_at)
         transfer = tx_api.create(self.ctxt, volume.id, 'Description')
         fake_overs = ['volumes_lvmdriver-3']
@@ -211,47 +204,13 @@ class VolumeTransferTestCase(test.TestCase):
             quotas=fake_quotas,
             usages=fake_usages)
 
-        self.ctxt.user_id = fake.USER2_ID
-        self.ctxt.project_id = fake.PROJECT2_ID
+        self.ctxt.user_id = fake.user2_id
+        self.ctxt.project_id = fake.project2_id
         self.assertRaises(exception.VolumeLimitExceeded,
                           tx_api.accept,
                           self.ctxt,
                           transfer['id'],
                           transfer['auth_key'])
-        # notification of transfer.accept is sent only after quota check
-        # passes
-        self.assertEqual(2, mock_notify.call_count)
-
-    @mock.patch.object(QUOTAS, "limit_check")
-    @mock.patch('cinder.volume.utils.notify_about_volume_usage')
-    def test_transfer_accept_over_quota_check_limit(self, mock_notify,
-                                                    mock_quota_limit):
-        svc = self.start_service('volume', host='test_host')
-        self.addCleanup(svc.stop)
-        tx_api = transfer_api.API()
-        volume = utils.create_volume(self.ctxt,
-                                     volume_type_id=fake.VOLUME_TYPE_ID,
-                                     updated_at=self.updated_at)
-        transfer = tx_api.create(self.ctxt, volume.id, 'Description')
-        fake_overs = ['per_volume_gigabytes']
-        fake_quotas = {'per_volume_gigabytes': 1}
-        fake_usages = {}
-
-        mock_quota_limit.side_effect = exception.OverQuota(
-            overs=fake_overs,
-            quotas=fake_quotas,
-            usages=fake_usages)
-
-        self.ctxt.user_id = fake.USER2_ID
-        self.ctxt.project_id = fake.PROJECT2_ID
-        self.assertRaises(exception.VolumeSizeExceedsLimit,
-                          tx_api.accept,
-                          self.ctxt,
-                          transfer['id'],
-                          transfer['auth_key'])
-        # notification of transfer.accept is sent only after quota check
-        # passes
-        self.assertEqual(2, mock_notify.call_count)
 
     def test_transfer_get(self):
         tx_api = transfer_api.API()
@@ -263,8 +222,8 @@ class VolumeTransferTestCase(test.TestCase):
         ts = tx_api.get_all(self.ctxt)
         self.assertEqual(1, len(ts), 'Unexpected number of transfers.')
 
-        nctxt = context.RequestContext(user_id=fake.USER2_ID,
-                                       project_id=fake.PROJECT2_ID)
+        nctxt = context.RequestContext(user_id=fake.user2_id,
+                                       project_id=fake.project2_id)
         utils.create_volume(nctxt, updated_at=self.updated_at)
         self.assertRaises(exception.TransferNotFound,
                           tx_api.get,

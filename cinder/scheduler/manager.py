@@ -37,7 +37,6 @@ from cinder import objects
 from cinder import quota
 from cinder import rpc
 from cinder.scheduler.flows import create_volume
-from cinder.scheduler import rpcapi as scheduler_rpcapi
 from cinder.volume import rpcapi as volume_rpcapi
 
 
@@ -57,9 +56,9 @@ LOG = logging.getLogger(__name__)
 class SchedulerManager(manager.Manager):
     """Chooses a host to create volumes."""
 
-    RPC_API_VERSION = scheduler_rpcapi.SchedulerAPI.RPC_API_VERSION
+    RPC_API_VERSION = '2.0'
 
-    target = messaging.Target(version='2.3')
+    target = messaging.Target(version=RPC_API_VERSION)
 
     def __init__(self, scheduler_driver=None, service_name=None,
                  *args, **kwargs):
@@ -67,7 +66,7 @@ class SchedulerManager(manager.Manager):
             scheduler_driver = CONF.scheduler_driver
         self.driver = importutils.import_object(scheduler_driver)
         super(SchedulerManager, self).__init__(*args, **kwargs)
-        self.additional_endpoints.append(_SchedulerV3Proxy(self))
+        self.additional_endpoints.append(_SchedulerV1Proxy(self))
         self._startup_delay = True
 
     def init_host_with_rpc(self):
@@ -121,51 +120,17 @@ class SchedulerManager(manager.Manager):
                 group.status = 'error'
                 group.save()
 
-    def create_group(self, context, topic,
-                     group,
-                     group_spec=None,
-                     group_filter_properties=None,
-                     request_spec_list=None,
-                     filter_properties_list=None):
-
-        self._wait_for_scheduler()
-        try:
-            self.driver.schedule_create_group(
-                context, group,
-                group_spec,
-                request_spec_list,
-                group_filter_properties,
-                filter_properties_list)
-        except exception.NoValidHost:
-            LOG.error(_LE("Could not find a host for group "
-                          "%(group_id)s."),
-                      {'group_id': group.id})
-            group.status = 'error'
-            group.save()
-        except Exception:
-            with excutils.save_and_reraise_exception():
-                LOG.exception(_LE("Failed to create generic group "
-                                  "%(group_id)s."),
-                              {'group_id': group.id})
-                group.status = 'error'
-                group.save()
-
     def create_volume(self, context, topic, volume_id, snapshot_id=None,
                       image_id=None, request_spec=None,
                       filter_properties=None, volume=None):
 
         self._wait_for_scheduler()
 
-        # FIXME(dulek): Remove this in v3.0 of RPC API.
+        # FIXME(thangp): Remove this in v2.0 of RPC API.
         if volume is None:
             # For older clients, mimic the old behavior and look up the
             # volume by its volume_id.
             volume = objects.Volume.get_by_id(context, volume_id)
-
-        # FIXME(dulek): Remove this in v3.0 of RPC API.
-        if isinstance(request_spec, dict):
-            # We may receive request_spec as dict from older clients.
-            request_spec = objects.RequestSpec.from_primitives(request_spec)
 
         try:
             flow_engine = create_volume.get_flow(context,
@@ -193,7 +158,7 @@ class SchedulerManager(manager.Manager):
 
         self._wait_for_scheduler()
 
-        # FIXME(dulek): Remove this in v3.0 of RPC API.
+        # FIXME(thangp): Remove this in v2.0 of RPC API.
         if volume is None:
             # For older clients, mimic the old behavior and look up the
             # volume by its volume_id.
@@ -239,14 +204,14 @@ class SchedulerManager(manager.Manager):
 
         self._wait_for_scheduler()
 
-        # FIXME(dulek): Remove this in v3.0 of RPC API.
+        # FIXME(thangp): Remove this in v2.0 of RPC API.
         if volume is None:
             # For older clients, mimic the old behavior and look up the
             # volume by its volume_id.
             volume = objects.Volume.get_by_id(context, volume_id)
 
         def _retype_volume_set_error(self, context, ex, request_spec,
-                                     volume_ref, reservations, msg=None):
+                                     volume_ref, msg, reservations):
             if reservations:
                 QUOTAS.rollback(context, reservations)
             previous_status = (
@@ -262,7 +227,7 @@ class SchedulerManager(manager.Manager):
             msg = _('New volume type not specified in request_spec.')
             ex = exception.ParameterNotFound(param='volume_type')
             _retype_volume_set_error(self, context, ex, request_spec,
-                                     volume, reservations, msg)
+                                     volume, msg, reservations)
 
         # Default migration policy is 'never'
         migration_policy = request_spec.get('migration_policy')
@@ -273,13 +238,16 @@ class SchedulerManager(manager.Manager):
             tgt_host = self.driver.find_retype_host(context, request_spec,
                                                     filter_properties,
                                                     migration_policy)
+        except exception.NoValidHost as ex:
+            msg = (_("Could not find a host for volume %(volume_id)s with "
+                     "type %(type_id)s.") %
+                   {'type_id': new_type['id'], 'volume_id': volume.id})
+            _retype_volume_set_error(self, context, ex, request_spec,
+                                     volume, msg, reservations)
         except Exception as ex:
-            # Not having a valid host is an expected exception, so we don't
-            # reraise on it.
-            reraise = not isinstance(ex, exception.NoValidHost)
-            with excutils.save_and_reraise_exception(reraise=reraise):
+            with excutils.save_and_reraise_exception():
                 _retype_volume_set_error(self, context, ex, request_spec,
-                                         volume, reservations)
+                                         volume, None, reservations)
         else:
             volume_rpcapi.VolumeAPI().retype(context, volume,
                                              new_type['id'], tgt_host,
@@ -288,25 +256,20 @@ class SchedulerManager(manager.Manager):
                                              old_reservations)
 
     def manage_existing(self, context, topic, volume_id,
-                        request_spec, filter_properties=None, volume=None):
+                        request_spec, filter_properties=None):
         """Ensure that the host exists and can accept the volume."""
 
         self._wait_for_scheduler()
-
-        # FIXME(mdulko): Remove this in v3.0 of RPC API.
-        if volume is None:
-            # For older clients, mimic the old behavior and look up the
-            # volume by its volume_id.
-            volume = objects.Volume.get_by_id(context, volume_id)
 
         def _manage_existing_set_error(self, context, ex, request_spec):
             volume_state = {'volume_state': {'status': 'error'}}
             self._set_volume_state_and_notify('manage_existing', volume_state,
                                               context, ex, request_spec)
 
+        volume_ref = db.volume_get(context, volume_id)
         try:
             self.driver.host_passes_filters(context,
-                                            volume.host,
+                                            volume_ref['host'],
                                             request_spec,
                                             filter_properties)
         except exception.NoValidHost as ex:
@@ -315,7 +278,7 @@ class SchedulerManager(manager.Manager):
             with excutils.save_and_reraise_exception():
                 _manage_existing_set_error(self, context, ex, request_spec)
         else:
-            volume_rpcapi.VolumeAPI().manage_existing(context, volume,
+            volume_rpcapi.VolumeAPI().manage_existing(context, volume_ref,
                                                       request_spec.get('ref'))
 
     def get_pools(self, context, filters=None):
@@ -355,10 +318,11 @@ class SchedulerManager(manager.Manager):
                                             payload)
 
 
-# TODO(dulek): This goes away immediately in Ocata and is just present in
-# Newton so that we can receive v2.x and v3.0 messages.
-class _SchedulerV3Proxy(object):
-    target = messaging.Target(version='3.0')
+# TODO(dulek): This goes away immediately in Newton and is just present in
+# Mitaka so that we can receive v1.x and v2.0 messages.
+class _SchedulerV1Proxy(object):
+
+    target = messaging.Target(version='1.11')
 
     def __init__(self, manager):
         self.manager = manager
@@ -369,68 +333,42 @@ class _SchedulerV3Proxy(object):
             context, service_name=service_name, host=host,
             capabilities=capabilities, **kwargs)
 
-    def create_consistencygroup(self, context, group, request_spec_list=None,
+    def create_consistencygroup(self, context, topic, group,
+                                request_spec_list=None,
                                 filter_properties_list=None):
-        # NOTE(dulek): Second argument here is `topic` which is unused. We're
-        # getting rid of it in 3.0, hence it's missing from method signature.
         return self.manager.create_consistencygroup(
-            context, None, group, request_spec_list=request_spec_list,
-            filter_properties_list=filter_properties_list)
+            context, topic, group, request_spec_list=request_spec_list,
+            filter_properties_list=None)
 
-    def create_group(self, context, group, group_spec=None,
-                     group_filter_properties=None, request_spec_list=None,
-                     filter_properties_list=None):
-        # NOTE(dulek): Second argument here is `topic` which is unused. We're
-        # getting rid of it in 3.0, hence it's missing from method signature.
-        return self.manager.create_group(
-            context, None, group, group_spec=group_spec,
-            group_filter_properties=group_filter_properties,
-            request_spec_list=request_spec_list,
-            filter_properties_list=filter_properties_list)
-
-    def create_volume(self, context, volume, snapshot_id=None, image_id=None,
-                      request_spec=None, filter_properties=None):
-        # NOTE(dulek): Second argument here is `topic`, which is unused. We're
-        # getting rid of it in 3.0, hence it's missing from method signature.
-        # We're also replacing volume_id with volume object (switched from
-        # optional keyword argument to positional argument).
+    def create_volume(self, context, topic, volume_id, snapshot_id=None,
+                      image_id=None, request_spec=None, filter_properties=None,
+                      volume=None):
         return self.manager.create_volume(
-            context, None, volume.id, snapshot_id=snapshot_id,
+            context, topic, volume_id, snapshot_id=snapshot_id,
             image_id=image_id, request_spec=request_spec,
             filter_properties=filter_properties, volume=volume)
 
     def request_service_capabilities(self, context):
         return self.manager.request_service_capabilities(context)
 
-    def migrate_volume_to_host(self, context, volume, host,
+    def migrate_volume_to_host(self, context, topic, volume_id, host,
                                force_host_copy, request_spec,
-                               filter_properties=None):
-        # NOTE(dulek): Second argument here is `topic` which is unused. We're
-        # getting rid of it in 3.0, hence it's missing from method signature.
-        # We're also replacing volume_id with volume object (switched from
-        # optional keyword argument to positional argument).
+                               filter_properties=None, volume=None):
         return self.manager.migrate_volume_to_host(
-            context, None, volume.id, host, force_host_copy, request_spec,
-            filter_propterties=filter_properties, volume=volume)
-
-    def retype(self, context, volume, request_spec, filter_properties=None):
-        # NOTE(dulek): Second argument here is `topic` which is unused. We're
-        # getting rid of it in 3.0, hence it's missing from method signature.
-        # We're also replacing volume_id with volume object (switched from
-        # optional keyword argument to positional argument).
-        return self.manager.retype(
-            context, None, volume.id, request_spec,
+            context, topic, volume_id, host, force_host_copy, request_spec,
             filter_properties=filter_properties, volume=volume)
 
-    def manage_existing(self, context, volume, request_spec,
+    def retype(self, context, topic, volume_id, request_spec,
+               filter_properties=None, volume=None):
+        return self.manager.retype(context, topic, volume_id, request_spec,
+                                   filter_properties=filter_properties,
+                                   volume=volume)
+
+    def manage_existing(self, context, topic, volume_id, request_spec,
                         filter_properties=None):
-        # NOTE(dulek): Second argument here is `topic` which is unused. We're
-        # getting rid of it in 3.0, hence it's missing from method signature.
-        # We're also replacing volume_id with volume object (switched from
-        # optional keyword argument to positional argument).
         return self.manager.manage_existing(
-            context, None, volume.id, request_spec,
-            filter_properties=filter_properties, volume=volume)
+            context, topic, volume_id, request_spec,
+            filter_properties=filter_properties)
 
     def get_pools(self, context, filters=None):
         return self.manager.get_pools(context, filters=filters)

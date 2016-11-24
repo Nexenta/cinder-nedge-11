@@ -24,7 +24,6 @@ from oslo_utils import units
 from cinder import exception
 from cinder.image import image_utils
 from cinder import test
-from cinder.tests.unit import fake_constants as fake
 from cinder.volume import throttling
 
 
@@ -39,7 +38,8 @@ class TestQemuImgInfo(test.TestCase):
 
         output = image_utils.qemu_img_info(test_path)
         mock_exec.assert_called_once_with('env', 'LC_ALL=C', 'qemu-img',
-                                          'info', test_path, run_as_root=True)
+                                          'info', test_path, run_as_root=True,
+                                          prlimit=image_utils.QEMU_IMG_LIMITS)
         self.assertEqual(mock_info.return_value, output)
 
     @mock.patch('oslo_utils.imageutils.QemuImgInfo')
@@ -52,7 +52,8 @@ class TestQemuImgInfo(test.TestCase):
 
         output = image_utils.qemu_img_info(test_path, run_as_root=False)
         mock_exec.assert_called_once_with('env', 'LC_ALL=C', 'qemu-img',
-                                          'info', test_path, run_as_root=False)
+                                          'info', test_path, run_as_root=False,
+                                          prlimit=image_utils.QEMU_IMG_LIMITS)
         self.assertEqual(mock_info.return_value, output)
 
     @mock.patch('cinder.image.image_utils.os')
@@ -67,7 +68,8 @@ class TestQemuImgInfo(test.TestCase):
 
         output = image_utils.qemu_img_info(test_path)
         mock_exec.assert_called_once_with('qemu-img', 'info', test_path,
-                                          run_as_root=True)
+                                          run_as_root=True,
+                                          prlimit=image_utils.QEMU_IMG_LIMITS)
         self.assertEqual(mock_info.return_value, output)
 
     @mock.patch('cinder.utils.execute')
@@ -796,7 +798,7 @@ class TestFetchToVolumeFormat(test.TestCase):
         tmp = mock_temp.return_value.__enter__.return_value
         image_service.show.return_value = {'disk_format': 'raw',
                                            'size': 41126400}
-        image_size_m = math.ceil(float(41126400) / units.Mi)
+        image_size_m = math.ceil(41126400 / units.Mi)
 
         output = image_utils.fetch_to_volume_format(
             ctxt, image_service, image_id, dest, volume_format, blocksize,
@@ -926,7 +928,7 @@ class TestFetchToVolumeFormat(test.TestCase):
         data = mock_info.return_value
         data.file_format = volume_format
         data.backing_file = None
-        data.virtual_size = int(1234.5 * units.Gi)
+        data.virtual_size = 4321 * 1024 ** 3
         tmp = mock_temp.return_value.__enter__.return_value
 
         self.assertRaises(
@@ -1252,13 +1254,12 @@ class TestVhdUtils(test.TestCase):
         mock_exec.assert_called_once_with('vhd-util', 'coalesce', '-n',
                                           vhd_path)
 
-    @mock.patch('cinder.image.image_utils.temporary_dir')
     @mock.patch('cinder.image.image_utils.coalesce_vhd')
     @mock.patch('cinder.image.image_utils.resize_vhd')
     @mock.patch('cinder.image.image_utils.get_vhd_size')
     @mock.patch('cinder.image.image_utils.utils.execute')
     def test_coalesce_chain(self, mock_exec, mock_size, mock_resize,
-                            mock_coal, mock_temp):
+                            mock_coal):
         vhd_chain = (mock.sentinel.first,
                      mock.sentinel.second,
                      mock.sentinel.third,
@@ -1391,24 +1392,3 @@ class TestTemporaryFileContextManager(test.TestCase):
             self.assertEqual(mock.sentinel.temporary_file, tmp_file)
             self.assertFalse(mock_delete.called)
         mock_delete.assert_called_once_with(mock.sentinel.temporary_file)
-
-
-class TestImageUtils(test.TestCase):
-    def test_get_virtual_size(self):
-        image_id = fake.IMAGE_ID
-        virtual_size = 1073741824
-        volume_size = 2
-        virt_size = image_utils.check_virtual_size(virtual_size,
-                                                   volume_size,
-                                                   image_id)
-        self.assertEqual(1, virt_size)
-
-    def test_get_bigger_virtual_size(self):
-        image_id = fake.IMAGE_ID
-        virtual_size = 3221225472
-        volume_size = 2
-        self.assertRaises(exception.ImageUnacceptable,
-                          image_utils.check_virtual_size,
-                          virtual_size,
-                          volume_size,
-                          image_id)

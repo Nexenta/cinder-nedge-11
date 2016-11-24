@@ -25,6 +25,8 @@ Volume backups can be created, restored, deleted and listed.
 
 **Related Flags**
 
+:backup_topic:  What :mod:`rpc` topic to listen to (default:
+                        `cinder-backup`).
 :backup_manager:  The module name of a class derived from
                           :class:`manager.Manager` (default:
                           :class:`cinder.backup.manager.Manager`).
@@ -59,11 +61,9 @@ backup_manager_opts = [
                default='cinder.backup.drivers.swift',
                help='Driver to use for backups.',),
     cfg.BoolOpt('backup_service_inithost_offload',
-                default=True,
+                default=False,
                 help='Offload pending backup delete during '
-                     'backup service startup. If false, the backup service '
-                     'will remain down until all pending backups are '
-                     'deleted.',),
+                     'backup service startup.',),
 ]
 
 # This map doesn't need to be extended in the future since it's only
@@ -81,7 +81,7 @@ QUOTAS = quota.QUOTAS
 class BackupManager(manager.SchedulerDependentManager):
     """Manages backup of block storage devices."""
 
-    RPC_API_VERSION = backup_rpcapi.BackupAPI.RPC_API_VERSION
+    RPC_API_VERSION = '2.0'
 
     target = messaging.Target(version=RPC_API_VERSION)
 
@@ -101,6 +101,24 @@ class BackupManager(manager.SchedulerDependentManager):
         self.volume_rpcapi = volume_rpcapi.VolumeAPI()
         super(BackupManager, self).__init__(service_name='backup',
                                             *args, **kwargs)
+        self.additional_endpoints.append(_BackupV1Proxy(self))
+
+    def _init_volume_driver(self, ctxt, driver):
+        LOG.info(_LI("Starting volume driver %(driver_name)s (%(version)s)."),
+                 {'driver_name': driver.__class__.__name__,
+                  'version': driver.get_version()})
+        try:
+            driver.do_setup(ctxt)
+            driver.check_for_setup_error()
+        except Exception:
+            LOG.exception(_LE("Error encountered during initialization of "
+                              "driver: %(name)s."),
+                          {'name': driver.__class__.__name__})
+            # we don't want to continue since we failed
+            # to initialize the driver correctly.
+            return
+
+        driver.set_initialized()
 
     def _get_volume_backend(self, host=None, allow_null_host=False):
         if host is None:
@@ -123,7 +141,7 @@ class BackupManager(manager.SchedulerDependentManager):
 
         if 'default' not in self.volume_managers:
             # For multi-backend we just pick the top of the list.
-            return next(iter(self.volume_managers))
+            return self.volume_managers.keys()[0]
 
         return 'default'
 
@@ -151,7 +169,7 @@ class BackupManager(manager.SchedulerDependentManager):
 
     def _setup_volume_drivers(self):
         if CONF.enabled_backends:
-            for backend in filter(None, CONF.enabled_backends):
+            for backend in CONF.enabled_backends:
                 host = "%s@%s" % (CONF.host, backend)
                 mgr = importutils.import_object(CONF.volume_manager,
                                                 host=host,
@@ -168,23 +186,6 @@ class BackupManager(manager.SchedulerDependentManager):
             LOG.debug("Registering default backend %s.", default)
             self.volume_managers['default'] = default
 
-    def _init_volume_driver(self, ctxt, driver):
-        LOG.info(_LI("Starting volume driver %(driver_name)s (%(version)s)."),
-                 {'driver_name': driver.__class__.__name__,
-                  'version': driver.get_version()})
-        try:
-            driver.do_setup(ctxt)
-            driver.check_for_setup_error()
-        except Exception:
-            LOG.exception(_LE("Error encountered during initialization of "
-                              "driver: %(name)s."),
-                          {'name': driver.__class__.__name__})
-            # we don't want to continue since we failed
-            # to initialize the driver correctly.
-            return
-
-        driver.set_initialized()
-
     @property
     def driver_name(self):
         """This function maps old backup services to backup drivers."""
@@ -198,12 +199,12 @@ class BackupManager(manager.SchedulerDependentManager):
             return mapper[service]
         return service
 
-    def _update_backup_error(self, backup, err):
+    def _update_backup_error(self, backup, context, err):
         backup.status = fields.BackupStatus.ERROR
         backup.fail_reason = err
         backup.save()
 
-    def init_host(self, **kwargs):
+    def init_host(self):
         """Run initialization needed for a standalone service."""
         ctxt = context.get_admin_context()
 
@@ -267,7 +268,7 @@ class BackupManager(manager.SchedulerDependentManager):
             self._cleanup_one_volume(ctxt, volume)
 
             err = 'incomplete backup reset on manager restart'
-            self._update_backup_error(backup, err)
+            self._update_backup_error(backup, ctxt, err)
         elif backup['status'] == fields.BackupStatus.RESTORING:
             LOG.info(_LI('Resetting backup %s to '
                          'available (was restoring).'),
@@ -285,7 +286,7 @@ class BackupManager(manager.SchedulerDependentManager):
                 # from being blocked.
                 self._add_to_threadpool(self.delete_backup, ctxt, backup)
             else:
-                # Delete backups sequentially
+                # By default, delete backups sequentially
                 self.delete_backup(ctxt, backup)
 
     def _detach_all_attachments(self, ctxt, volume):
@@ -321,8 +322,8 @@ class BackupManager(manager.SchedulerDependentManager):
                 ctxt, backup.temp_snapshot_id)
             volume = objects.Volume.get_by_id(
                 ctxt, backup.volume_id)
-            # The temp snapshot should be deleted directly through the
-            # volume driver, not through the volume manager.
+            # The temp snapshot should be deleted directly thru the
+            # volume driver, not thru the volume manager.
             self.volume_rpcapi.delete_snapshot(ctxt, temp_snapshot,
                                                volume.host)
         except exception.SnapshotNotFound:
@@ -379,7 +380,7 @@ class BackupManager(manager.SchedulerDependentManager):
                 'expected_status': expected_status,
                 'actual_status': actual_status,
             }
-            self._update_backup_error(backup, err)
+            self._update_backup_error(backup, context, err)
             raise exception.InvalidVolume(reason=err)
 
         expected_status = fields.BackupStatus.CREATING
@@ -390,7 +391,7 @@ class BackupManager(manager.SchedulerDependentManager):
                 'expected_status': expected_status,
                 'actual_status': actual_status,
             }
-            self._update_backup_error(backup, err)
+            self._update_backup_error(backup, context, err)
             backup.save()
             raise exception.InvalidBackup(reason=err)
 
@@ -401,7 +402,7 @@ class BackupManager(manager.SchedulerDependentManager):
                 self.db.volume_update(context, volume_id,
                                       {'status': previous_status,
                                        'previous_status': 'error_backing-up'})
-                self._update_backup_error(backup, six.text_type(err))
+                self._update_backup_error(backup, context, six.text_type(err))
 
         # Restore the original status.
         self.db.volume_update(context, volume_id,
@@ -442,7 +443,6 @@ class BackupManager(manager.SchedulerDependentManager):
                         with utils.temporary_chown(device_path):
                             with open(device_path) as device_file:
                                 backup_service.backup(backup, device_file)
-                # device_path is already file-like so no need to open it
                 else:
                     backup_service.backup(backup, device_path)
 
@@ -485,7 +485,7 @@ class BackupManager(manager.SchedulerDependentManager):
                      '%(expected_status)s but got %(actual_status)s.') %
                    {'expected_status': expected_status,
                     'actual_status': actual_status})
-            self._update_backup_error(backup, err)
+            self._update_backup_error(backup, context, err)
             self.db.volume_update(context, volume_id, {'status': 'error'})
             raise exception.InvalidBackup(reason=err)
 
@@ -549,7 +549,6 @@ class BackupManager(manager.SchedulerDependentManager):
                         with open(device_path, 'wb') as device_file:
                             backup_service.restore(backup, volume.id,
                                                    device_file)
-            # device_path is already file-like so no need to open it
             else:
                 backup_service.restore(backup, volume.id, device_path)
         finally:
@@ -570,7 +569,7 @@ class BackupManager(manager.SchedulerDependentManager):
                     '%(expected_status)s but got %(actual_status)s.') \
                 % {'expected_status': expected_status,
                    'actual_status': actual_status}
-            self._update_backup_error(backup, err)
+            self._update_backup_error(backup, context, err)
             raise exception.InvalidBackup(reason=err)
 
         backup_service = self._map_service_to_driver(backup['service'])
@@ -583,7 +582,7 @@ class BackupManager(manager.SchedulerDependentManager):
                         ' backup [%(backup_service)s].')\
                     % {'configured_service': configured_service,
                        'backup_service': backup_service}
-                self._update_backup_error(backup, err)
+                self._update_backup_error(backup, context, err)
                 raise exception.InvalidBackup(reason=err)
 
             try:
@@ -591,7 +590,8 @@ class BackupManager(manager.SchedulerDependentManager):
                 backup_service.delete(backup)
             except Exception as err:
                 with excutils.save_and_reraise_exception():
-                    self._update_backup_error(backup, six.text_type(err))
+                    self._update_backup_error(backup, context,
+                                              six.text_type(err))
 
         # Get reservations
         try:
@@ -718,7 +718,7 @@ class BackupManager(manager.SchedulerDependentManager):
                 err = _('Import record failed, cannot find backup '
                         'service to perform the import. Request service '
                         '%(service)s') % {'service': backup_service}
-                self._update_backup_error(backup, err)
+                self._update_backup_error(backup, context, err)
                 raise exception.ServiceNotFound(service_id=backup_service)
         else:
             # Yes...
@@ -732,7 +732,7 @@ class BackupManager(manager.SchedulerDependentManager):
                 backup_service.import_record(backup, driver_options)
             except Exception as err:
                 msg = six.text_type(err)
-                self._update_backup_error(backup, msg)
+                self._update_backup_error(backup, context, msg)
                 raise exception.InvalidBackup(reason=msg)
 
             required_import_options = {
@@ -752,7 +752,7 @@ class BackupManager(manager.SchedulerDependentManager):
                 msg = (_('Driver successfully decoded imported backup data, '
                          'but there are missing fields (%s).') %
                        ', '.join(missing_opts))
-                self._update_backup_error(backup, msg)
+                self._update_backup_error(backup, context, msg)
                 raise exception.InvalidBackup(reason=msg)
 
             # Confirm the ID from the record in the DB is the right one
@@ -761,7 +761,7 @@ class BackupManager(manager.SchedulerDependentManager):
                 msg = (_('Trying to import backup metadata from id %(meta_id)s'
                          ' into backup %(id)s.') %
                        {'meta_id': backup_id, 'id': backup.id})
-                self._update_backup_error(backup, msg)
+                self._update_backup_error(backup, context, msg)
                 raise exception.InvalidBackup(reason=msg)
 
             # Overwrite some fields
@@ -791,7 +791,8 @@ class BackupManager(manager.SchedulerDependentManager):
                                  'id': backup.id})
             except exception.InvalidBackup as err:
                 with excutils.save_and_reraise_exception():
-                    self._update_backup_error(backup, six.text_type(err))
+                    self._update_backup_error(backup, context,
+                                              six.text_type(err))
 
             LOG.info(_LI('Import record id %s metadata from driver '
                          'finished.'), backup.id)
@@ -811,17 +812,17 @@ class BackupManager(manager.SchedulerDependentManager):
                  {'backup_id': backup.id,
                   'status': status})
 
-        backup_service_name = self._map_service_to_driver(backup.service)
-        LOG.info(_LI('Backup service: %s.'), backup_service_name)
-        if backup_service_name is not None:
+        backup_service = self._map_service_to_driver(backup.service)
+        LOG.info(_LI('Backup service: %s.'), backup_service)
+        if backup_service is not None:
             configured_service = self.driver_name
-            if backup_service_name != configured_service:
+            if backup_service != configured_service:
                 err = _('Reset backup status aborted, the backup service'
                         ' currently configured [%(configured_service)s] '
                         'is not the backup service that was used to create'
                         ' this backup [%(backup_service)s].') % \
                     {'configured_service': configured_service,
-                     'backup_service': backup_service_name}
+                     'backup_service': backup_service}
                 raise exception.InvalidBackup(reason=err)
             # Verify backup
             try:
@@ -829,7 +830,6 @@ class BackupManager(manager.SchedulerDependentManager):
                 if (status == fields.BackupStatus.AVAILABLE
                         and backup['status'] != fields.BackupStatus.RESTORING):
                     # check whether we could verify the backup is ok or not
-                    backup_service = self.service.get_backup_driver(context)
                     if isinstance(backup_service,
                                   driver.BackupDriverWithVerify):
                         backup_service.verify(backup.id)
@@ -962,3 +962,36 @@ class BackupManager(manager.SchedulerDependentManager):
             backend = self._get_volume_backend(host=host)
             self._get_driver(backend)._detach_snapshot(
                 context, attach_info, device, properties, force)
+
+
+# TODO(dulek): This goes away immediately in Newton and is just present in
+# Mitaka so that we can receive v1.x and v2.0 messages.
+class _BackupV1Proxy(object):
+
+    target = messaging.Target(version='1.3')
+
+    def __init__(self, manager):
+        self.manager = manager
+
+    def create_backup(self, context, backup):
+        return self.manager.create_backup(context, backup)
+
+    def restore_backup(self, context, backup, volume_id):
+        return self.manager.restore_backup(context, backup, volume_id)
+
+    def delete_backup(self, context, backup):
+        return self.manager.delete_backup(context, backup)
+
+    def export_record(self, context, backup):
+        return self.manager.export_record(context, backup)
+
+    def import_record(self, context, backup, backup_service, backup_url,
+                      backup_hosts):
+        return self.manager.import_record(context, backup, backup_service,
+                                          backup_url, backup_hosts)
+
+    def reset_status(self, context, backup, status):
+        return self.manager.reset_status(context, backup, status)
+
+    def check_support_to_force_delete(self, context):
+        return self.manager.check_support_to_force_delete(context)

@@ -14,10 +14,14 @@
 
 """The Extended Snapshot Attributes API extension."""
 
+from oslo_log import log as logging
+
 from cinder.api import extensions
 from cinder.api.openstack import wsgi
+from cinder.api import xmlutil
 
 
+LOG = logging.getLogger(__name__)
 authorize = extensions.soft_extension_authorizer(
     'volume',
     'extended_snapshot_attributes')
@@ -35,6 +39,7 @@ class ExtendedSnapshotAttributesController(wsgi.Controller):
         context = req.environ['cinder.context']
         if authorize(context):
             # Attach our slave template to the response object
+            resp_obj.attach(xml=ExtendedSnapshotAttributeTemplate())
             snapshot = resp_obj.obj['snapshot']
             self._extend_snapshot(req, snapshot)
 
@@ -43,6 +48,7 @@ class ExtendedSnapshotAttributesController(wsgi.Controller):
         context = req.environ['cinder.context']
         if authorize(context):
             # Attach our slave template to the response object
+            resp_obj.attach(xml=ExtendedSnapshotAttributesTemplate())
             for snapshot in list(resp_obj.obj['snapshots']):
                 self._extend_snapshot(req, snapshot)
 
@@ -52,6 +58,8 @@ class Extended_snapshot_attributes(extensions.ExtensionDescriptor):
 
     name = "ExtendedSnapshotAttributes"
     alias = "os-extended-snapshot-attributes"
+    namespace = ("http://docs.openstack.org/volume/ext/"
+                 "extended_snapshot_attributes/api/v1")
     updated = "2012-06-19T00:00:00+00:00"
 
     def get_controller_extensions(self):
@@ -59,3 +67,30 @@ class Extended_snapshot_attributes(extensions.ExtensionDescriptor):
         extension = extensions.ControllerExtension(self, 'snapshots',
                                                    controller)
         return [extension]
+
+
+def make_snapshot(elem):
+    elem.set('{%s}project_id' % Extended_snapshot_attributes.namespace,
+             '%s:project_id' % Extended_snapshot_attributes.alias)
+    elem.set('{%s}progress' % Extended_snapshot_attributes.namespace,
+             '%s:progress' % Extended_snapshot_attributes.alias)
+
+
+class ExtendedSnapshotAttributeTemplate(xmlutil.TemplateBuilder):
+    def construct(self):
+        root = xmlutil.TemplateElement('snapshot', selector='snapshot')
+        make_snapshot(root)
+        alias = Extended_snapshot_attributes.alias
+        namespace = Extended_snapshot_attributes.namespace
+        return xmlutil.SlaveTemplate(root, 1, nsmap={alias: namespace})
+
+
+class ExtendedSnapshotAttributesTemplate(xmlutil.TemplateBuilder):
+    def construct(self):
+        root = xmlutil.TemplateElement('snapshots')
+        elem = xmlutil.SubTemplateElement(root, 'snapshot',
+                                          selector='snapshots')
+        make_snapshot(elem)
+        alias = Extended_snapshot_attributes.alias
+        namespace = Extended_snapshot_attributes.namespace
+        return xmlutil.SlaveTemplate(root, 1, nsmap={alias: namespace})

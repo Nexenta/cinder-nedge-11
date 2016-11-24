@@ -37,9 +37,8 @@ class BaseHostWeigher(base_weight.BaseWeigher):
     pass
 
 
-class OrderedHostWeightHandler(base_weight.BaseWeightHandler):
+class HostWeightHandler(base_weight.BaseWeightHandler):
     object_class = WeighedHost
 
     def __init__(self, namespace):
-        super(OrderedHostWeightHandler, self).__init__(BaseHostWeigher,
-                                                       namespace)
+        super(HostWeightHandler, self).__init__(BaseHostWeigher, namespace)

@@ -25,13 +25,11 @@ from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import fileutils
 from oslo_utils import units
-import six
 from six.moves import urllib
 
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
 from cinder.image import image_utils
-from cinder import interface
 from cinder import utils
 from cinder.volume import driver
 
@@ -45,7 +43,7 @@ except ImportError:
 
 LOG = logging.getLogger(__name__)
 
-RBD_OPTS = [
+rbd_opts = [
     cfg.StrOpt('rbd_cluster_name',
                default='ceph',
                help='The name of ceph cluster'),
@@ -76,22 +74,22 @@ RBD_OPTS = [
                     'taken before a flatten occurs. Set to 0 to disable '
                     'cloning.'),
     cfg.IntOpt('rbd_store_chunk_size', default=4,
-               help='Volumes will be chunked into objects of this size '
-                    '(in megabytes).'),
+               help=_('Volumes will be chunked into objects of this size '
+                      '(in megabytes).')),
     cfg.IntOpt('rados_connect_timeout', default=-1,
-               help='Timeout value (in seconds) used when connecting to '
-                    'ceph cluster. If value < 0, no timeout is set and '
-                    'default librados value is used.'),
+               help=_('Timeout value (in seconds) used when connecting to '
+                      'ceph cluster. If value < 0, no timeout is set and '
+                      'default librados value is used.')),
     cfg.IntOpt('rados_connection_retries', default=3,
-               help='Number of retries if connection to ceph cluster '
-                    'failed.'),
+               help=_('Number of retries if connection to ceph cluster '
+                      'failed.')),
     cfg.IntOpt('rados_connection_interval', default=5,
-               help='Interval value (in seconds) between connection '
-                    'retries to ceph cluster.')
+               help=_('Interval value (in seconds) between connection '
+                      'retries to ceph cluster.'))
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(RBD_OPTS)
+CONF.register_opts(rbd_opts)
 
 
 class RBDImageMetadata(object):
@@ -263,20 +261,16 @@ class RADOSClient(object):
         return int(features)
 
 
-@interface.volumedriver
 class RBDDriver(driver.TransferVD, driver.ExtendVD,
                 driver.CloneableImageVD, driver.SnapshotVD,
-                driver.MigrateVD, driver.ManageableVD, driver.BaseVD):
+                driver.MigrateVD, driver.BaseVD):
     """Implements RADOS block device (RBD) volume commands."""
 
     VERSION = '1.2.0'
 
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Cinder_Jenkins"
-
     def __init__(self, *args, **kwargs):
         super(RBDDriver, self).__init__(*args, **kwargs)
-        self.configuration.append_config_values(RBD_OPTS)
+        self.configuration.append_config_values(rbd_opts)
         self._stats = {}
         # allow overrides for testing
         self.rados = kwargs.get('rados', rados)
@@ -337,14 +331,11 @@ class RBDDriver(driver.TransferVD, driver.ExtendVD,
             pool = self.configuration.rbd_pool
 
         try:
-            timeout = self.configuration.rados_connect_timeout
-            if timeout >= 0:
-                timeout = six.text_type(timeout)
-                client.conf_set('rados_osd_op_timeout', timeout)
-                client.conf_set('rados_mon_op_timeout', timeout)
-                client.conf_set('client_mount_timeout', timeout)
-
-            client.connect()
+            if self.configuration.rados_connect_timeout >= 0:
+                client.connect(timeout=
+                               self.configuration.rados_connect_timeout)
+            else:
+                client.connect()
             ioctx = client.open_ioctx(pool)
             return client, ioctx
         except self.rados.Error:
@@ -829,7 +820,6 @@ class RBDDriver(driver.TransferVD, driver.ExtendVD,
                                    volume.name),
                 'hosts': hosts,
                 'ports': ports,
-                'cluster_name': self.configuration.rbd_cluster_name,
                 'auth_enabled': (self.configuration.rbd_user is not None),
                 'auth_username': self.configuration.rbd_user,
                 'secret_type': 'ceph',
@@ -1054,18 +1044,18 @@ class RBDDriver(driver.TransferVD, driver.ExtendVD,
             # Raise an exception if we didn't find a suitable rbd image.
             try:
                 rbd_image = self.rbd.Image(client.ioctx, rbd_name)
+                image_size = rbd_image.size()
             except self.rbd.ImageNotFound:
                 kwargs = {'existing_ref': rbd_name,
                           'reason': 'Specified rbd image does not exist.'}
                 raise exception.ManageExistingInvalidReference(**kwargs)
-
-            image_size = rbd_image.size()
-            rbd_image.close()
+            finally:
+                rbd_image.close()
 
             # RBD image size is returned in bytes.  Attempt to parse
             # size as a float and round up to the next integer.
             try:
-                convert_size = int(math.ceil(float(image_size) / units.Gi))
+                convert_size = int(math.ceil(int(image_size))) / units.Gi
                 return convert_size
             except ValueError:
                 exception_message = (_("Failed to manage existing volume "
@@ -1076,9 +1066,6 @@ class RBDDriver(driver.TransferVD, driver.ExtendVD,
                                         'size': image_size})
                 raise exception.VolumeBackendAPIException(
                     data=exception_message)
-
-    def unmanage(self, volume):
-        pass
 
     def update_migrated_volume(self, ctxt, volume, new_volume,
                                original_volume_status):

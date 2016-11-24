@@ -14,6 +14,7 @@
 #    under the License.
 
 from oslo_log import log as logging
+import six
 
 from cinder.scheduler import filters
 from cinder.scheduler.filters import extra_specs_ops
@@ -30,48 +31,32 @@ class CapabilitiesFilter(filters.BaseHostFilter):
         Check that the capabilities provided by the services satisfy
         the extra specs associated with the resource type.
         """
-
-        if not resource_type:
-            return True
-
         extra_specs = resource_type.get('extra_specs', [])
         if not extra_specs:
             return True
 
-        for key, req in extra_specs.items():
-
-            # Either not scoped format, or in capabilities scope
+        for key, req in six.iteritems(extra_specs):
+            # Either not scope format, or in capabilities scope
             scope = key.split(':')
-
-            # Ignore scoped (such as vendor-specific) capabilities
             if len(scope) > 1 and scope[0] != "capabilities":
                 continue
-            # Strip off prefix if spec started with 'capabilities:'
             elif scope[0] == "capabilities":
                 del scope[0]
 
             cap = capabilities
             for index in range(len(scope)):
                 try:
-                    cap = cap[scope[index]]
-                except (TypeError, KeyError):
+                    cap = cap.get(scope[index])
+                except AttributeError:
+                    return False
+                if cap is None:
                     LOG.debug("Host doesn't provide capability '%(cap)s' " %
                               {'cap': scope[index]})
                     return False
-
-            # Make all capability values a list so we can handle lists
-            cap_list = [cap] if not isinstance(cap, list) else cap
-
-            # Loop through capability values looking for any match
-            for cap_value in cap_list:
-                if extra_specs_ops.match(cap_value, req):
-                    break
-            else:
-                # Nothing matched, so bail out
-                LOG.debug('Volume type extra spec requirement '
-                          '"%(key)s=%(req)s" does not match reported '
-                          'capability "%(cap)s"',
-                          {'key': key, 'req': req, 'cap': cap})
+            if not extra_specs_ops.match(cap, req):
+                LOG.debug("extra_spec requirement '%(req)s' "
+                          "does not match '%(cap)s'",
+                          {'req': req, 'cap': cap})
                 return False
         return True
 

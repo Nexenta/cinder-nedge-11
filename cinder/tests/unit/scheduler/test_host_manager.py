@@ -19,15 +19,18 @@ Tests For HostManager
 from datetime import datetime
 
 import mock
+from oslo_config import cfg
 from oslo_utils import timeutils
 
-from cinder.common import constants
 from cinder import exception
 from cinder import objects
 from cinder.scheduler import filters
 from cinder.scheduler import host_manager
 from cinder import test
 from cinder.tests.unit.objects import test_service
+
+
+CONF = cfg.CONF
 
 
 class FakeFilterClass1(filters.BaseHostFilter):
@@ -118,8 +121,8 @@ class HostManagerTestCase(test.TestCase):
         self.assertDictMatch(expected, service_states)
 
     @mock.patch('cinder.utils.service_is_up')
-    @mock.patch('cinder.db.service_get_all')
-    def test_has_all_capabilities(self, _mock_service_get_all,
+    @mock.patch('cinder.db.service_get_all_by_topic')
+    def test_has_all_capabilities(self, _mock_service_get_all_by_topic,
                                   _mock_service_is_up):
         _mock_service_is_up.return_value = True
         services = [
@@ -130,8 +133,8 @@ class HostManagerTestCase(test.TestCase):
             dict(id=3, host='host3', topic='volume', disabled=False,
                  availability_zone='zone1', updated_at=timeutils.utcnow()),
         ]
-        _mock_service_get_all.return_value = services
-        # Create host_manager again to let db.service_get_all mock run
+        _mock_service_get_all_by_topic.return_value = services
+        # Create host_manager again to let db.service_get_all_by_topic mock run
         self.host_manager = host_manager.HostManager()
         self.assertFalse(self.host_manager.has_all_capabilities())
 
@@ -150,12 +153,12 @@ class HostManagerTestCase(test.TestCase):
                                                       host3_volume_capabs)
         self.assertTrue(self.host_manager.has_all_capabilities())
 
-    @mock.patch('cinder.db.service_get_all')
+    @mock.patch('cinder.db.service_get_all_by_topic')
     @mock.patch('cinder.utils.service_is_up')
     @mock.patch('oslo_utils.timeutils.utcnow')
     def test_update_and_get_pools(self, _mock_utcnow,
                                   _mock_service_is_up,
-                                  _mock_service_get_all):
+                                  _mock_service_get_all_by_topic):
         """Test interaction between update and get_pools
 
         This test verifies that each time that get_pools is called it gets the
@@ -179,7 +182,7 @@ class HostManagerTestCase(test.TestCase):
                           timestamp=None, reserved_percentage=0),
         }
 
-        _mock_service_get_all.return_value = services
+        _mock_service_get_all_by_topic.return_value = services
         _mock_service_is_up.return_value = True
         _mock_warning = mock.Mock()
         host_manager.LOG.warn = _mock_warning
@@ -203,12 +206,12 @@ class HostManagerTestCase(test.TestCase):
             self.assertEqual(1, len(res))
             self.assertEqual(dates[2], res[0]['capabilities']['timestamp'])
 
-    @mock.patch('cinder.db.service_get_all')
+    @mock.patch('cinder.db.service_get_all_by_topic')
     @mock.patch('cinder.utils.service_is_up')
     def test_get_all_host_states(self, _mock_service_is_up,
-                                 _mock_service_get_all):
+                                 _mock_service_get_all_by_topic):
         context = 'fake_context'
-        topic = constants.VOLUME_TOPIC
+        topic = CONF.volume_topic
 
         services = [
             dict(id=1, host='host1', topic='volume', disabled=False,
@@ -254,16 +257,16 @@ class HostManagerTestCase(test.TestCase):
         # First test: service_is_up is always True, host5 is disabled,
         # host4 has no capabilities
         self.host_manager.service_states = service_states
-        _mock_service_get_all.return_value = services
+        _mock_service_get_all_by_topic.return_value = services
         _mock_service_is_up.return_value = True
         _mock_warning = mock.Mock()
         host_manager.LOG.warning = _mock_warning
 
         # Get all states
         self.host_manager.get_all_host_states(context)
-        _mock_service_get_all.assert_called_with(context,
-                                                 disabled=False,
-                                                 topic=topic)
+        _mock_service_get_all_by_topic.assert_called_with(context,
+                                                          topic,
+                                                          disabled=False)
         expected = []
         for service in service_objs:
             expected.append(mock.call(service))
@@ -281,17 +284,17 @@ class HostManagerTestCase(test.TestCase):
         # Second test: Now service_is_up returns False for host3
         _mock_service_is_up.reset_mock()
         _mock_service_is_up.side_effect = [True, True, False, True]
-        _mock_service_get_all.reset_mock()
+        _mock_service_get_all_by_topic.reset_mock()
         _mock_warning.reset_mock()
 
         # Get all states, make sure host 3 is reported as down
         self.host_manager.get_all_host_states(context)
-        _mock_service_get_all.assert_called_with(context,
-                                                 disabled=False,
-                                                 topic=topic)
+        _mock_service_get_all_by_topic.assert_called_with(context,
+                                                          topic,
+                                                          disabled=False)
 
         self.assertEqual(expected, _mock_service_is_up.call_args_list)
-        self.assertGreater(_mock_warning.call_count, 0)
+        self.assertTrue(_mock_warning.call_count > 0)
 
         # Get host_state_map and make sure we have the first 2 hosts (host3 is
         # down, host4 is missing capabilities)
@@ -303,10 +306,10 @@ class HostManagerTestCase(test.TestCase):
             test_service.TestService._compare(self, volume_node,
                                               host_state_map[host].service)
 
-    @mock.patch('cinder.db.service_get_all')
+    @mock.patch('cinder.db.service_get_all_by_topic')
     @mock.patch('cinder.utils.service_is_up')
     def test_get_pools(self, _mock_service_is_up,
-                       _mock_service_get_all):
+                       _mock_service_get_all_by_topic):
         context = 'fake_context'
 
         services = [
@@ -333,7 +336,7 @@ class HostManagerTestCase(test.TestCase):
                                 provisioned_capacity_gb=9300),
         }
 
-        _mock_service_get_all.return_value = services
+        _mock_service_get_all_by_topic.return_value = services
         _mock_service_is_up.return_value = True
         _mock_warning = mock.Mock()
         host_manager.LOG.warn = _mock_warning

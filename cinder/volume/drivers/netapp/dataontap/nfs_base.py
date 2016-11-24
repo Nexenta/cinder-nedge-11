@@ -41,7 +41,6 @@ from cinder.i18n import _, _LE, _LI, _LW
 from cinder.image import image_utils
 from cinder import utils
 from cinder.volume import driver
-from cinder.volume.drivers.netapp.dataontap.utils import loopingcalls
 from cinder.volume.drivers.netapp import options as na_opts
 from cinder.volume.drivers.netapp import utils as na_utils
 from cinder.volume.drivers import nfs
@@ -50,7 +49,6 @@ from cinder.volume import utils as volume_utils
 
 LOG = logging.getLogger(__name__)
 CONF = cfg.CONF
-HOUSEKEEPING_INTERVAL_SECONDS = 600  # ten minutes
 
 
 @six.add_metaclass(utils.TraceWrapperWithABCMetaclass)
@@ -62,10 +60,6 @@ class NetAppNfsDriver(driver.ManageableVD,
 
     # do not increment this as it may be used in volume type definitions
     VERSION = "1.0.0"
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "NetApp_CI"
-
     REQUIRED_FLAGS = ['netapp_login', 'netapp_password',
                       'netapp_server_hostname']
     DEFAULT_FILTER_FUNCTION = 'capabilities.utilization < 70'
@@ -82,38 +76,17 @@ class NetAppNfsDriver(driver.ManageableVD,
         self.configuration.append_config_values(na_opts.netapp_transport_opts)
         self.configuration.append_config_values(na_opts.netapp_img_cache_opts)
         self.configuration.append_config_values(na_opts.netapp_nfs_extra_opts)
-        self.backend_name = self.host.split('@')[1]
-        self.loopingcalls = loopingcalls.LoopingCalls()
 
     def do_setup(self, context):
         super(NetAppNfsDriver, self).do_setup(context)
         self._context = context
         na_utils.check_flags(self.REQUIRED_FLAGS, self.configuration)
         self.zapi_client = None
+        self.ssc_enabled = False
 
     def check_for_setup_error(self):
         """Returns an error if prerequisites aren't met."""
         super(NetAppNfsDriver, self).check_for_setup_error()
-        self.loopingcalls.start_tasks()
-
-    def _add_looping_tasks(self):
-        """Add tasks that need to be executed at a fixed interval.
-
-        Inheriting class overrides and then explicitly calls this method.
-        """
-        # Add the task that deletes snapshots marked for deletion.
-        self.loopingcalls.add_task(
-            self._delete_snapshots_marked_for_deletion,
-            loopingcalls.ONE_MINUTE,
-            loopingcalls.ONE_MINUTE)
-
-    def _delete_snapshots_marked_for_deletion(self):
-        volume_list = self._get_backing_flexvol_names()
-        snapshots = self.zapi_client.get_snapshots_marked_for_deletion(
-            volume_list)
-        for snapshot in snapshots:
-            self.zapi_client.delete_snapshot(
-                snapshot['volume_name'], snapshot['name'])
 
     def get_pool(self, volume):
         """Return pool name where volume resides.
@@ -154,6 +127,9 @@ class NetAppNfsDriver(driver.ManageableVD,
             # We need to set this for the model update in order for the
             # manager to behave correctly.
             volume['provider_location'] = None
+        finally:
+            if self.ssc_enabled:
+                self._update_stale_vols(self._get_vol_for_share(pool_name))
 
         msg = _("Volume %(vol)s could not be created in pool %(pool)s.")
         raise exception.VolumeBackendAPIException(data=msg % {
@@ -241,24 +217,17 @@ class NetAppNfsDriver(driver.ManageableVD,
         """Creates a snapshot."""
         self._clone_backing_file_for_volume(snapshot['volume_name'],
                                             snapshot['name'],
-                                            snapshot['volume_id'],
-                                            is_snapshot=True)
+                                            snapshot['volume_id'])
 
     def delete_snapshot(self, snapshot):
         """Deletes a snapshot."""
-        self._delete_file(snapshot.volume_id, snapshot.name)
+        nfs_mount = self._get_provider_location(snapshot.volume_id)
 
-    def _delete_file(self, file_id, file_name):
-        nfs_share = self._get_provider_location(file_id)
+        if self._volume_not_present(nfs_mount, snapshot.name):
+            return True
 
-        if self._volume_not_present(nfs_share, file_name):
-            LOG.debug('File %(file_name)s not found when attempting to delete '
-                      'from share %(share)s',
-                      {'file_name': file_name, 'share': nfs_share})
-            return
-
-        path = self._get_volume_path(nfs_share, file_name)
-        self._delete(path)
+        self._execute('rm', self._get_volume_path(nfs_mount, snapshot.name),
+                      run_as_root=self._execute_as_root)
 
     def _get_volume_location(self, volume_id):
         """Returns NFS mount address as <nfs_ip_address>:<nfs_mount_dir>."""
@@ -267,18 +236,8 @@ class NetAppNfsDriver(driver.ManageableVD,
         return nfs_server_ip + ':' + export_path
 
     def _clone_backing_file_for_volume(self, volume_name, clone_name,
-                                       volume_id, share=None,
-                                       is_snapshot=False,
-                                       source_snapshot=None):
+                                       volume_id, share=None):
         """Clone backing file for Cinder volume."""
-        raise NotImplementedError()
-
-    def _get_backing_flexvol_names(self):
-        """Returns backing flexvol names."""
-        raise NotImplementedError()
-
-    def _get_flexvol_names_from_hosts(self, hosts):
-        """Returns a set of flexvol names."""
         raise NotImplementedError()
 
     def _get_provider_location(self, volume_id):
@@ -841,9 +800,9 @@ class NetAppNfsDriver(driver.ManageableVD,
             self.max_over_subscription_ratio)
         total_size, total_available = self._get_capacity_info(nfs_share)
         capacity['total_capacity_gb'] = na_utils.round_down(
-            total_size / units.Gi)
+            total_size / units.Gi, '0.01')
         capacity['free_capacity_gb'] = na_utils.round_down(
-            total_available / units.Gi)
+            total_available / units.Gi, '0.01')
         capacity['provisioned_capacity_gb'] = (round(
             capacity['total_capacity_gb'] - capacity['free_capacity_gb'], 2))
 
@@ -852,12 +811,11 @@ class NetAppNfsDriver(driver.ManageableVD,
     def _get_capacity_info(self, nfs_share):
         """Get total capacity and free capacity in bytes for an nfs share."""
         export_path = nfs_share.rsplit(':', 1)[1]
-        capacity = self.zapi_client.get_flexvol_capacity(
-            flexvol_path=export_path)
-        return capacity['size-total'], capacity['size-available']
+        return self.zapi_client.get_flexvol_capacity(export_path)
 
     def _check_volume_type(self, volume, share, file_name, extra_specs):
         """Match volume type for share file."""
+        raise NotImplementedError()
 
     def _convert_vol_ref_share_name_to_share_ip(self, vol_ref):
         """Converts the share point name to an IP address
@@ -937,7 +895,7 @@ class NetAppNfsDriver(driver.ManageableVD,
         new Cinder volume name. It is expected that the existing volume
         reference is an NFS share point and some [/path]/volume;
         e.g., 10.10.32.1:/openstack/vol_to_manage
-        or 10.10.32.1:/openstack/some_directory/vol_to_manage
+           or 10.10.32.1:/openstack/some_directory/vol_to_manage
 
         :param volume:           Cinder volume to manage
         :param existing_vol_ref: Driver-specific information used to identify a
@@ -1028,150 +986,11 @@ class NetAppNfsDriver(driver.ManageableVD,
         LOG.info(_LI("Cinder NFS volume with current path \"%(cr)s\" is "
                      "no longer being managed."), {'cr': vol_path})
 
-    @utils.trace_method
-    def create_consistencygroup(self, context, group):
-        """Driver entry point for creating a consistency group.
+    @utils.synchronized('update_stale')
+    def _update_stale_vols(self, volume=None, reset=False):
+        """Populates stale vols with vol and returns set copy."""
+        raise NotImplementedError
 
-        ONTAP does not maintain an actual CG construct. As a result, no
-        communtication to the backend is necessary for consistency group
-        creation.
-
-        :return: Hard-coded model update for consistency group model.
-        """
-        model_update = {'status': 'available'}
-        return model_update
-
-    @utils.trace_method
-    def delete_consistencygroup(self, context, group, volumes):
-        """Driver entry point for deleting a consistency group.
-
-        :return: Updated consistency group model and list of volume models
-                 for the volumes that were deleted.
-        """
-        model_update = {'status': 'deleted'}
-        volumes_model_update = []
-        for volume in volumes:
-            try:
-                self._delete_file(volume['id'], volume['name'])
-                volumes_model_update.append(
-                    {'id': volume['id'], 'status': 'deleted'})
-            except Exception:
-                volumes_model_update.append(
-                    {'id': volume['id'], 'status': 'error_deleting'})
-                LOG.exception(_LE("Volume %(vol)s in the consistency group "
-                                  "could not be deleted."), {'vol': volume})
-        return model_update, volumes_model_update
-
-    @utils.trace_method
-    def update_consistencygroup(self, context, group, add_volumes=None,
-                                remove_volumes=None):
-        """Driver entry point for updating a consistency group.
-
-        Since no actual CG construct is ever created in ONTAP, it is not
-        necessary to update any metadata on the backend. Since this is a NO-OP,
-        there is guaranteed to be no change in any of the volumes' statuses.
-        """
-        return None, None, None
-
-    @utils.trace_method
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Creates a Cinder cgsnapshot object.
-
-        The Cinder cgsnapshot object is created by making use of an ONTAP CG
-        snapshot in order to provide write-order consistency for a set of
-        backing flexvols. First, a list of the flexvols backing the given
-        Cinder volumes in the CG is determined. An ONTAP CG snapshot of the
-        flexvols creates a write-order consistent snapshot of each backing
-        flexvol. For each Cinder volume in the CG, it is then necessary to
-        clone its volume from the ONTAP CG snapshot. The naming convention
-        used to create the clones indicates the clone's role as a Cinder
-        snapshot and its inclusion in a Cinder CG snapshot. The ONTAP CG
-        snapshots, of each backing flexvol, are deleted after the cloning
-        operation is completed.
-
-        :return: An implicit update for the cgsnapshot and snapshot models that
-                 is then used by the manager to set the models to available.
-        """
-
-        hosts = [snapshot['volume']['host'] for snapshot in snapshots]
-        flexvols = self._get_flexvol_names_from_hosts(hosts)
-
-        # Create snapshot for backing flexvol
-        self.zapi_client.create_cg_snapshot(flexvols, cgsnapshot['id'])
-
-        # Start clone process for snapshot files
-        for snapshot in snapshots:
-            self._clone_backing_file_for_volume(
-                snapshot['volume']['name'], snapshot['name'],
-                snapshot['volume']['id'], source_snapshot=cgsnapshot['id'])
-
-        # Delete backing flexvol snapshots
-        for flexvol_name in flexvols:
-            try:
-                self.zapi_client.wait_for_busy_snapshot(
-                    flexvol_name, cgsnapshot['id'])
-                self.zapi_client.delete_snapshot(
-                    flexvol_name, cgsnapshot['id'])
-            except exception.SnapshotIsBusy:
-                self.zapi_client.mark_snapshot_for_deletion(
-                    flexvol_name, cgsnapshot['id'])
-
-        return None, None
-
-    @utils.trace_method
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Delete files backing each snapshot in the cgsnapshot."""
-        raise NotImplementedError()
-
-    @utils.trace_method
-    def create_consistencygroup_from_src(self, context, group, volumes,
-                                         cgsnapshot=None, snapshots=None,
-                                         source_cg=None, source_vols=None):
-        """Creates a CG from a either a cgsnapshot or group of cinder vols.
-
-        :return: An implicit update for the volumes model that is
-                 interpreted by the manager as a successful operation.
-        """
-        LOG.debug("VOLUMES %s ", [dict(vol) for vol in volumes])
-        model_update = None
-        volumes_model_update = []
-
-        if cgsnapshot:
-            vols = zip(volumes, snapshots)
-
-            for volume, snapshot in vols:
-                update = self.create_volume_from_snapshot(volume, snapshot)
-                update['id'] = volume['id']
-                volumes_model_update.append(update)
-
-        elif source_cg and source_vols:
-            hosts = [source_vol['host'] for source_vol in source_vols]
-            flexvols = self._get_flexvol_names_from_hosts(hosts)
-
-            # Create snapshot for backing flexvol
-            snapshot_name = 'snapshot-temp-' + source_cg['id']
-            self.zapi_client.create_cg_snapshot(flexvols, snapshot_name)
-
-            # Start clone process for new volumes
-            vols = zip(volumes, source_vols)
-            for volume, source_vol in vols:
-                self._clone_backing_file_for_volume(
-                    source_vol['name'], volume['name'],
-                    source_vol['id'], source_snapshot=snapshot_name)
-            update = {'id': volume['id'],
-                      'provider_location': source_vol['provider_location'],
-                      }
-            volumes_model_update.append(update)
-
-            # Delete backing flexvol snapshots
-            for flexvol_name in flexvols:
-                self.zapi_client.wait_for_busy_snapshot(
-                    flexvol_name, snapshot_name)
-                self.zapi_client.delete_snapshot(flexvol_name, snapshot_name)
-        else:
-            LOG.error(_LE("Unexpected set of parameters received when "
-                          "creating consistency group from source."))
-            model_update = {}
-            model_update['status'] = 'error'
-
-        return model_update, volumes_model_update
+    def _get_vol_for_share(self, nfs_share):
+        """Gets the ssc vol with given share."""
+        raise NotImplementedError

@@ -29,7 +29,6 @@ from six.moves import urllib
 from cinder import context
 from cinder import exception
 from cinder.i18n import _
-from cinder import interface
 from cinder.volume import driver
 from cinder.volume import utils as volume_utils
 
@@ -37,29 +36,29 @@ LOG = logging.getLogger(__name__)
 
 blockbridge_opts = [
     cfg.StrOpt("blockbridge_api_host",
-               help="IP address/hostname of Blockbridge API."),
+               help=_("IP address/hostname of Blockbridge API.")),
     cfg.IntOpt("blockbridge_api_port",
-               help="Override HTTPS port to connect to Blockbridge "
-                    "API server."),
+               help=_("Override HTTPS port to connect to Blockbridge "
+                      "API server.")),
     cfg.StrOpt("blockbridge_auth_scheme",
                default='token',
                choices=['token', 'password'],
-               help="Blockbridge API authentication scheme (token "
-                    "or password)"),
+               help=_("Blockbridge API authentication scheme (token "
+                      "or password)")),
     cfg.StrOpt("blockbridge_auth_token",
-               help="Blockbridge API token (for auth scheme 'token')",
+               help=_("Blockbridge API token (for auth scheme 'token')"),
                secret=True),
     cfg.StrOpt("blockbridge_auth_user",
-               help="Blockbridge API user (for auth scheme 'password')"),
+               help=_("Blockbridge API user (for auth scheme 'password')")),
     cfg.StrOpt("blockbridge_auth_password",
-               help="Blockbridge API password (for auth scheme 'password')",
+               help=_("Blockbridge API password (for auth scheme 'password')"),
                secret=True),
     cfg.DictOpt("blockbridge_pools",
                 default={'OpenStack': '+openstack'},
-                help="Defines the set of exposed pools and their associated "
-                     "backend query strings"),
+                help=_("Defines the set of exposed pools and their associated "
+                       "backend query strings")),
     cfg.StrOpt("blockbridge_default_pool",
-               help="Default pool name if unspecified."),
+               help=_("Default pool name if unspecified.")),
 ]
 
 CONF = cfg.CONF
@@ -169,14 +168,10 @@ class BlockbridgeAPIClient(object):
         return rsp_data
 
 
-@interface.volumedriver
 class BlockbridgeISCSIDriver(driver.ISCSIDriver):
     """Manages volumes hosted on Blockbridge EPS."""
 
     VERSION = '1.3.0'
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Blockbridge_EPS_CI"
 
     def __init__(self, *args, **kwargs):
         super(BlockbridgeISCSIDriver, self).__init__(*args, **kwargs)

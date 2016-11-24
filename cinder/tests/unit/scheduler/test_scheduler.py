@@ -23,14 +23,13 @@ from oslo_config import cfg
 from cinder import context
 from cinder import db
 from cinder import exception
-from cinder.message import defined_messages
 from cinder import objects
 from cinder.objects import fields
 from cinder.scheduler import driver
 from cinder.scheduler import filter_scheduler
 from cinder.scheduler import manager
 from cinder import test
-from cinder.tests.unit.consistencygroup import fake_consistencygroup
+from cinder.tests.unit import fake_consistencygroup
 from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit import utils as tests_utils
@@ -75,13 +74,13 @@ class SchedulerManagerTestCase(test.TestCase):
     @mock.patch('cinder.objects.service.Service.get_minimum_rpc_version')
     @mock.patch('cinder.objects.service.Service.get_minimum_obj_version')
     @mock.patch('cinder.rpc.LAST_RPC_VERSIONS', {'cinder-volume': '1.3'})
-    @mock.patch('cinder.rpc.LAST_OBJ_VERSIONS', {'cinder-volume': '1.4'})
+    @mock.patch('cinder.rpc.LAST_OBJ_VERSIONS', {'cinder-volume': '1.3'})
     def test_reset(self, get_min_obj, get_min_rpc):
         mgr = self.manager_cls()
 
         volume_rpcapi = mgr.driver.volume_rpcapi
         self.assertEqual('1.3', volume_rpcapi.client.version_cap)
-        self.assertEqual('1.4',
+        self.assertEqual('1.3',
                          volume_rpcapi.client.serializer._base.version_cap)
         get_min_obj.return_value = objects.base.OBJ_VERSIONS.get_current()
         mgr.reset()
@@ -120,21 +119,15 @@ class SchedulerManagerTestCase(test.TestCase):
         _mock_update_cap.assert_called_once_with(service, host, capabilities)
 
     @mock.patch('cinder.scheduler.driver.Scheduler.schedule_create_volume')
-    @mock.patch('cinder.message.api.API.create')
     @mock.patch('cinder.db.volume_update')
     def test_create_volume_exception_puts_volume_in_error_state(
-            self, _mock_volume_update, _mock_message_create,
-            _mock_sched_create):
+            self, _mock_volume_update, _mock_sched_create):
         # Test NoValidHost exception behavior for create_volume.
         # Puts the volume in 'error' state and eats the exception.
         _mock_sched_create.side_effect = exception.NoValidHost(reason="")
         volume = fake_volume.fake_volume_obj(self.context)
         topic = 'fake_topic'
-        request_spec = {'volume_id': volume.id,
-                        'volume': {'id': volume.id, '_name_id': None,
-                                   'metadata': {}, 'admin_metadata': {},
-                                   'glance_metadata': {}}}
-        request_spec_obj = objects.RequestSpec.from_primitives(request_spec)
+        request_spec = {'volume_id': volume.id}
 
         self.manager.create_volume(self.context, topic, volume.id,
                                    request_spec=request_spec,
@@ -143,13 +136,8 @@ class SchedulerManagerTestCase(test.TestCase):
         _mock_volume_update.assert_called_once_with(self.context,
                                                     volume.id,
                                                     {'status': 'error'})
-        _mock_sched_create.assert_called_once_with(self.context,
-                                                   request_spec_obj, {})
-
-        _mock_message_create.assert_called_once_with(
-            self.context, defined_messages.UNABLE_TO_ALLOCATE,
-            self.context.project_id, resource_type='VOLUME',
-            resource_uuid=volume.id)
+        _mock_sched_create.assert_called_once_with(self.context, request_spec,
+                                                   {})
 
     @mock.patch('cinder.scheduler.driver.Scheduler.schedule_create_volume')
     @mock.patch('eventlet.sleep')
@@ -158,14 +146,13 @@ class SchedulerManagerTestCase(test.TestCase):
         topic = 'fake_topic'
 
         request_spec = {'volume_id': volume.id}
-        request_spec_obj = objects.RequestSpec.from_primitives(request_spec)
 
         self.manager.create_volume(self.context, topic, volume.id,
                                    request_spec=request_spec,
                                    filter_properties={},
                                    volume=volume)
-        _mock_sched_create.assert_called_once_with(self.context,
-                                                   request_spec_obj, {})
+        _mock_sched_create.assert_called_once_with(self.context, request_spec,
+                                                   {})
         self.assertFalse(_mock_sleep.called)
 
     @mock.patch('cinder.scheduler.driver.Scheduler.schedule_create_volume')
@@ -179,7 +166,6 @@ class SchedulerManagerTestCase(test.TestCase):
         topic = 'fake_topic'
 
         request_spec = {'volume_id': volume.id}
-        request_spec_obj = objects.RequestSpec.from_primitives(request_spec)
 
         _mock_is_ready.side_effect = [False, False, True]
 
@@ -187,8 +173,8 @@ class SchedulerManagerTestCase(test.TestCase):
                                    request_spec=request_spec,
                                    filter_properties={},
                                    volume=volume)
-        _mock_sched_create.assert_called_once_with(self.context,
-                                                   request_spec_obj, {})
+        _mock_sched_create.assert_called_once_with(self.context, request_spec,
+                                                   {})
         calls = [mock.call(1)] * 2
         _mock_sleep.assert_has_calls(calls)
         self.assertEqual(2, _mock_sleep.call_count)
@@ -204,7 +190,6 @@ class SchedulerManagerTestCase(test.TestCase):
         topic = 'fake_topic'
 
         request_spec = {'volume_id': volume.id}
-        request_spec_obj = objects.RequestSpec.from_primitives(request_spec)
 
         _mock_is_ready.return_value = True
 
@@ -212,8 +197,8 @@ class SchedulerManagerTestCase(test.TestCase):
                                    request_spec=request_spec,
                                    filter_properties={},
                                    volume=volume)
-        _mock_sched_create.assert_called_once_with(self.context,
-                                                   request_spec_obj, {})
+        _mock_sched_create.assert_called_once_with(self.context, request_spec,
+                                                   {})
         self.assertFalse(_mock_sleep.called)
 
     @mock.patch('cinder.db.volume_get')
@@ -256,8 +241,7 @@ class SchedulerManagerTestCase(test.TestCase):
         self.manager.migrate_volume_to_host(self.context, topic,
                                             fake_volume_id, 'host', True,
                                             request_spec=request_spec,
-                                            filter_properties={},
-                                            volume=volume)
+                                            filter_properties={})
         _mock_volume_update.assert_called_once_with(self.context,
                                                     fake_volume_id,
                                                     fake_updates)
@@ -265,10 +249,9 @@ class SchedulerManagerTestCase(test.TestCase):
                                                   request_spec, {})
 
     @mock.patch('cinder.db.volume_update')
-    @mock.patch('cinder.db.volume_attachment_get_all_by_volume_id')
-    @mock.patch('cinder.quota.QUOTAS.rollback')
+    @mock.patch('cinder.db.volume_attachment_get_used_by_volume_id')
     def test_retype_volume_exception_returns_volume_state(
-            self, quota_rollback, _mock_vol_attachment_get, _mock_vol_update):
+            self, _mock_vol_attachment_get, _mock_vol_update):
         # Test NoValidHost exception behavior for retype.
         # Puts the volume in original state and eats the exception.
         volume = tests_utils.create_volume(self.context,
@@ -280,10 +263,8 @@ class SchedulerManagerTestCase(test.TestCase):
                                                   '/dev/fake')
         _mock_vol_attachment_get.return_value = [volume_attach]
         topic = 'fake_topic'
-        reservations = mock.sentinel.reservations
         request_spec = {'volume_id': volume.id, 'volume_type': {'id': 3},
-                        'migration_policy': 'on-demand',
-                        'quota_reservations': reservations}
+                        'migration_policy': 'on-demand'}
         _mock_vol_update.return_value = {'status': 'in-use'}
         _mock_find_retype_host = mock.Mock(
             side_effect=exception.NoValidHost(reason=""))
@@ -298,7 +279,6 @@ class SchedulerManagerTestCase(test.TestCase):
         _mock_find_retype_host.assert_called_once_with(self.context,
                                                        request_spec, {},
                                                        'on-demand')
-        quota_rollback.assert_called_once_with(self.context, reservations)
         _mock_vol_update.assert_called_once_with(self.context, volume.id,
                                                  {'status': 'in-use'})
         self.manager.driver.find_retype_host = orig_retype
@@ -311,17 +291,17 @@ class SchedulerManagerTestCase(test.TestCase):
                 fake_consistencygroup.fake_consistencyobject_obj(self.context)
             self.manager.driver = filter_scheduler.FilterScheduler
             LOG = self.mock_object(manager, 'LOG')
-            self.mock_object(db, 'consistencygroup_update')
+            self.stubs.Set(db, 'consistencygroup_update', mock.Mock())
 
             ex = exception.CinderException('test')
             mock_cg.side_effect = ex
-            group_id = fake.CONSISTENCY_GROUP_ID
+            group_id = fake.consistency_group_id
             self.assertRaises(exception.CinderException,
                               self.manager.create_consistencygroup,
                               self.context,
                               'volume',
                               consistencygroup_obj)
-            self.assertGreater(LOG.exception.call_count, 0)
+            self.assertTrue(LOG.exception.call_count > 0)
             db.consistencygroup_update.assert_called_once_with(
                 self.context, group_id, {'status': (
                     fields.ConsistencyGroupStatus.ERROR)})
@@ -334,7 +314,7 @@ class SchedulerManagerTestCase(test.TestCase):
                 reason="No weighed hosts available")
             self.manager.create_consistencygroup(
                 self.context, 'volume', consistencygroup_obj)
-            self.assertGreater(LOG.error.call_count, 0)
+            self.assertTrue(LOG.error.call_count > 0)
             db.consistencygroup_update.assert_called_once_with(
                 self.context, group_id, {'status': (
                     fields.ConsistencyGroupStatus.ERROR)})
@@ -351,7 +331,7 @@ class SchedulerTestCase(test.TestCase):
     def setUp(self):
         super(SchedulerTestCase, self).setUp()
         self.driver = self.driver_cls()
-        self.context = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        self.context = context.RequestContext(fake.user_id, fake.project_id)
         self.topic = 'fake_topic'
 
     @mock.patch('cinder.scheduler.driver.Scheduler.'
@@ -394,7 +374,7 @@ class SchedulerDriverModuleTestCase(test.TestCase):
 
     def setUp(self):
         super(SchedulerDriverModuleTestCase, self).setUp()
-        self.context = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        self.context = context.RequestContext(fake.user_id, fake.project_id)
 
     @mock.patch('cinder.db.volume_update')
     @mock.patch('cinder.objects.volume.Volume.get_by_id')

@@ -14,9 +14,11 @@
 
 from oslo_log import log as logging
 import webob
+from webob import exc
 
 from cinder.api import extensions
 from cinder.api.openstack import wsgi
+from cinder import exception
 from cinder.i18n import _LI
 from cinder import volume
 
@@ -49,11 +51,13 @@ class VolumeUnmanageController(wsgi.Controller):
         context = req.environ['cinder.context']
         authorize(context)
 
-        LOG.info(_LI("Unmanage volume with id: %s"), id)
+        LOG.info(_LI("Unmanage volume with id: %s"), id, context=context)
 
-        # Not found exception will be handled at the wsgi level
-        vol = self.volume_api.get(context, id)
-        self.volume_api.delete(context, vol, unmanage_only=True)
+        try:
+            vol = self.volume_api.get(context, id)
+            self.volume_api.delete(context, vol, unmanage_only=True)
+        except exception.VolumeNotFound as error:
+            raise exc.HTTPNotFound(explanation=error.msg)
         return webob.Response(status_int=202)
 
 
@@ -62,6 +66,7 @@ class Volume_unmanage(extensions.ExtensionDescriptor):
 
     name = "VolumeUnmanage"
     alias = "os-volume-unmanage"
+    namespace = "http://docs.openstack.org/volume/ext/volume-unmanage/api/v1.1"
     updated = "2012-05-31T00:00:00+00:00"
 
     def get_controller_extensions(self):

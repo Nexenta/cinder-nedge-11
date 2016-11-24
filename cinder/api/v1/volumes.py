@@ -24,6 +24,8 @@ from webob import exc
 
 from cinder.api import common
 from cinder.api.openstack import wsgi
+from cinder.api import xmlutil
+from cinder import exception
 from cinder.i18n import _, _LI
 from cinder import utils
 from cinder import volume as cinder_volume
@@ -114,7 +116,7 @@ def _translate_volume_summary_view(context, vol, image_id=None):
     if image_id:
         d['image_id'] = image_id
 
-    LOG.info(_LI("vol=%s"), vol)
+    LOG.info(_LI("vol=%s"), vol, context=context)
 
     if vol.metadata:
         d['metadata'] = vol.metadata
@@ -122,6 +124,97 @@ def _translate_volume_summary_view(context, vol, image_id=None):
         d['metadata'] = {}
 
     return d
+
+
+def make_attachment(elem):
+    elem.set('id')
+    elem.set('server_id')
+    elem.set('host_name')
+    elem.set('volume_id')
+    elem.set('device')
+
+
+def make_volume(elem):
+    elem.set('id')
+    elem.set('status')
+    elem.set('size')
+    elem.set('availability_zone')
+    elem.set('created_at')
+    elem.set('display_name')
+    elem.set('bootable')
+    elem.set('display_description')
+    elem.set('volume_type')
+    elem.set('snapshot_id')
+    elem.set('source_volid')
+    elem.set('multiattach')
+
+    attachments = xmlutil.SubTemplateElement(elem, 'attachments')
+    attachment = xmlutil.SubTemplateElement(attachments, 'attachment',
+                                            selector='attachments')
+    make_attachment(attachment)
+
+    # Attach metadata node
+    elem.append(common.MetadataTemplate())
+
+
+volume_nsmap = {None: xmlutil.XMLNS_VOLUME_V1, 'atom': xmlutil.XMLNS_ATOM}
+
+
+class VolumeTemplate(xmlutil.TemplateBuilder):
+    def construct(self):
+        root = xmlutil.TemplateElement('volume', selector='volume')
+        make_volume(root)
+        return xmlutil.MasterTemplate(root, 1, nsmap=volume_nsmap)
+
+
+class VolumesTemplate(xmlutil.TemplateBuilder):
+    def construct(self):
+        root = xmlutil.TemplateElement('volumes')
+        elem = xmlutil.SubTemplateElement(root, 'volume', selector='volumes')
+        make_volume(elem)
+        return xmlutil.MasterTemplate(root, 1, nsmap=volume_nsmap)
+
+
+class CommonDeserializer(wsgi.MetadataXMLDeserializer):
+    """Common deserializer to handle xml-formatted volume requests.
+
+       Handles standard volume attributes as well as the optional metadata
+       attribute
+    """
+
+    metadata_deserializer = common.MetadataXMLDeserializer()
+
+    def _extract_volume(self, node):
+        """Marshal the volume attribute of a parsed request."""
+        volume = {}
+        volume_node = self.find_first_child_named(node, 'volume')
+
+        attributes = ['display_name', 'display_description', 'size',
+                      'volume_type', 'availability_zone', 'imageRef',
+                      'snapshot_id', 'source_volid']
+        for attr in attributes:
+            if volume_node.getAttribute(attr):
+                volume[attr] = volume_node.getAttribute(attr)
+
+        metadata_node = self.find_first_child_named(volume_node, 'metadata')
+        if metadata_node is not None:
+            volume['metadata'] = self.extract_metadata(metadata_node)
+
+        return volume
+
+
+class CreateDeserializer(CommonDeserializer):
+    """Deserializer to handle xml-formatted create volume requests.
+
+       Handles standard volume attributes as well as the optional metadata
+       attribute
+    """
+
+    def default(self, string):
+        """Deserialize an xml-formatted volume create request."""
+        dom = utils.safe_minidom_parse_string(string)
+        volume = self._extract_volume(dom)
+        return {'body': {'volume': volume}}
 
 
 class VolumeController(wsgi.Controller):
@@ -132,13 +225,16 @@ class VolumeController(wsgi.Controller):
         self.ext_mgr = ext_mgr
         super(VolumeController, self).__init__()
 
+    @wsgi.serializers(xml=VolumeTemplate)
     def show(self, req, id):
         """Return data about the given volume."""
         context = req.environ['cinder.context']
 
-        # Not found exception will be handled at the wsgi level
-        vol = self.volume_api.get(context, id, viewable_admin_meta=True)
-        req.cache_db_volume(vol)
+        try:
+            vol = self.volume_api.get(context, id, viewable_admin_meta=True)
+            req.cache_db_volume(vol)
+        except exception.NotFound:
+            raise exc.HTTPNotFound()
 
         utils.add_visible_admin_metadata(vol)
 
@@ -148,17 +244,21 @@ class VolumeController(wsgi.Controller):
         """Delete a volume."""
         context = req.environ['cinder.context']
 
-        LOG.info(_LI("Delete volume with id: %s"), id)
+        LOG.info(_LI("Delete volume with id: %s"), id, context=context)
 
-        # Not found exception will be handled at the wsgi level
-        volume = self.volume_api.get(context, id)
-        self.volume_api.delete(context, volume)
+        try:
+            volume = self.volume_api.get(context, id)
+            self.volume_api.delete(context, volume)
+        except exception.NotFound:
+            raise exc.HTTPNotFound()
         return webob.Response(status_int=202)
 
+    @wsgi.serializers(xml=VolumesTemplate)
     def index(self, req):
         """Returns a summary list of volumes."""
         return self._items(req, entity_maker=_translate_volume_summary_view)
 
+    @wsgi.serializers(xml=VolumesTemplate)
     def detail(self, req):
         """Returns a detailed list of volumes."""
         return self._items(req, entity_maker=_translate_volume_detail_view)
@@ -212,6 +312,8 @@ class VolumeController(wsgi.Controller):
 
         return image_uuid
 
+    @wsgi.serializers(xml=VolumeTemplate)
+    @wsgi.deserializers(xml=CreateDeserializer)
     def create(self, req, body):
         """Creates a new volume."""
         if not self.is_valid_body(body, 'volume'):
@@ -225,30 +327,41 @@ class VolumeController(wsgi.Controller):
 
         req_volume_type = volume.get('volume_type', None)
         if req_volume_type:
-            # Not found exception will be handled at the wsgi level
-            if not uuidutils.is_uuid_like(req_volume_type):
-                kwargs['volume_type'] = \
-                    volume_types.get_volume_type_by_name(
+            try:
+                if not uuidutils.is_uuid_like(req_volume_type):
+                    kwargs['volume_type'] = \
+                        volume_types.get_volume_type_by_name(
+                            context, req_volume_type)
+                else:
+                    kwargs['volume_type'] = volume_types.get_volume_type(
                         context, req_volume_type)
-            else:
-                kwargs['volume_type'] = volume_types.get_volume_type(
-                    context, req_volume_type)
+            except exception.VolumeTypeNotFound:
+                explanation = 'Volume type not found.'
+                raise exc.HTTPNotFound(explanation=explanation)
 
         kwargs['metadata'] = volume.get('metadata', None)
 
         snapshot_id = volume.get('snapshot_id')
         if snapshot_id is not None:
-            # Not found exception will be handled at the wsgi level
-            kwargs['snapshot'] = self.volume_api.get_snapshot(context,
-                                                              snapshot_id)
+            try:
+                kwargs['snapshot'] = self.volume_api.get_snapshot(context,
+                                                                  snapshot_id)
+            except exception.NotFound:
+                explanation = _('snapshot id:%s not found') % snapshot_id
+                raise exc.HTTPNotFound(explanation=explanation)
+
         else:
             kwargs['snapshot'] = None
 
         source_volid = volume.get('source_volid')
         if source_volid is not None:
-            # Not found exception will be handled at the wsgi level
-            kwargs['source_volume'] = self.volume_api.get_volume(context,
-                                                                 source_volid)
+            try:
+                kwargs['source_volume'] = \
+                    self.volume_api.get_volume(context,
+                                               source_volid)
+            except exception.NotFound:
+                explanation = _('source vol id:%s not found') % source_volid
+                raise exc.HTTPNotFound(explanation=explanation)
         else:
             kwargs['source_volume'] = None
 
@@ -258,7 +371,7 @@ class VolumeController(wsgi.Controller):
         elif size is None and kwargs['source_volume'] is not None:
             size = kwargs['source_volume']['size']
 
-        LOG.info(_LI("Create volume of %s GB"), size)
+        LOG.info(_LI("Create volume of %s GB"), size, context=context)
         multiattach = volume.get('multiattach', False)
         kwargs['multiattach'] = multiattach
 
@@ -287,6 +400,7 @@ class VolumeController(wsgi.Controller):
         """Return volume search options allowed by non-admin."""
         return ('display_name', 'status', 'metadata')
 
+    @wsgi.serializers(xml=VolumeTemplate)
     def update(self, req, id, body):
         """Update a volume."""
         context = req.environ['cinder.context']
@@ -310,11 +424,13 @@ class VolumeController(wsgi.Controller):
             if key in volume:
                 update_dict[key] = volume[key]
 
-        # Not found exception will be handled at the wsgi level
-        volume = self.volume_api.get(context, id, viewable_admin_meta=True)
-        volume_utils.notify_about_volume_usage(context, volume,
-                                               'update.start')
-        self.volume_api.update(context, volume, update_dict)
+        try:
+            volume = self.volume_api.get(context, id, viewable_admin_meta=True)
+            volume_utils.notify_about_volume_usage(context, volume,
+                                                   'update.start')
+            self.volume_api.update(context, volume, update_dict)
+        except exception.NotFound:
+            raise exc.HTTPNotFound()
 
         volume.update(update_dict)
 

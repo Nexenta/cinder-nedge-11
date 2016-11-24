@@ -31,6 +31,9 @@ class FakeBrickLVM(object):
     def get_all_physical_volumes(vg_name=None):
         return []
 
+    def get_physical_volumes(self):
+        return []
+
     def update_volume_group_info(self):
         pass
 

@@ -45,12 +45,11 @@ class BaseObjectsTestCase(test.TestCase):
                 # base class" error
                 continue
 
-            obj_field = getattr(obj, field)
-            if field in ('modified_at', 'created_at', 'updated_at',
-                         'deleted_at', 'last_heartbeat') and db[field]:
+            if field in ('modified_at', 'created_at',
+                         'updated_at', 'deleted_at') and db[field]:
                 test.assertEqual(db[field],
-                                 timeutils.normalize_time(obj_field))
-            elif isinstance(obj_field, obj_base.ObjectListBase):
-                test.assertEqual(db[field], obj_field.objects)
+                                 timeutils.normalize_time(obj[field]))
+            elif isinstance(obj[field], obj_base.ObjectListBase):
+                test.assertEqual(db[field], obj[field].objects)
             else:
-                test.assertEqual(db[field], obj_field)
+                test.assertEqual(db[field], obj[field])

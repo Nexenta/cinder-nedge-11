@@ -13,7 +13,12 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_log import log as logging
+
 from cinder.api import common
+
+
+LOG = logging.getLogger(__name__)
 
 
 class ViewBuilder(common.ViewBuilder):
@@ -31,20 +36,19 @@ class ViewBuilder(common.ViewBuilder):
 
     def summary(self, request, qos_spec):
         """Generic, non-detailed view of a qos_specs."""
-        return self.detail(request, qos_spec)
+        return {
+            'qos_specs': qos_spec,
+            'links': self._get_links(request,
+                                     qos_spec['id']),
+        }
 
     def detail(self, request, qos_spec):
         """Detailed view of a single qos_spec."""
         # TODO(zhiteng) Add associations to detailed view
         return {
-            'qos_specs': {
-                'id': qos_spec.id,
-                'name': qos_spec.name,
-                'consumer': qos_spec.consumer,
-                'specs': qos_spec.specs
-            },
+            'qos_specs': qos_spec,
             'links': self._get_links(request,
-                                     qos_spec.id),
+                                     qos_spec['id']),
         }
 
     def associations(self, request, associates):

@@ -33,8 +33,8 @@ import six
 
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
-from cinder import interface
 from cinder import utils
+import cinder.volume.driver
 from cinder.volume.drivers.ibm import flashsystem_common as fscommon
 from cinder.volume.drivers.san import san
 from cinder.zonemanager import utils as fczm_utils
@@ -53,40 +53,26 @@ CONF = cfg.CONF
 CONF.register_opts(flashsystem_fc_opts)
 
 
-@interface.volumedriver
-class FlashSystemFCDriver(fscommon.FlashSystemDriver):
+class FlashSystemFCDriver(fscommon.FlashSystemDriver,
+                          cinder.volume.driver.FibreChannelDriver):
     """IBM FlashSystem FC volume driver.
 
     Version history:
+    1.0.0 - Initial driver
+    1.0.1 - Code clean up
+    1.0.2 - Add lock into vdisk map/unmap, connection
+            initialize/terminate
+    1.0.3 - Initial driver for iSCSI
+    1.0.4 - Split Flashsystem driver into common and FC
+    1.0.5 - Report capability of volume multiattach
+    1.0.6 - Fix bug #1469581, add I/T mapping check in
+            terminate_connection
+    1.0.7 - Fix bug #1505477, add host name check in
+            _find_host_exhaustive for FC
 
-    .. code-block:: none
-
-        1.0.0 - Initial driver
-        1.0.1 - Code clean up
-        1.0.2 - Add lock into vdisk map/unmap, connection
-                initialize/terminate
-        1.0.3 - Initial driver for iSCSI
-        1.0.4 - Split Flashsystem driver into common and FC
-        1.0.5 - Report capability of volume multiattach
-        1.0.6 - Fix bug #1469581, add I/T mapping check in
-                terminate_connection
-        1.0.7 - Fix bug #1505477, add host name check in
-                _find_host_exhaustive for FC
-        1.0.8 - Fix bug #1572743, multi-attach attribute
-                should not be hardcoded, only in iSCSI
-        1.0.9 - Fix bug #1570574, Cleanup host resource
-                leaking, changes only in iSCSI
-        1.0.10 - Fix bug #1585085, add host name check in
-                 _find_host_exhaustive for iSCSI
-        1.0.11 - Update driver to use ABC metaclasses
-        1.0.12 - Update driver to support Manage/Unmanage
-                 existing volume
     """
 
-    VERSION = "1.0.12"
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "IBM_FlashSystem_CI"
+    VERSION = "1.0.7"
 
     def __init__(self, *args, **kwargs):
         super(FlashSystemFCDriver, self).__init__(*args, **kwargs)

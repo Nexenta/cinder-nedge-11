@@ -15,15 +15,12 @@
 
 import datetime
 import hashlib
-import os
-import pickle
 import random
 import re
 from xml.dom import minidom
 
 from oslo_log import log as logging
 from oslo_service import loopingcall
-from oslo_utils import units
 import six
 
 from cinder import context
@@ -43,8 +40,6 @@ except ImportError:
 STORAGEGROUPTYPE = 4
 POSTGROUPTYPE = 3
 CLONE_REPLICATION_TYPE = 10
-SYNC_SNAPSHOT_LOCAL = 6
-ASYNC_SNAPSHOT_LOCAL = 7
 MAX_POOL_LENGTH = 16
 MAX_FASTPOLICY_LENGTH = 14
 
@@ -52,7 +47,6 @@ EMC_ROOT = 'root/emc'
 CONCATENATED = 'concatenated'
 CINDER_EMC_CONFIG_FILE_PREFIX = '/etc/cinder/cinder_emc_config_'
 CINDER_EMC_CONFIG_FILE_POSTFIX = '.xml'
-LIVE_MIGRATION_FILE = '/etc/cinder/livemigrationarray'
 ISCSI = 'iscsi'
 FC = 'fc'
 JOB_RETRIES = 60
@@ -289,50 +283,67 @@ class EMCVMAXUtils(object):
         :param conn: connection to the ecom server
         :param job: the job dict
         :param extraSpecs: the extraSpecs dict. Defaults to None
+        :returns: int -- the return code
+        :returns: errorDesc - the error description string
+        """
+
+        jobInstanceName = job['Job']
+        if extraSpecs and (INTERVAL in extraSpecs or RETRIES in extraSpecs):
+            self._wait_for_job_complete(conn, job, extraSpecs)
+        else:
+            self._wait_for_job_complete(conn, job)
+        jobinstance = conn.GetInstance(jobInstanceName,
+                                       LocalOnly=False)
+        rc = jobinstance['ErrorCode']
+        errorDesc = jobinstance['ErrorDescription']
+        LOG.debug("Return code is: %(rc)lu. "
+                  "Error Description is: %(errorDesc)s.",
+                  {'rc': rc,
+                   'errorDesc': errorDesc})
+
+        return rc, errorDesc
+
+    def _wait_for_job_complete(self, conn, job, extraSpecs=None):
+        """Given the job wait for it to complete.
+
+        :param conn: connection to the ecom server
+        :param job: the job dict
+        :param extraSpecs: the extraSpecs dict. Defaults to None
+        :raises: loopingcall.LoopingCallDone
         :raises: VolumeBackendAPIException
         """
 
         def _wait_for_job_complete():
             # Called at an interval until the job is finished.
+            maxJobRetries = self._get_max_job_retries(extraSpecs)
             retries = kwargs['retries']
-            try:
-                kwargs['retries'] = retries + 1
-                if not kwargs['wait_for_job_called']:
-                    if self._is_job_finished(conn, job):
-                        kwargs['rc'], kwargs['errordesc'] = (
-                            self._verify_job_state(conn, job))
-                        kwargs['wait_for_job_called'] = True
-            except Exception:
-                exceptionMessage = (_("Issue encountered waiting for job."))
-                LOG.exception(exceptionMessage)
-                raise exception.VolumeBackendAPIException(exceptionMessage)
-
+            wait_for_job_called = kwargs['wait_for_job_called']
+            if self._is_job_finished(conn, job):
+                raise loopingcall.LoopingCallDone()
             if retries > maxJobRetries:
-                kwargs['rc'], kwargs['errordesc'] = (
-                    self._verify_job_state(conn, job))
                 LOG.error(_LE("_wait_for_job_complete "
                               "failed after %(retries)d "
                               "tries."),
                           {'retries': retries})
 
                 raise loopingcall.LoopingCallDone()
-            if kwargs['wait_for_job_called']:
-                raise loopingcall.LoopingCallDone()
-        maxJobRetries = self._get_max_job_retries(extraSpecs)
+            try:
+                kwargs['retries'] = retries + 1
+                if not wait_for_job_called:
+                    if self._is_job_finished(conn, job):
+                        kwargs['wait_for_job_called'] = True
+            except Exception:
+                exceptionMessage = (_("Issue encountered waiting for job."))
+                LOG.exception(exceptionMessage)
+                raise exception.VolumeBackendAPIException(exceptionMessage)
+
         kwargs = {'retries': 0,
-                  'wait_for_job_called': False,
-                  'rc': 0,
-                  'errordesc': None}
+                  'wait_for_job_called': False}
 
         intervalInSecs = self._get_interval_in_secs(extraSpecs)
 
         timer = loopingcall.FixedIntervalLoopingCall(_wait_for_job_complete)
         timer.start(interval=intervalInSecs).wait()
-        LOG.debug("Return code is: %(rc)lu. "
-                  "Error Description is: %(errordesc)s.",
-                  {'rc': kwargs['rc'],
-                   'errordesc': kwargs['errordesc']})
-        return kwargs['rc'], kwargs['errordesc']
 
     def _get_max_job_retries(self, extraSpecs):
         """Get max job retries either default or user defined
@@ -381,43 +392,6 @@ class EMCVMAXUtils(object):
             return False
         else:
             return True
-
-    def _verify_job_state(self, conn, job):
-        """Check if the job is finished.
-
-        :param conn: connection to the ecom server
-        :param job: the job dict
-        :returns: boolean -- True if finished; False if not finished;
-        """
-        jobstatedict = {2: 'New',
-                        3: 'Starting',
-                        4: 'Running',
-                        5: 'Suspended',
-                        6: 'Shutting Down',
-                        7: 'Completed',
-                        8: 'Terminated',
-                        9: 'Killed',
-                        10: 'Exception',
-                        11: 'Service',
-                        32767: 'Queue Pending',
-                        32768: 'DMTF Reserved',
-                        65535: 'Vendor Reserved'}
-        jobInstanceName = job['Job']
-        jobinstance = conn.GetInstance(jobInstanceName,
-                                       LocalOnly=False)
-        operationalstatus = jobinstance['OperationalStatus']
-        if not operationalstatus:
-            jobstate = jobinstance['JobState']
-            errordescription = (_(
-                "The job has not completed and is in a %(state)s "
-                "state.")
-                % {'state': jobstatedict[int(jobstate)]})
-            LOG.error(errordescription)
-            errorcode = -1
-        else:
-            errordescription = jobinstance['ErrorDescription']
-            errorcode = jobinstance['ErrorCode']
-        return errorcode, errordescription
 
     def wait_for_sync(self, conn, syncName, extraSpecs=None):
         """Given the sync name wait for it to fully synchronize.
@@ -750,7 +724,7 @@ class EMCVMAXUtils(object):
         :param strGB: string -- The size in GB
         :returns: string -- The size in bytes
         """
-        strBitsSize = six.text_type(int(strGbSize) * units.Gi)
+        strBitsSize = six.text_type(int(strGbSize) * 1024 * 1024 * 1024)
 
         LOG.debug("Converted %(strGbSize)s GBs to %(strBitsSize)s Bits.",
                   {'strGbSize': strGbSize, 'strBitsSize': strBitsSize})
@@ -981,8 +955,7 @@ class EMCVMAXUtils(object):
         :param conn: connection to the ecom server
         :param poolName: string value of the storage pool name
         :param storageSystemName: the storage system name
-        :returns: tuple -- (total_capacity_gb, free_capacity_gb,
-        provisioned_capacity_gb)
+        :returns: tuple -- (total_capacity_gb, free_capacity_gb)
         """
         LOG.debug(
             "Retrieving capacity for pool %(poolName)s on array %(array)s.",
@@ -1001,17 +974,10 @@ class EMCVMAXUtils(object):
             poolInstanceName, LocalOnly=False)
         total_capacity_gb = self.convert_bits_to_gbs(
             storagePoolInstance['TotalManagedSpace'])
-        provisioned_capacity_gb = self.convert_bits_to_gbs(
+        allocated_capacity_gb = self.convert_bits_to_gbs(
             storagePoolInstance['EMCSubscribedCapacity'])
-        free_capacity_gb = self.convert_bits_to_gbs(
-            storagePoolInstance['RemainingManagedSpace'])
-        try:
-            array_max_over_subscription = self.get_ratio_from_max_sub_per(
-                storagePoolInstance['EMCMaxSubscriptionPercent'])
-        except KeyError:
-            array_max_over_subscription = 65534
-        return (total_capacity_gb, free_capacity_gb,
-                provisioned_capacity_gb, array_max_over_subscription)
+        free_capacity_gb = total_capacity_gb - allocated_capacity_gb
+        return (total_capacity_gb, free_capacity_gb)
 
     def get_pool_by_name(self, conn, storagePoolName, storageSystemName):
         """Returns the instance name associated with a storage pool name.
@@ -1085,28 +1051,6 @@ class EMCVMAXUtils(object):
             pass
 
         return extraSpecs
-
-    def get_volumetype_qosspecs(self, volume, volumeTypeId=None):
-        """Get the qos specs.
-
-        :param volume: the volume dictionary
-        :param volumeTypeId: Optional override for volume['volume_type_id']
-        :returns: dict -- qosSpecs - the qos specs
-        """
-        qosSpecs = {}
-
-        try:
-            if volumeTypeId:
-                type_id = volumeTypeId
-            else:
-                type_id = volume['volume_type_id']
-            if type_id is not None:
-                qosSpecs = volume_types.get_volume_type_qos_specs(type_id)
-
-        except Exception:
-            LOG.debug("Unable to get QoS specifications.")
-
-        return qosSpecs
 
     def get_volume_type_name(self, volume):
         """Get the volume type name.
@@ -1546,11 +1490,6 @@ class EMCVMAXUtils(object):
         isValidSLO = False
         isValidWorkload = False
 
-        if not slo:
-            isValidSLO = True
-        if not workload:
-            isValidWorkload = True
-
         validSLOs = ['Bronze', 'Silver', 'Gold',
                      'Platinum', 'Diamond', 'Optimized',
                      'NONE']
@@ -1587,13 +1526,10 @@ class EMCVMAXUtils(object):
         :param workload: the workload string e.g DSS
         :returns: storageGroupName
         """
-        if slo and workload:
-            storageGroupName = ("OS-%(poolName)s-%(slo)s-%(workload)s-SG"
-                                % {'poolName': poolName,
-                                   'slo': slo,
-                                   'workload': workload})
-        else:
-            storageGroupName = ("OS-no_SLO-SG")
+        storageGroupName = ("OS-%(poolName)s-%(slo)s-%(workload)s-SG"
+                            % {'poolName': poolName,
+                               'slo': slo,
+                               'workload': workload})
         return storageGroupName
 
     def _get_fast_settings_from_storage_group(self, storageGroupInstance):
@@ -1735,12 +1671,12 @@ class EMCVMAXUtils(object):
 
         return foundRepServCapability
 
-    def is_clone_licensed(self, conn, capabilityInstanceName, isV3):
+    def is_clone_licensed(self, conn, capabilityInstanceName):
         """Check if the clone feature is licensed and enabled.
 
         :param conn: the connection to the ecom server
         :param capabilityInstanceName: the replication service capabilities
-                                       instance name
+        instance name
         :returns: True if licensed and enabled; False otherwise.
         """
         capabilityInstance = conn.GetInstance(capabilityInstanceName)
@@ -1752,19 +1688,10 @@ class EMCVMAXUtils(object):
                 LOG.debug("Found supported replication types: "
                           "%(repTypes)s",
                           {'repTypes': repTypes})
-                if isV3:
-                    if (SYNC_SNAPSHOT_LOCAL in repTypes or
-                            ASYNC_SNAPSHOT_LOCAL in repTypes):
-                        # Snapshot is a supported replication type.
-                        LOG.debug("Snapshot for VMAX3 is licensed and "
-                                  "enabled.")
-                        return True
-                else:
-                    if CLONE_REPLICATION_TYPE in repTypes:
-                        # Clone is a supported replication type.
-                        LOG.debug("Clone for VMAX2 is licensed and "
-                                  "enabled.")
-                        return True
+                if CLONE_REPLICATION_TYPE in repTypes:
+                    # Clone is a supported replication type.
+                    LOG.debug("Clone is licensed and enabled.")
+                    return True
         return False
 
     def create_storage_hardwareId_instance_name(
@@ -1774,7 +1701,7 @@ class EMCVMAXUtils(object):
         :param conn: connection to the ecom server
         :param hardwareIdManagementService: the hardware ID management service
         :param initiator: initiator(IQN or WWPN) to create the hardware ID
-                          instance
+            instance
         :returns: hardwareIdList
         """
         hardwareIdList = None
@@ -1895,11 +1822,12 @@ class EMCVMAXUtils(object):
         kwargs['EcomNoVerification'] = connargs['EcomNoVerification']
 
         slo = self._process_tag(element, 'SLO')
+        if slo is None:
+            slo = 'NONE'
         kwargs['SLO'] = slo
         workload = self._process_tag(element, 'Workload')
-        if workload is None and slo:
+        if workload is None:
             workload = 'NONE'
-
         kwargs['Workload'] = workload
         fastPolicy = self._process_tag(element, 'FastPolicy')
         kwargs['FastPolicy'] = fastPolicy
@@ -2638,180 +2566,6 @@ class EMCVMAXUtils(object):
         sgInstanceName = self.find_storage_masking_group(
             conn, controllerConfigService, storageGroupName)
         return storageGroupName, controllerConfigService, sgInstanceName
-
-    def get_ratio_from_max_sub_per(self, max_subscription_percent):
-        """Get ratio from max subscription percent if it exists.
-
-        Check if the max subscription is set on the pool, if it is convert
-        it to a ratio.
-
-        :param max_subscription_percent: max subscription percent
-        :returns: max_over_subscription_ratio
-        """
-        if max_subscription_percent == '0':
-            return None
-        try:
-            max_subscription_percent_int = int(max_subscription_percent)
-        except ValueError:
-            LOG.error(_LE("Cannot convert max subscription percent to int."))
-            return None
-        return float(max_subscription_percent_int) / 100
-
-    def override_ratio(self, max_over_sub_ratio, max_sub_ratio_from_per):
-        """Override ratio if necessary
-
-        The over subscription ratio will be overriden if the max subscription
-        percent is less than the user supplied max oversubscription ratio.
-
-        :param max_over_sub_ratio: user supplied over subscription ratio
-        :param max_sub_ratio_from_per: property on the pool
-        :returns: max_over_sub_ratio
-        """
-        if max_over_sub_ratio:
-            try:
-                max_over_sub_ratio = max(float(max_over_sub_ratio),
-                                         float(max_sub_ratio_from_per))
-            except ValueError:
-                max_over_sub_ratio = float(max_sub_ratio_from_per)
-        elif max_sub_ratio_from_per:
-            max_over_sub_ratio = float(max_sub_ratio_from_per)
-
-        return max_over_sub_ratio
-
-    def update_storagegroup_qos(self, conn, storagegroup, extraspecs):
-        """Update the storagegroupinstance with qos details.
-
-        If MaxIOPS or maxMBPS is in extraspecs, then DistributionType can be
-        modified in addition to MaxIOPS or/and maxMBPS
-        If MaxIOPS or maxMBPS is NOT in extraspecs, we check to see if
-        either is set in StorageGroup. If so, then DistributionType can be
-        modified
-
-        :param conn: connection to the ecom server
-        :param storagegroup: the storagegroup instance name
-        :param extraSpecs: extra specifications
-        """
-        if type(storagegroup) is pywbem.cim_obj.CIMInstance:
-            storagegroupInstance = storagegroup
-        else:
-            storagegroupInstance = conn.GetInstance(storagegroup)
-        propertylist = []
-        if 'maxIOPS' in extraspecs.get('qos'):
-            maxiops = self.get_num(extraspecs.get('qos').get('maxIOPS'), '32')
-            if maxiops != storagegroupInstance['EMCMaximumIO']:
-                storagegroupInstance['EMCMaximumIO'] = maxiops
-                propertylist.append('EMCMaximumIO')
-        if 'maxMBPS' in extraspecs.get('qos'):
-            maxmbps = self.get_num(extraspecs.get('qos').get('maxMBPS'), '32')
-            if maxmbps != storagegroupInstance['EMCMaximumBandwidth']:
-                storagegroupInstance['EMCMaximumBandwidth'] = maxmbps
-                propertylist.append('EMCMaximumBandwidth')
-        if 'DistributionType' in extraspecs.get('qos') and (
-                propertylist or (
-                storagegroupInstance['EMCMaximumBandwidth'] != 0) or (
-                storagegroupInstance['EMCMaximumIO'] != 0)):
-            dynamicdict = {'never': 1, 'onfailure': 2, 'always': 3}
-            dynamicvalue = dynamicdict.get(
-                extraspecs.get('qos').get('DistributionType').lower())
-            if dynamicvalue:
-                distributiontype = self.get_num(dynamicvalue, '16')
-            if distributiontype != (
-                    storagegroupInstance['EMCMaxIODynamicDistributionType']
-            ):
-                storagegroupInstance['EMCMaxIODynamicDistributionType'] = (
-                    distributiontype)
-                propertylist.append('EMCMaxIODynamicDistributionType')
-        if propertylist:
-            modifiedInstance = conn.ModifyInstance(storagegroupInstance,
-                                                   PropertyList=propertylist)
-        return modifiedInstance
-
-    def insert_live_migration_record(self, volume, maskingviewdict,
-                                     connector, extraSpecs):
-        """Insert a record of live migration destination into a temporary file
-
-        :param volume: the volume dictionary
-        :param maskingviewdict: the storage group instance name
-        :param connector: the connector Object
-        :param extraSpecs: the extraSpecs dict
-        """
-        live_migration_details = self.get_live_migration_record(volume, True)
-        if live_migration_details:
-            if volume['id'] not in live_migration_details:
-                live_migration_details[volume['id']] = [maskingviewdict,
-                                                        connector, extraSpecs]
-        else:
-            live_migration_details = {volume['id']: [maskingviewdict,
-                                                     connector, extraSpecs]}
-        try:
-            with open(LIVE_MIGRATION_FILE, "wb") as f:
-                pickle.dump(live_migration_details, f)
-        except Exception:
-            exceptionMessage = (_(
-                "Error in processing live migration file."))
-            LOG.exception(exceptionMessage)
-            raise exception.VolumeBackendAPIException(
-                data=exceptionMessage)
-
-    def delete_live_migration_record(self, volume):
-        """Delete record of live migration
-
-        Delete record of live migration destination from file and if
-        after deletion of record, delete file if empty.
-
-        :param volume: the volume dictionary
-        """
-        live_migration_details = self.get_live_migration_record(volume, True)
-        if live_migration_details:
-            if volume['id'] in live_migration_details:
-                del live_migration_details[volume['id']]
-                with open(LIVE_MIGRATION_FILE, "wb") as f:
-                    pickle.dump(live_migration_details, f)
-            else:
-                LOG.debug("%(Volume)s doesn't exist in live migration "
-                          "record.",
-                          {'Volume': volume['id']})
-            if not live_migration_details:
-                os.remove(LIVE_MIGRATION_FILE)
-
-    def get_live_migration_record(self, volume, returnallrecords):
-        """get record of live migration destination from a temporary file
-
-        :param volume: the volume dictionary
-        :param returnallrecords: if true, return all records in file
-        :returns: returns a single record or all records depending on
-        returnallrecords flag
-        """
-        returned_record = None
-        if os.path.isfile(LIVE_MIGRATION_FILE):
-            with open(LIVE_MIGRATION_FILE, "rb") as f:
-                live_migration_details = pickle.load(f)
-            if returnallrecords:
-                returned_record = live_migration_details
-            else:
-                if volume['id'] in live_migration_details:
-                    returned_record = live_migration_details[volume['id']]
-                else:
-                    LOG.debug("%(Volume)s doesn't exist in live migration "
-                              "record.",
-                              {'Volume': volume['id']})
-        return returned_record
-
-    def get_iqn(self, conn, ipendpointinstancename):
-        """Get the IPv4Address from the ip endpoint instance name.
-
-        :param conn: the ecom connection
-        :param ipendpointinstancename: the ip endpoint instance name
-        :returns: foundIqn
-        """
-        foundIqn = None
-        ipendpointinstance = conn.GetInstance(ipendpointinstancename)
-        propertiesList = ipendpointinstance.properties.items()
-        for properties in propertiesList:
-            if properties[0] == 'Name':
-                cimProperties = properties[1]
-                foundIqn = cimProperties.value
-        return foundIqn
 
     def check_ig_instance_name(
             self, conn, initiatorGroupInstanceName):

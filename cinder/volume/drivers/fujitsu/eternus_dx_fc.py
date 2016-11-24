@@ -22,7 +22,6 @@ FibreChannel Cinder Volume driver for Fujitsu ETERNUS DX S3 series.
 from oslo_log import log as logging
 import six
 
-from cinder import interface
 from cinder.volume import driver
 from cinder.volume.drivers.fujitsu import eternus_dx_common
 from cinder.zonemanager import utils as fczm_utils
@@ -30,13 +29,8 @@ from cinder.zonemanager import utils as fczm_utils
 LOG = logging.getLogger(__name__)
 
 
-@interface.volumedriver
 class FJDXFCDriver(driver.FibreChannelDriver):
     """FC Cinder Volume Driver for Fujitsu ETERNUS DX S3 series."""
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Fujitsu_ETERNUS_CI"
-    VERSION = eternus_dx_common.FJDXCommon.VERSION
 
     def __init__(self, *args, **kwargs):
 

@@ -27,7 +27,6 @@ import six
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
 from cinder.image import image_utils
-from cinder import interface
 from cinder import utils
 from cinder.volume import driver
 from cinder.volume.drivers import remotefs
@@ -64,7 +63,6 @@ CONF = cfg.CONF
 CONF.register_opts(nfs_opts)
 
 
-@interface.volumedriver
 class NfsDriver(driver.ExtendVD, remotefs.RemoteFSDriver):
     """NFS based cinder driver.
 
@@ -75,9 +73,6 @@ class NfsDriver(driver.ExtendVD, remotefs.RemoteFSDriver):
     driver_prefix = 'nfs'
     volume_backend_name = 'Generic_NFS'
     VERSION = VERSION
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Cinder_Jenkins"
 
     def __init__(self, execute=putils.execute, *args, **kwargs):
         self._remotefsclient = None
@@ -114,28 +109,17 @@ class NfsDriver(driver.ExtendVD, remotefs.RemoteFSDriver):
         """Any initialization the volume driver does while starting."""
         super(NfsDriver, self).do_setup(context)
 
-        nas_host = getattr(self.configuration,
-                           'nas_host',
-                           None)
-        nas_share_path = getattr(self.configuration,
-                                 'nas_share_path',
-                                 None)
-
-        # If both nas_host and nas_share_path are set we are not
-        # going to use the nfs_shares_config file.  So, only check
-        # for its existence if it is going to be used.
-        if((not nas_host) or (not nas_share_path)):
-            config = self.configuration.nfs_shares_config
-            if not config:
-                msg = (_("There's no NFS config file configured (%s)") %
-                       'nfs_shares_config')
-                LOG.warning(msg)
-                raise exception.NfsException(msg)
-            if not os.path.exists(config):
-                msg = (_("NFS config file at %(config)s doesn't exist") %
-                       {'config': config})
-                LOG.warning(msg)
-                raise exception.NfsException(msg)
+        config = self.configuration.nfs_shares_config
+        if not config:
+            msg = (_("There's no NFS config file configured (%s)") %
+                   'nfs_shares_config')
+            LOG.warning(msg)
+            raise exception.NfsException(msg)
+        if not os.path.exists(config):
+            msg = (_("NFS config file at %(config)s doesn't exist") %
+                   {'config': config})
+            LOG.warning(msg)
+            raise exception.NfsException(msg)
 
         self.shares = {}  # address : options
 
@@ -316,13 +300,13 @@ class NfsDriver(driver.ExtendVD, remotefs.RemoteFSDriver):
 
     def extend_volume(self, volume, new_size):
         """Extend an existing volume to the new size."""
-        LOG.info(_LI('Extending volume %s.'), volume.id)
-        extend_by = int(new_size) - volume.size
-        if not self._is_share_eligible(volume.provider_location,
+        LOG.info(_LI('Extending volume %s.'), volume['id'])
+        extend_by = int(new_size) - volume['size']
+        if not self._is_share_eligible(volume['provider_location'],
                                        extend_by):
             raise exception.ExtendVolumeError(reason='Insufficient space to'
                                               ' extend volume %s to %sG'
-                                              % (volume.id, new_size))
+                                              % (volume['id'], new_size))
         path = self.local_path(volume)
         LOG.info(_LI('Resizing file to %sG...'), new_size)
         image_utils.resize_image(path, new_size,
@@ -335,7 +319,7 @@ class NfsDriver(driver.ExtendVD, remotefs.RemoteFSDriver):
         """Checks if file size at path is equal to size."""
         data = image_utils.qemu_img_info(path,
                                          run_as_root=self._execute_as_root)
-        virt_size = int(data.virtual_size / units.Gi)
+        virt_size = data.virtual_size / units.Gi
         return virt_size == size
 
     def set_nas_security_options(self, is_new_cinder_install):
@@ -348,7 +332,7 @@ class NfsDriver(driver.ExtendVD, remotefs.RemoteFSDriver):
 
         :param is_new_cinder_install: bool indication of new Cinder install
         """
-        doc_html = "http://docs.openstack.org/admin-guide" \
+        doc_html = "http://docs.openstack.org/admin-guide-cloud" \
                    "/blockstorage_nfs_backend.html"
 
         self._ensure_shares_mounted()
@@ -412,8 +396,8 @@ class NfsDriver(driver.ExtendVD, remotefs.RemoteFSDriver):
         # NFS snapshots are introduced.
         name_id = None
         if original_volume_status == 'available':
-            current_name = CONF.volume_name_template % new_volume.id
-            original_volume_name = CONF.volume_name_template % volume.id
+            current_name = CONF.volume_name_template % new_volume['id']
+            original_volume_name = CONF.volume_name_template % volume['id']
             current_path = self.local_path(new_volume)
             # Replace the volume name with the original volume name
             original_path = current_path.replace(current_name,
@@ -422,16 +406,16 @@ class NfsDriver(driver.ExtendVD, remotefs.RemoteFSDriver):
                 os.rename(current_path, original_path)
             except OSError:
                 LOG.error(_LE('Unable to rename the logical volume '
-                              'for volume: %s'), volume.id)
+                              'for volume: %s'), volume['id'])
                 # If the rename fails, _name_id should be set to the new
                 # volume id and provider_location should be set to the
                 # one from the new volume as well.
-                name_id = new_volume._name_id or new_volume.id
+                name_id = new_volume['_name_id'] or new_volume['id']
         else:
             # The back-end will not be renamed.
-            name_id = new_volume._name_id or new_volume.id
+            name_id = new_volume['_name_id'] or new_volume['id']
         return {'_name_id': name_id,
-                'provider_location': new_volume.provider_location}
+                'provider_location': new_volume['provider_location']}
 
     def _update_volume_stats(self):
         """Retrieve stats info from volume group."""

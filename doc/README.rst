@@ -1,33 +1,66 @@
-=======================
-Cinder Development Docs
-=======================
+=================
+Building the docs
+=================
 
-Files under this directory tree are used for generating the documentation
-for the Cinder source code.
+Dependencies
+============
 
-Developer documentation is built to:
-http://docs.openstack.org/developer/cinder/
+Sphinx_
+  You'll need sphinx (the python one) and if you are
+  using the virtualenv you'll need to install it in the virtualenv
+  specifically so that it can load the cinder modules.
 
-Tools
-=====
+  ::
 
-Sphinx
-  The Python Sphinx package is used to generate the documentation output.
-  Information on Sphinx, including formatting information for RST source
-  files, can be found in the `Sphinx online documentation 
-  <http://www.sphinx-doc.org/en/stable/>`_.
+    pip install Sphinx
 
-Graphviz
+Graphviz_
   Some of the diagrams are generated using the ``dot`` language
-  from Graphviz. See the `Graphviz documentation <http://www.graphviz.org/>`_
-  for Graphviz and dot language usage information.
+  from Graphviz.
+
+  ::
+
+    sudo apt-get install graphviz
+
+.. _Sphinx: http://sphinx.pocoo.org
+
+.. _Graphviz: http://www.graphviz.org/
 
 
-Building Documentation
-======================
+Use `make`
+==========
 
-Doc builds are performed using tox with the ``docs`` target::
+Just type make::
+
+  % make
+
+Look in the Makefile for more targets.
+
+
+Manually
+========
+
+  1. Generate the code.rst file so that Sphinx will pull in our docstrings::
+     
+      % ./generate_autodoc_index.sh > source/code.rst
+
+  2. Run `sphinx_build`::
+
+      % sphinx-build -b html source build/html
+
+
+Use `tox`
+=========
+
+The easiest way to build the docs and avoid dealing with all
+dependencies is to let tox prepare a virtualenv and run the
+build_sphinx target inside the virtualenv::
 
  % cd ..
  % tox -e docs
 
+
+The docs have been built
+========================
+
+Check out the `build` directory to find them. Yay!

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright 2011 OpenStack Foundation
+# Copyright 2011 OpenStack, LLC
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
 # All Rights Reserved.
@@ -32,7 +32,6 @@ import sys
 
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_log import versionutils
 from oslo_reports import guru_meditation_report as gmr
 from oslo_reports import opts as gmr_opts
 
@@ -43,7 +42,7 @@ i18n.enable_lazy()
 from cinder.cmd import volume as volume_cmd
 from cinder.common import config   # noqa
 from cinder.db import api as session
-from cinder.i18n import _LE, _, _LW
+from cinder.i18n import _LE
 from cinder import objects
 from cinder import rpc
 from cinder import service
@@ -63,8 +62,6 @@ def main():
     config.set_middleware_defaults()
     logging.setup(CONF, "cinder")
     LOG = logging.getLogger('cinder.all')
-    versionutils.report_deprecated_feature(LOG, _(
-        'cinder-all is deprecated in Newton and will be removed in Ocata.'))
 
     utils.monkey_patch()
 
@@ -89,14 +86,13 @@ def main():
     # cinder-volume
     try:
         if CONF.enabled_backends:
-            for backend in filter(None, CONF.enabled_backends):
+            for backend in CONF.enabled_backends:
                 CONF.register_opt(volume_cmd.host_opt, group=backend)
                 backend_host = getattr(CONF, backend).backend_host
                 host = "%s@%s" % (backend_host or CONF.host, backend)
                 server = service.Service.create(host=host,
                                                 service_name=backend,
-                                                binary='cinder-volume',
-                                                coordination=True)
+                                                binary='cinder-volume')
                 # Dispose of the whole DB connection pool here before
                 # starting another process.  Otherwise we run into cases
                 # where child processes share DB connections which results
@@ -104,14 +100,9 @@ def main():
                 session.dispose_engine()
                 launcher.launch_service(server)
         else:
-            LOG.warning(_LW('Configuration for cinder-volume does not specify '
-                            '"enabled_backends", using DEFAULT as backend. '
-                            'Support for DEFAULT section to configure drivers '
-                            'will be removed in the next release.'))
-            server = service.Service.create(binary='cinder-volume',
-                                            coordination=True)
+            server = service.Service.create(binary='cinder-volume')
             launcher.launch_service(server)
     except (Exception, SystemExit):
-        LOG.exception(_LE('Failed to load cinder-volume'))
+        LOG.exception(_LE('Failed to load conder-volume'))
 
     launcher.wait()

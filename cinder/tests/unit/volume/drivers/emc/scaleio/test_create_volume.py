@@ -12,17 +12,12 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-
-import ddt
-import mock
-
 from cinder import context
 from cinder import exception
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit.volume.drivers.emc import scaleio
 
 
-@ddt.ddt
 class TestCreateVolume(scaleio.TestScaleIODriver):
     """Test cases for ``ScaleIODriver.create_volume()``"""
     def setUp(self):
@@ -114,25 +109,7 @@ class TestCreateVolume(scaleio.TestScaleIODriver):
         """Valid create volume parameters"""
         self.driver.create_volume(self.volume)
 
-    def test_create_volume_non_8_gran(self):
-        self.volume.size = 14
-        model_update = self.driver.create_volume(self.volume)
-        self.assertEqual(16, model_update['size'])
-
     def test_create_volume_badstatus_response(self):
         self.set_https_response_mode(self.RESPONSE_MODE.BadStatus)
-        self.assertRaises(exception.VolumeBackendAPIException,
-                          self.test_create_volume)
-
-    @ddt.data({'provisioning:type': 'thin'}, {'provisioning:type': 'thin'})
-    def test_create_thin_thick_volume(self, extraspecs):
-        self.driver._get_volumetype_extraspecs = mock.MagicMock()
-        self.driver._get_volumetype_extraspecs.return_value = extraspecs
-        self.driver.create_volume(self.volume)
-
-    def test_create_volume_bad_provisioning_type(self):
-        extraspecs = {'provisioning:type': 'other'}
-        self.driver._get_volumetype_extraspecs = mock.MagicMock()
-        self.driver._get_volumetype_extraspecs.return_value = extraspecs
         self.assertRaises(exception.VolumeBackendAPIException,
                           self.test_create_volume)

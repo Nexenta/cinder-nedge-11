@@ -42,7 +42,6 @@ from cinder.volume.drivers.netapp.eseries import host_mapper
 from cinder.volume.drivers.netapp.eseries import library
 from cinder.volume.drivers.netapp.eseries import utils
 from cinder.volume.drivers.netapp import utils as na_utils
-from cinder.volume import utils as volume_utils
 from cinder.zonemanager import utils as fczm_utils
 
 
@@ -71,12 +70,14 @@ class NetAppEseriesLibraryTestCase(test.TestCase):
         self.library = library.NetAppESeriesLibrary('FAKE', **kwargs)
 
         # We don't want the looping calls to run
-        self.mock_object(self.library, '_start_periodic_tasks')
+        self.mock_object(self.library, '_start_periodic_tasks',
+                         new_attr=mock.Mock())
         # Deprecated Option
         self.library.configuration.netapp_storage_pools = None
         self.library._client = eseries_fake.FakeEseriesClient()
 
-        self.mock_object(self.library, '_start_periodic_tasks')
+        self.mock_object(self.library, '_start_periodic_tasks',
+                         new_attr=mock.Mock())
 
         self.mock_object(library.cinder_utils, 'synchronized',
                          mock.Mock(return_value=lambda f: f))
@@ -96,51 +97,6 @@ class NetAppEseriesLibraryTestCase(test.TestCase):
         self.library.do_setup(mock.Mock())
 
         self.assertTrue(mock_check_flags.called)
-
-    @ddt.data('linux_dm_mp', 'linux_atto', 'linux_mpp_rdac',
-              'linux_pathmanager', 'linux_sf', 'ontap', 'ontap_rdac',
-              'vmware', 'windows_atto', 'windows_clustered',
-              'factoryDefault', 'windows', None)
-    def test_check_host_type(self, host_type):
-        config = mock.Mock()
-        default_host_type = self.library.host_type
-        config.netapp_host_type = host_type
-        self.mock_object(self.library, 'configuration', config)
-
-        result = self.library._check_host_type()
-
-        self.assertIsNone(result)
-        if host_type:
-            self.assertEqual(self.library.HOST_TYPES.get(host_type),
-                             self.library.host_type)
-        else:
-            self.assertEqual(default_host_type, self.library.host_type)
-
-    def test_check_host_type_invalid(self):
-        config = mock.Mock()
-        config.netapp_host_type = 'invalid'
-        self.mock_object(self.library, 'configuration', config)
-
-        self.assertRaises(exception.NetAppDriverException,
-                          self.library._check_host_type)
-
-    def test_check_host_type_new(self):
-        config = mock.Mock()
-        config.netapp_host_type = 'new_host_type'
-        expected = 'host_type'
-        self.mock_object(self.library, 'configuration', config)
-        host_types = [{
-            'name': 'new_host_type',
-            'index': 0,
-            'code': expected,
-        }]
-        self.mock_object(self.library._client, 'list_host_types',
-                         mock.Mock(return_value=host_types))
-
-        result = self.library._check_host_type()
-
-        self.assertIsNone(result)
-        self.assertEqual(expected, self.library.host_type)
 
     @ddt.data(('optimal', True), ('offline', False), ('needsAttn', True),
               ('neverContacted', False), ('newKey', True), (None, True))
@@ -191,7 +147,7 @@ class NetAppEseriesLibraryTestCase(test.TestCase):
     def test_check_storage_system(self):
         system = copy.deepcopy(eseries_fake.STORAGE_SYSTEM)
         self.mock_object(self.library._client, 'list_storage_system',
-                         return_value=system)
+                         new_attr=mock.Mock(return_value=system))
         update_password = self.mock_object(self.library._client,
                                            'update_stored_system_password')
         info_log = self.mock_object(library.LOG, 'info', mock.Mock())
@@ -207,9 +163,10 @@ class NetAppEseriesLibraryTestCase(test.TestCase):
                 cinder_utils.ZeroIntervalLoopingCall)
     def test_check_storage_system_bad_status(self, system):
         self.mock_object(self.library._client, 'list_storage_system',
-                         return_value=system)
+                         new_attr=mock.Mock(return_value=system))
         self.mock_object(self.library._client, 'update_stored_system_password')
-        self.mock_object(time, 'time', side_effect=range(0, 60, 5))
+        self.mock_object(time, 'time', new_attr = mock.Mock(
+            side_effect=range(0, 60, 5)))
 
         self.assertRaisesRegexp(exception.NetAppDriverException,
                                 'bad.*?status',
@@ -231,9 +188,10 @@ class NetAppEseriesLibraryTestCase(test.TestCase):
             yield system
 
         self.mock_object(self.library._client, 'list_storage_system',
-                         side_effect=get_system_iter())
+                         new_attr=mock.Mock(side_effect=get_system_iter()))
         update_password = self.mock_object(self.library._client,
-                                           'update_stored_system_password')
+                                           'update_stored_system_password',
+                                           new_attr=mock.Mock())
         info_log = self.mock_object(library.LOG, 'info', mock.Mock())
 
         self.library._check_storage_system()
@@ -491,9 +449,8 @@ class NetAppEseriesLibraryTestCase(test.TestCase):
         """Validate pool capacity calculations"""
         fake_pool = copy.deepcopy(eseries_fake.STORAGE_POOL)
         self.library._get_storage_pools = mock.Mock(return_value=[fake_pool])
-        self.mock_object(self.library, '_ssc_stats',
-                         {fake_pool["volumeGroupRef"]: {
-                             self.library.THIN_UQ_SPEC: True}})
+        self.mock_object(self.library, '_ssc_stats', new_attr={fake_pool[
+            "volumeGroupRef"]: {self.library.THIN_UQ_SPEC: True}})
         self.library.configuration = mock.Mock()
         reserved_pct = 5
         over_subscription_ratio = 1.0
@@ -521,9 +478,8 @@ class NetAppEseriesLibraryTestCase(test.TestCase):
         """Validate that thin provisioning support is correctly reported"""
         fake_pool = copy.deepcopy(eseries_fake.STORAGE_POOL)
         self.library._get_storage_pools = mock.Mock(return_value=[fake_pool])
-        self.mock_object(self.library, '_ssc_stats',
-                         {fake_pool["volumeGroupRef"]: {
-                             self.library.THIN_UQ_SPEC: thin_provisioning}})
+        self.mock_object(self.library, '_ssc_stats', new_attr={fake_pool[
+            "volumeGroupRef"]: {self.library.THIN_UQ_SPEC: thin_provisioning}})
 
         self.library._update_volume_stats()
 
@@ -539,8 +495,8 @@ class NetAppEseriesLibraryTestCase(test.TestCase):
         ssc = {self.library.THIN_UQ_SPEC: True, 'key': 'val'}
         fake_pool = copy.deepcopy(eseries_fake.STORAGE_POOL)
         self.library._get_storage_pools = mock.Mock(return_value=[fake_pool])
-        self.mock_object(self.library, '_ssc_stats',
-                         {fake_pool["volumeGroupRef"]: ssc})
+        self.mock_object(self.library, '_ssc_stats', new_attr={fake_pool[
+            "volumeGroupRef"]: ssc})
 
         self.library._update_volume_stats()
 
@@ -627,23 +583,6 @@ class NetAppEseriesLibraryTestCase(test.TestCase):
         self.assertTrue(
             self.library._client.get_volume_mappings_for_volume.called)
         self.assertTrue(host_mapper.map_volume_to_single_host.called)
-
-    def test_initialize_connection_iscsi_without_chap(self):
-        connector = {'initiator': eseries_fake.INITIATOR_NAME}
-        self.mock_object(self.library._client,
-                         'get_volume_mappings_for_volume',
-                         mock.Mock(return_value=[]))
-        self.mock_object(host_mapper,
-                         'map_volume_to_single_host',
-                         mock.Mock(return_value=eseries_fake.VOLUME_MAPPING))
-        mock_configure_chap = self.mock_object(self.library, '_configure_chap')
-
-        self.library.initialize_connection_iscsi(get_fake_volume(), connector)
-
-        self.assertTrue(
-            self.library._client.get_volume_mappings_for_volume.called)
-        self.assertTrue(host_mapper.map_volume_to_single_host.called)
-        self.assertFalse(mock_configure_chap.called)
 
     def test_initialize_connection_iscsi_volume_not_mapped_host_does_not_exist(
             self):
@@ -902,7 +841,7 @@ class NetAppEseriesLibraryTestCase(test.TestCase):
             'driver_volume_type': 'fibre_channel',
             'data': {
                 'target_discovered': True,
-                'target_lun': 1,
+                'target_lun': 0,
                 'target_wwn': [eseries_fake.WWPN_2],
                 'initiator_target_map': {
                     eseries_fake.WWPN: [eseries_fake.WWPN_2]
@@ -1375,7 +1314,8 @@ class NetAppEseriesLibraryMultiAttachTestCase(test.TestCase):
 
         self.mock_object(library.cinder_utils, 'synchronized',
                          mock.Mock(return_value=lambda f: f))
-        self.mock_object(self.library, '_start_periodic_tasks')
+        self.mock_object(self.library, '_start_periodic_tasks',
+                         new_attr=mock.Mock())
 
         self.ctxt = context.get_admin_context()
 
@@ -2504,107 +2444,3 @@ class NetAppEseriesLibraryMultiAttachTestCase(test.TestCase):
                                         eseries_fake.INITIATOR_NAME)
 
         self.assertTrue(host_mapper.map_volume_to_multiple_hosts.called)
-
-
-class NetAppEseriesISCSICHAPAuthenticationTestCase(test.TestCase):
-    """Test behavior when the use_chap_auth configuration option is True."""
-
-    def setUp(self):
-        super(NetAppEseriesISCSICHAPAuthenticationTestCase, self).setUp()
-        config = eseries_fake.create_configuration_eseries()
-        config.use_chap_auth = True
-        config.chap_password = None
-        config.chap_username = None
-
-        kwargs = {'configuration': config}
-
-        self.library = library.NetAppESeriesLibrary("FAKE", **kwargs)
-        self.library._client = eseries_fake.FakeEseriesClient()
-        self.library._client.features = mock.Mock()
-        self.library._client.features = na_utils.Features()
-        self.library._client.features.add_feature('CHAP_AUTHENTICATION',
-                                                  supported=True,
-                                                  min_version="1.53.9010.15")
-        self.mock_object(self.library,
-                         '_check_storage_system')
-        self.library.check_for_setup_error()
-
-    def test_initialize_connection_with_chap(self):
-        connector = {'initiator': eseries_fake.INITIATOR_NAME}
-        self.mock_object(self.library._client, 'get_volume_mappings',
-                         mock.Mock(return_value=[]))
-        self.mock_object(self.library._client, 'list_hosts',
-                         mock.Mock(return_value=[]))
-        self.mock_object(self.library._client, 'create_host_with_ports',
-                         mock.Mock(return_value=[eseries_fake.HOST]))
-        self.mock_object(host_mapper, 'map_volume_to_single_host',
-                         mock.Mock(return_value=eseries_fake.VOLUME_MAPPING))
-        mock_configure_chap = (
-            self.mock_object(self.library,
-                             '_configure_chap',
-                             mock.Mock(return_value=(
-                                 eseries_fake.FAKE_CHAP_USERNAME,
-                                 eseries_fake.FAKE_CHAP_SECRET))))
-
-        properties = self.library.initialize_connection_iscsi(
-            get_fake_volume(), connector)
-
-        mock_configure_chap.assert_called_with(eseries_fake.FAKE_TARGET_IQN)
-        self.assertDictEqual(eseries_fake.FAKE_TARGET_DICT, properties)
-
-    def test_configure_chap_with_no_chap_secret_specified(self):
-        mock_invoke_generate_random_secret = self.mock_object(
-            volume_utils,
-            'generate_password',
-            mock.Mock(return_value=eseries_fake.FAKE_CHAP_SECRET))
-        mock_invoke_set_chap_authentication = self.mock_object(
-            self.library._client,
-            'set_chap_authentication',
-            mock.Mock(return_value=eseries_fake.FAKE_CHAP_POST_DATA))
-
-        username, password = self.library._configure_chap(
-            eseries_fake.FAKE_TARGET_IQN)
-
-        self.assertTrue(mock_invoke_generate_random_secret.called)
-        mock_invoke_set_chap_authentication.assert_called_with(
-            *eseries_fake.FAKE_CLIENT_CHAP_PARAMETERS)
-        self.assertEqual(eseries_fake.FAKE_CHAP_USERNAME, username)
-        self.assertEqual(eseries_fake.FAKE_CHAP_SECRET, password)
-
-    def test_configure_chap_with_no_chap_username_specified(self):
-        mock_invoke_generate_random_secret = self.mock_object(
-            volume_utils,
-            'generate_password',
-            mock.Mock(return_value=eseries_fake.FAKE_CHAP_SECRET))
-        mock_invoke_set_chap_authentication = self.mock_object(
-            self.library._client,
-            'set_chap_authentication',
-            mock.Mock(return_value=eseries_fake.FAKE_CHAP_POST_DATA))
-        mock_log = self.mock_object(library, 'LOG')
-        warn_msg = 'No CHAP username found for CHAP user'
-
-        username, password = self.library._configure_chap(
-            eseries_fake.FAKE_TARGET_IQN)
-
-        self.assertTrue(mock_invoke_generate_random_secret.called)
-        self.assertTrue(mock_log.warning.find(warn_msg))
-        mock_invoke_set_chap_authentication.assert_called_with(
-            *eseries_fake.FAKE_CLIENT_CHAP_PARAMETERS)
-        self.assertEqual(eseries_fake.FAKE_CHAP_USERNAME, username)
-        self.assertEqual(eseries_fake.FAKE_CHAP_SECRET, password)
-
-    def test_configure_chap_with_invalid_version(self):
-        connector = {'initiator': eseries_fake.INITIATOR_NAME}
-        self.mock_object(self.library._client,
-                         'get_volume_mappings_for_volume',
-                         mock.Mock(return_value=[]))
-        self.mock_object(host_mapper,
-                         'map_volume_to_single_host',
-                         mock.Mock(return_value=eseries_fake.VOLUME_MAPPING))
-        self.library._client.features.CHAP_AUTHENTICATION.supported = False
-        self.library._client.api_version = "1.52.9010.01"
-
-        self.assertRaises(exception.NetAppDriverException,
-                          self.library.initialize_connection_iscsi,
-                          get_fake_volume(),
-                          connector)

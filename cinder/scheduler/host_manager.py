@@ -21,16 +21,15 @@ import collections
 
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_utils import importutils
 from oslo_utils import timeutils
 
-from cinder.common import constants
 from cinder import context as cinder_context
 from cinder import exception
 from cinder import objects
 from cinder import utils
 from cinder.i18n import _LI, _LW
 from cinder.scheduler import filters
+from cinder.scheduler import weights
 from cinder.volume import utils as vol_utils
 
 
@@ -47,11 +46,7 @@ host_manager_opts = [
                 default=[
                     'CapacityWeigher'
                 ],
-                help='Which weigher class names to use for weighing hosts.'),
-    cfg.StrOpt('scheduler_weight_handler',
-               default='cinder.scheduler.weights.OrderedHostWeightHandler',
-               help='Which handler to use for selecting the host/pool '
-                    'after weighing'),
+                help='Which weigher class names to use for weighing hosts.')
 ]
 
 CONF = cfg.CONF
@@ -138,49 +133,44 @@ class HostState(object):
         'capability' is the status info reported by volume backend, a typical
         capability looks like this:
 
-        .. code-block:: python
+        capability = {
+            'volume_backend_name': 'Local iSCSI', #\
+            'vendor_name': 'OpenStack',           #  backend level
+            'driver_version': '1.0',              #  mandatory/fixed
+            'storage_protocol': 'iSCSI',          #- stats&capabilities
 
-         {
-          capability = {
-              'volume_backend_name': 'Local iSCSI', #
-              'vendor_name': 'OpenStack',           #  backend level
-              'driver_version': '1.0',              #  mandatory/fixed
-              'storage_protocol': 'iSCSI',          #  stats&capabilities
+            'active_volumes': 10,                 #\
+            'IOPS_provisioned': 30000,            #  optional custom
+            'fancy_capability_1': 'eat',          #  stats & capabilities
+            'fancy_capability_2': 'drink',        #/
 
-              'active_volumes': 10,                 #
-              'IOPS_provisioned': 30000,            #  optional custom
-              'fancy_capability_1': 'eat',          #  stats & capabilities
-              'fancy_capability_2': 'drink',        #
+            'pools': [
+                {'pool_name': '1st pool',         #\
+                 'total_capacity_gb': 500,        #  mandatory stats for
+                 'free_capacity_gb': 230,         #  pools
+                 'allocated_capacity_gb': 270,    # |
+                 'QoS_support': 'False',          # |
+                 'reserved_percentage': 0,        #/
 
-              'pools': [
-                  {'pool_name': '1st pool',         #
-                   'total_capacity_gb': 500,        #  mandatory stats for
-                   'free_capacity_gb': 230,         #  pools
-                   'allocated_capacity_gb': 270,    #
-                   'QoS_support': 'False',          #
-                   'reserved_percentage': 0,        #
+                 'dying_disks': 100,              #\
+                 'super_hero_1': 'spider-man',    #  optional custom
+                 'super_hero_2': 'flash',         #  stats & capabilities
+                 'super_hero_3': 'neoncat'        #/
+                 },
+                {'pool_name': '2nd pool',
+                 'total_capacity_gb': 1024,
+                 'free_capacity_gb': 1024,
+                 'allocated_capacity_gb': 0,
+                 'QoS_support': 'False',
+                 'reserved_percentage': 0,
 
-                   'dying_disks': 100,              #
-                   'super_hero_1': 'spider-man',    #  optional custom
-                   'super_hero_2': 'flash',         #  stats & capabilities
-                   'super_hero_3': 'neoncat'        #
-                  },
-                  {'pool_name': '2nd pool',
-                   'total_capacity_gb': 1024,
-                   'free_capacity_gb': 1024,
-                   'allocated_capacity_gb': 0,
-                   'QoS_support': 'False',
-                   'reserved_percentage': 0,
-
-                   'dying_disks': 200,
-                   'super_hero_1': 'superman',
-                   'super_hero_2': ' ',
-                   'super_hero_2': 'Hulk'
-                  }
-              ]
-          }
-         }
-
+                 'dying_disks': 200,
+                 'super_hero_1': 'superman',
+                 'super_hero_2': ' ',
+                 'super_hero_2': 'Hulk',
+                 }
+            ]
+        }
         """
         self.update_capabilities(capability, service)
 
@@ -352,9 +342,8 @@ class HostManager(object):
         self.filter_handler = filters.HostFilterHandler('cinder.scheduler.'
                                                         'filters')
         self.filter_classes = self.filter_handler.get_all_classes()
-        self.weight_handler = importutils.import_object(
-            CONF.scheduler_weight_handler,
-            'cinder.scheduler.weights')
+        self.weight_handler = weights.HostWeightHandler('cinder.scheduler.'
+                                                        'weights')
         self.weight_classes = self.weight_handler.get_all_classes()
 
         self._no_capabilities_hosts = set()  # Hosts having no capabilities
@@ -457,7 +446,7 @@ class HostManager(object):
     def _update_host_state_map(self, context):
 
         # Get resource usage across the available volume nodes:
-        topic = constants.VOLUME_TOPIC
+        topic = CONF.volume_topic
         volume_services = objects.ServiceList.get_all_by_topic(context,
                                                                topic,
                                                                disabled=False)

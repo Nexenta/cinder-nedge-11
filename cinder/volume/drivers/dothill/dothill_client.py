@@ -14,13 +14,12 @@
 #    under the License.
 #
 
-import hashlib
+from hashlib import md5
 import math
 import time
 
 from lxml import etree
 from oslo_log import log as logging
-from oslo_utils import units
 import requests
 import six
 
@@ -50,7 +49,7 @@ class DotHillClient(object):
         hash_ = "%s_%s" % (self._login, self._password)
         if six.PY3:
             hash_ = hash_.encode('utf-8')
-        hash_ = hashlib.md5(hash_)
+        hash_ = md5(hash_)
         digest = hash_.hexdigest()
 
         url = self._base_url + "/login/" + digest
@@ -162,7 +161,7 @@ class DotHillClient(object):
             return False
 
     def _get_size(self, size):
-        return int(math.ceil(float(size) * 512 / (units.G)))
+        return int(math.ceil(float(size) * 512 / (10 ** 9)))
 
     def backend_stats(self, backend_name, backend_type):
         stats = {'free_capacity_gb': 0,

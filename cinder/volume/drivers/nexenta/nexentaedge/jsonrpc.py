@@ -15,6 +15,7 @@
 
 import json
 import requests
+import socket
 
 from oslo_log import log as logging
 
@@ -23,7 +24,7 @@ from cinder.i18n import _
 from cinder.utils import retry
 
 LOG = logging.getLogger(__name__)
-TIMEOUT = 60
+socket.setdefaulttimeout(100)
 
 
 class NexentaEdgeJSONProxy(object):
@@ -34,13 +35,7 @@ class NexentaEdgeJSONProxy(object):
     )
 
     def __init__(self, protocol, host, port, path, user, password, auto=False,
-                 method=None, session=None):
-        if session:
-            self.session = session
-        else:
-            self.session = requests.Session()
-            self.session.auth = (user, password)
-            self.session.headers.update({'Content-Type': 'application/json'})
+                 method=None):
         self.protocol = protocol.lower()
         self.host = host
         self.port = port
@@ -52,18 +47,21 @@ class NexentaEdgeJSONProxy(object):
 
     @property
     def url(self):
-        return '%s://%s:%s/%s' % (
-            self.protocol, self.host, self.port, self.path)
+        return '%s://%s:%s/%s' % (self.protocol,
+                                  self.host, self.port, self.path)
 
     def __getattr__(self, name):
-        if name in ('get', 'post', 'put', 'delete'):
-            return NexentaEdgeJSONProxy(
-                self.protocol, self.host, self.port, self.path, self.user,
-                self.password, self.auto, name, self.session)
-        return super(NexentaEdgeJSONProxy, self).__getattr__(name)
+        if not self.method:
+            method = name
+        else:
+            raise exception.VolumeDriverException(
+                _("Wrong resource call syntax"))
+        return NexentaEdgeJSONProxy(
+            self.protocol, self.host, self.port, self.path,
+            self.user, self.password, self.auto, method)
 
     def __hash__(self):
-        return self.url.__hash__()
+        return self.url.__hash___()
 
     def __repr__(self):
         return 'HTTP JSON proxy: %s' % self.url
@@ -71,26 +69,32 @@ class NexentaEdgeJSONProxy(object):
     @retry(retry_exc_tuple, interval=1, retries=6)
     def __call__(self, *args):
         self.path = args[0]
-        kwargs = {'timeout': TIMEOUT}
         data = None
         if len(args) > 1:
             data = json.dumps(args[1])
-            kwargs['data'] = data
 
-        LOG.debug('Sending JSON data: %s, method: %s, data: %s',
-                  self.url, self.method, data)
+        auth = ('%s:%s' % (self.user, self.password)).encode('base64')[:-1]
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': 'Basic %s' % auth
+        }
 
-        func = getattr(self.session, self.method)
-        if func:
-            req = func(self.url, **kwargs)
-        else:
-            raise exception.VolumeDriverException(
-                message=_('Unsupported method: %s') % self.method)
+        LOG.debug('Sending JSON data: %s, data: %s', self.url, data)
+
+        if self.method == 'get':
+            req = requests.get(self.url, headers=headers)
+        if self.method == 'post':
+            req = requests.post(self.url, data=data, headers=headers)
+        if self.method == 'put':
+            req = requests.put(self.url, data=data, headers=headers)
+        if self.method == 'delete':
+            req = requests.delete(self.url, data=data, headers=headers)
 
         rsp = req.json()
+        req.close()
 
         LOG.debug('Got response: %s', rsp)
         if rsp.get('response') is None:
             raise exception.VolumeBackendAPIException(
-                data=_('Error response: %s') % rsp)
+                _('Error response: %s') % rsp)
         return rsp.get('response')

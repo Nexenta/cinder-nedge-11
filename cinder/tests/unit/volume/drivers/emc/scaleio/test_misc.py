@@ -12,8 +12,6 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-
-import ddt
 import mock
 from six.moves import urllib
 
@@ -25,7 +23,6 @@ from cinder.tests.unit.volume.drivers.emc import scaleio
 from cinder.tests.unit.volume.drivers.emc.scaleio import mocks
 
 
-@ddt.ddt
 class TestMisc(scaleio.TestScaleIODriver):
     DOMAIN_NAME = 'PD1'
     POOL_NAME = 'SP1'
@@ -42,10 +39,10 @@ class TestMisc(scaleio.TestScaleIODriver):
         self.ctx = context.RequestContext('fake', 'fake', auth_token=True)
 
         self.volume = fake_volume.fake_volume_obj(
-            self.ctx, **{'name': 'vol1', 'provider_id': fake.PROVIDER_ID}
+            self.ctx, **{'name': 'vol1', 'provider_id': '0123456789abcdef'}
         )
         self.new_volume = fake_volume.fake_volume_obj(
-            self.ctx, **{'name': 'vol2', 'provider_id': fake.PROVIDER2_ID}
+            self.ctx, **{'name': 'vol2', 'provider_id': 'fedcba9876543210'}
         )
 
         self.HTTPS_MOCK_RESPONSES = {
@@ -61,11 +58,8 @@ class TestMisc(scaleio.TestScaleIODriver):
                 ): '"{}"'.format(self.POOL_NAME).encode('ascii', 'ignore'),
                 'types/StoragePool/instances/action/querySelectedStatistics': {
                     '"{}"'.format(self.POOL_NAME): {
-                        'capacityAvailableForVolumeAllocationInKb': 5000000,
-                        'capacityLimitInKb': 16000000,
-                        'spareCapacityInKb': 6000000,
-                        'thickCapacityInUseInKb': 266,
-                        'thinCapacityAllocatedInKm': 0,
+                        'capacityInUseInKb': 502,
+                        'capacityLimitInKb': 1024,
                     },
                 },
                 'instances/Volume::{}/action/setVolumeName'.format(
@@ -78,13 +72,6 @@ class TestMisc(scaleio.TestScaleIODriver):
             self.RESPONSE_MODE.BadStatus: {
                 'types/Domain/instances/getByName::' +
                 self.domain_name_enc: self.BAD_STATUS_RESPONSE,
-                'instances/Volume::{}/action/setVolumeName'.format(
-                    self.volume['provider_id']): mocks.MockHTTPSResponse(
-                    {
-                        'message': 'Invalid volume.',
-                        'httpStatusCode': 400,
-                        'errorCode': self.VOLUME_NOT_FOUND_ERROR
-                    }, 400),
             },
             self.RESPONSE_MODE.Invalid: {
                 'types/Domain/instances/getByName::' +
@@ -170,7 +157,7 @@ class TestMisc(scaleio.TestScaleIODriver):
         test_vol = self.driver.update_migrated_volume(
             self.ctx, self.volume, self.new_volume, 'unavailable')
         self.assertFalse(mock_rename.called)
-        self.assertEqual({'_name_id': fake.VOLUME_ID,
+        self.assertEqual({'_name_id': fake.volume_id,
                           'provider_location': None},
                          test_vol)
 
@@ -193,31 +180,11 @@ class TestMisc(scaleio.TestScaleIODriver):
             self.volume, self.new_volume['id'])
         self.assertIsNone(rc)
 
-    def test_rename_volume_illegal_syntax(self):
+    def test_fail_rename_volume(self):
         self.set_https_response_mode(self.RESPONSE_MODE.Invalid)
-        rc = self.driver._rename_volume(
-            self.volume, self.new_volume['id'])
-        self.assertIsNone(rc)
-
-    def test_rename_volume_non_sio(self):
-        self.set_https_response_mode(self.RESPONSE_MODE.BadStatus)
-        rc = self.driver._rename_volume(
-            self.volume, self.new_volume['id'])
-        self.assertIsNone(rc)
-
-    def test_default_provisioning_type_unspecified(self):
-        empty_storage_type = {}
-        self.assertEqual(
-            'thin',
-            self.driver._find_provisioning_type(empty_storage_type))
-
-    @ddt.data((True, 'thin'), (False, 'thick'))
-    @ddt.unpack
-    def test_default_provisioning_type_thin(self, config_provisioning_type,
-                                            expected_provisioning_type):
-        self.driver = mocks.ScaleIODriver(
-            san_thin_provision=config_provisioning_type)
-        empty_storage_type = {}
-        self.assertEqual(
-            expected_provisioning_type,
-            self.driver._find_provisioning_type(empty_storage_type))
+        self.assertRaises(
+            exception.VolumeBackendAPIException,
+            self.driver._rename_volume,
+            self.volume,
+            self.new_volume['id']
+        )

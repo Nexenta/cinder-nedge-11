@@ -45,9 +45,6 @@ quota_opts = [
     cfg.IntOpt('quota_consistencygroups',
                default=10,
                help='Number of consistencygroups allowed per project'),
-    cfg.IntOpt('quota_groups',
-               default=10,
-               help='Number of groups allowed per project'),
     cfg.IntOpt('quota_gigabytes',
                default=1000,
                help='Total amount of storage, in gigabytes, allowed '
@@ -191,7 +188,6 @@ class DbQuotaDriver(object):
         quotas = {}
         project_quotas = db.quota_get_all_by_project(context, project_id)
         allocated_quotas = None
-        default_quotas = None
         if usages:
             project_usages = db.quota_usage_get_all_by_project(context,
                                                                project_id)
@@ -210,22 +206,20 @@ class DbQuotaDriver(object):
         else:
             class_quotas = {}
 
+        # TODO(mc_nair): change this to be lazy loaded
+        default_quotas = self.get_defaults(context, resources, project_id)
+
         for resource in resources.values():
             # Omit default/quota class values
             if not defaults and resource.name not in project_quotas:
                 continue
 
-            quota_val = project_quotas.get(resource.name)
-            if quota_val is None:
-                quota_val = class_quotas.get(resource.name)
-                if quota_val is None:
-                    # Lazy load the default quotas
-                    if default_quotas is None:
-                        default_quotas = self.get_defaults(
-                            context, resources, project_id)
-                    quota_val = default_quotas[resource.name]
-
-            quotas[resource.name] = {'limit': quota_val}
+            quotas[resource.name] = dict(
+                limit=project_quotas.get(
+                    resource.name,
+                    class_quotas.get(resource.name,
+                                     default_quotas[resource.name])),
+            )
 
             # Include usages if desired.  This is optional because one
             # internal consumer of this interface wants to access the
@@ -538,7 +532,7 @@ class NestedDbQuotaDriver(DbQuotaDriver):
         :param ctxt: context used to retrieve DB values
         :param resource: the resource to calculate allocated value for
         :param project_tree: the project tree used to calculate allocated
-                e.g. {'A': {'B': {'D': None}, 'C': None}}
+                e.g. {'A': {'B': {'D': None}, 'C': None}
 
         A project's "allocated" value depends on:
             1) the quota limits which have been "given" to it's children, in
@@ -1205,30 +1199,5 @@ class CGQuotaEngine(QuotaEngine):
     def register_resources(self, resources):
         raise NotImplementedError(_("Cannot register resources"))
 
-
-class GroupQuotaEngine(QuotaEngine):
-    """Represent the group quotas."""
-
-    @property
-    def resources(self):
-        """Fetches all possible quota resources."""
-
-        result = {}
-        # Global quotas.
-        argses = [('groups', '_sync_groups',
-                   'quota_groups'), ]
-        for args in argses:
-            resource = ReservableResource(*args)
-            result[resource.name] = resource
-
-        return result
-
-    def register_resource(self, resource):
-        raise NotImplementedError(_("Cannot register resource"))
-
-    def register_resources(self, resources):
-        raise NotImplementedError(_("Cannot register resources"))
-
 QUOTAS = VolumeTypeQuotaEngine()
 CGQUOTAS = CGQuotaEngine()
-GROUP_QUOTAS = GroupQuotaEngine()

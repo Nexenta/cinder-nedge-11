@@ -19,7 +19,6 @@ from six.moves import urllib
 from cinder import context
 from cinder import db
 from cinder import exception
-from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit.volume.drivers.emc import scaleio
@@ -41,7 +40,7 @@ class TestCreateSnapShot(scaleio.TestScaleIODriver):
         ctx = context.RequestContext('fake', 'fake', auth_token=True)
 
         self.fake_volume = fake_volume.fake_volume_obj(
-            ctx, **{'provider_id': fake.PROVIDER_ID})
+            ctx, **{'provider_id': 'fake_pid'})
 
         self.snapshot = fake_snapshot.fake_snapshot_obj(
             ctx, **{'volume': self.fake_volume})

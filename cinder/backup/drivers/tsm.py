@@ -36,7 +36,6 @@ from oslo_log import log as logging
 from cinder.backup import driver
 from cinder import exception
 from cinder.i18n import _LE, _
-from cinder import interface
 from cinder import utils
 
 LOG = logging.getLogger(__name__)
@@ -260,7 +259,6 @@ def _cleanup_device_hardlink(hardlink_path, volume_path, volume_id):
                    'err': exc.stderr})
 
 
-@interface.backupdriver
 class TSMBackupDriver(driver.BackupDriver):
     """Provides backup, restore and delete of volumes backup for TSM."""
 
@@ -355,7 +353,7 @@ class TSMBackupDriver(driver.BackupDriver):
         :param backup: backup information for volume
         :param volume_file: file object representing the volume
         :param backup_metadata: whether or not to backup volume metadata
-        :raises InvalidBackup:
+        :raises InvalidBackup
         """
 
         # TODO(dosaboy): this needs implementing (see backup.drivers.ceph for

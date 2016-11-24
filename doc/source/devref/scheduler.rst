@@ -39,7 +39,7 @@ The :mod:`cinder.scheduler.driver` Module
 
 
 The :mod:`cinder.scheduler.filter_scheduler` Driver
----------------------------------------------------
+-----------------------------------------
 
 .. automodule:: cinder.scheduler.filter_scheduler
     :noindex:
@@ -51,10 +51,10 @@ The :mod:`cinder.scheduler.filter_scheduler` Driver
 Tests
 -----
 
-The :mod:`cinder.tests.unit.scheduler` Module
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The :mod:`scheduler_unittest` Module
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: cinder.tests.unit.scheduler
+.. automodule:: cinder.tests.scheduler_unittest
     :noindex:
     :members:
     :undoc-members:

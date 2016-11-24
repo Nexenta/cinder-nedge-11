@@ -13,8 +13,6 @@
 #    under the License.
 
 import mock
-from oslo_utils import timeutils
-import pytz
 import six
 
 from cinder import objects
@@ -30,25 +28,8 @@ class TestVolumeType(test_objects.BaseObjectsTestCase):
         db_volume_type = fake_volume.fake_db_volume_type()
         volume_type_get.return_value = db_volume_type
         volume_type = objects.VolumeType.get_by_id(self.context,
-                                                   fake.VOLUME_TYPE_ID)
+                                                   fake.volume_type_id)
         self._compare(self, db_volume_type, volume_type)
-
-    @mock.patch('cinder.db.sqlalchemy.api._volume_type_get_full')
-    def test_get_by_id_null_spec(self, volume_type_get):
-        db_volume_type = fake_volume.fake_db_volume_type(
-            extra_specs={'foo': None})
-        volume_type_get.return_value = db_volume_type
-        volume_type = objects.VolumeType.get_by_id(self.context,
-                                                   fake.VOLUME_TYPE_ID)
-        self._compare(self, db_volume_type, volume_type)
-
-    def test_obj_make_compatible(self):
-        volume_type = objects.VolumeType(context=self.context)
-        volume_type.extra_specs = {'foo': None, 'bar': 'baz'}
-        primitive = volume_type.obj_to_primitive('1.0')
-        volume_type = objects.VolumeType.obj_from_primitive(primitive)
-        self.assertEqual('', volume_type.extra_specs['foo'])
-        self.assertEqual('baz', volume_type.extra_specs['bar'])
 
     @mock.patch('cinder.volume.volume_types.create')
     def test_create(self, volume_type_create):
@@ -81,12 +62,8 @@ class TestVolumeType(test_objects.BaseObjectsTestCase):
                                                    volume_type.name,
                                                    volume_type.description)
 
-    @mock.patch('oslo_utils.timeutils.utcnow', return_value=timeutils.utcnow())
-    @mock.patch('cinder.db.sqlalchemy.api.volume_type_destroy')
-    def test_destroy(self, volume_type_destroy, utcnow_mock):
-        volume_type_destroy.return_value = {
-            'deleted': True,
-            'deleted_at': utcnow_mock.return_value}
+    @mock.patch('cinder.volume.volume_types.destroy')
+    def test_destroy(self, volume_type_destroy):
         db_volume_type = fake_volume.fake_db_volume_type()
         volume_type = objects.VolumeType._from_db_object(self.context,
                                                          objects.VolumeType(),
@@ -95,9 +72,6 @@ class TestVolumeType(test_objects.BaseObjectsTestCase):
         self.assertTrue(volume_type_destroy.called)
         admin_context = volume_type_destroy.call_args[0][0]
         self.assertTrue(admin_context.is_admin)
-        self.assertTrue(volume_type.deleted)
-        self.assertEqual(utcnow_mock.return_value.replace(tzinfo=pytz.UTC),
-                         volume_type.deleted_at)
 
     @mock.patch('cinder.db.sqlalchemy.api._volume_type_get_full')
     def test_refresh(self, volume_type_get):
@@ -108,7 +82,7 @@ class TestVolumeType(test_objects.BaseObjectsTestCase):
         # updated description
         volume_type_get.side_effect = [db_type1, db_type2]
         volume_type = objects.VolumeType.get_by_id(self.context,
-                                                   fake.VOLUME_TYPE_ID)
+                                                   fake.volume_type_id)
         self._compare(self, db_type1, volume_type)
 
         # description was updated, so a volume type refresh should have a new
@@ -120,10 +94,10 @@ class TestVolumeType(test_objects.BaseObjectsTestCase):
         else:
             call_bool = mock.call.__nonzero__()
         volume_type_get.assert_has_calls([mock.call(self.context,
-                                                    fake.VOLUME_TYPE_ID),
+                                                    fake.volume_type_id),
                                           call_bool,
                                           mock.call(self.context,
-                                                    fake.VOLUME_TYPE_ID)])
+                                                    fake.volume_type_id)])
 
 
 class TestVolumeTypeList(test_objects.BaseObjectsTestCase):

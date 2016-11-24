@@ -31,7 +31,6 @@ from cinder.db.sqlalchemy import api
 from cinder import exception
 from cinder.i18n import _
 from cinder.image import image_utils
-from cinder import interface
 from cinder import utils
 from cinder.volume import driver
 
@@ -51,7 +50,7 @@ disco_opts = [
                     'to communicate with DISCO request manager'),
     cfg.StrOpt('volume_name_prefix',
                default='openstack-',
-               help='Prefix before volume name to differentiate '
+               help='Prefix before volume name to differenciate '
                     'DISCO volume created through openstack '
                     'and the other ones'),
     cfg.IntOpt('snapshot_check_timeout',
@@ -83,12 +82,10 @@ CONF.register_opts(disco_opts)
 
 
 # Driver to communicate with DISCO storage solution
-@interface.volumedriver
 class DiscoDriver(driver.VolumeDriver):
     """Execute commands related to DISCO Volumes."""
 
     VERSION = "1.0"
-    CI_WIKI_NAME = "ITRI_DISCO_CI"
 
     def __init__(self, *args, **kwargs):
         """Init Disco driver : get configuration, create client."""

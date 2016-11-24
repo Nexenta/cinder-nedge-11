@@ -16,23 +16,23 @@
 Tests For Capacity Weigher.
 """
 
-import ddt
 import mock
+from oslo_config import cfg
 
-from cinder.common import constants
 from cinder import context
 from cinder.scheduler import weights
 from cinder import test
 from cinder.tests.unit.scheduler import fakes
 from cinder.volume import utils
 
+CONF = cfg.CONF
 
-@ddt.ddt
+
 class CapacityWeigherTestCase(test.TestCase):
     def setUp(self):
         super(CapacityWeigherTestCase, self).setUp()
         self.host_manager = fakes.FakeHostManager()
-        self.weight_handler = weights.OrderedHostWeightHandler(
+        self.weight_handler = weights.HostWeightHandler(
             'cinder.scheduler.weights')
 
     def _get_weighed_hosts(self, hosts, weight_properties=None):
@@ -43,44 +43,25 @@ class CapacityWeigherTestCase(test.TestCase):
             hosts,
             weight_properties)
 
-    @mock.patch('cinder.db.sqlalchemy.api.service_get_all')
-    def _get_all_hosts(self, _mock_service_get_all, disabled=False):
+    @mock.patch('cinder.db.sqlalchemy.api.service_get_all_by_topic')
+    def _get_all_hosts(self, _mock_service_get_all_by_topic, disabled=False):
         ctxt = context.get_admin_context()
-        fakes.mock_host_manager_db_calls(_mock_service_get_all,
+        fakes.mock_host_manager_db_calls(_mock_service_get_all_by_topic,
                                          disabled=disabled)
         host_states = self.host_manager.get_all_host_states(ctxt)
-        _mock_service_get_all.assert_called_once_with(
-            ctxt,
-            None,  # backend_match_level
-            topic=constants.VOLUME_TOPIC, disabled=disabled)
+        _mock_service_get_all_by_topic.assert_called_once_with(
+            ctxt, CONF.volume_topic, disabled=disabled)
         return host_states
 
-    # If thin and thin_provisioning_support are True,
-    # use the following formula:
+    # If thin_provisioning_support = False, use the following formula:
+    # free = free_space - math.floor(total * reserved)
+    # Otherwise, use the following formula:
     # free = (total * host_state.max_over_subscription_ratio
     #         - host_state.provisioned_capacity_gb
     #         - math.floor(total * reserved))
-    # Otherwise, use the following formula:
-    # free = free_space - math.floor(total * reserved)
-
-    @ddt.data(
-        {'volume_type': {'extra_specs': {'provisioning:type': 'thin'}},
-         'winner': 'host2'},
-        {'volume_type': {'extra_specs': {'provisioning:type': 'thick'}},
-         'winner': 'host1'},
-        {'volume_type': {'extra_specs': {}},
-         'winner': 'host2'},
-        {'volume_type': {},
-         'winner': 'host2'},
-        {'volume_type': None,
-         'winner': 'host2'},
-    )
-    @ddt.unpack
-    def test_default_of_spreading_first(self, volume_type, winner):
+    def test_default_of_spreading_first(self):
         hostinfo_list = self._get_all_hosts()
 
-        # Results for the 1st test
-        # {'provisioning:type': 'thin'}:
         # host1: thin_provisioning_support = False
         #        free_capacity_gb=1024,
         #        free=1024-math.floor(1024*0.1)=922
@@ -100,35 +81,14 @@ class CapacityWeigherTestCase(test.TestCase):
         #        Norm=0.0819000819001
 
         # so, host2 should win:
-        weight_properties = {
-            'size': 1,
-            'volume_type': volume_type,
-        }
-        weighed_host = self._get_weighed_hosts(
-            hostinfo_list,
-            weight_properties=weight_properties)[0]
+        weighed_host = self._get_weighed_hosts(hostinfo_list)[0]
         self.assertEqual(1.0, weighed_host.weight)
-        self.assertEqual(winner, utils.extract_host(weighed_host.obj.host))
+        self.assertEqual('host2', utils.extract_host(weighed_host.obj.host))
 
-    @ddt.data(
-        {'volume_type': {'extra_specs': {'provisioning:type': 'thin'}},
-         'winner': 'host4'},
-        {'volume_type': {'extra_specs': {'provisioning:type': 'thick'}},
-         'winner': 'host2'},
-        {'volume_type': {'extra_specs': {}},
-         'winner': 'host4'},
-        {'volume_type': {},
-         'winner': 'host4'},
-        {'volume_type': None,
-         'winner': 'host4'},
-    )
-    @ddt.unpack
-    def test_capacity_weight_multiplier1(self, volume_type, winner):
+    def test_capacity_weight_multiplier1(self):
         self.flags(capacity_weight_multiplier=-1.0)
         hostinfo_list = self._get_all_hosts()
 
-        # Results for the 1st test
-        # {'provisioning:type': 'thin'}:
         # host1: thin_provisioning_support = False
         #        free_capacity_gb=1024,
         #        free=-(1024-math.floor(1024*0.1))=-922
@@ -148,35 +108,14 @@ class CapacityWeigherTestCase(test.TestCase):
         #        Norm=-1.0
 
         # so, host4 should win:
-        weight_properties = {
-            'size': 1,
-            'volume_type': volume_type,
-        }
-        weighed_host = self._get_weighed_hosts(
-            hostinfo_list,
-            weight_properties=weight_properties)[0]
+        weighed_host = self._get_weighed_hosts(hostinfo_list)[0]
         self.assertEqual(0.0, weighed_host.weight)
-        self.assertEqual(winner, utils.extract_host(weighed_host.obj.host))
+        self.assertEqual('host4', utils.extract_host(weighed_host.obj.host))
 
-    @ddt.data(
-        {'volume_type': {'extra_specs': {'provisioning:type': 'thin'}},
-         'winner': 'host2'},
-        {'volume_type': {'extra_specs': {'provisioning:type': 'thick'}},
-         'winner': 'host1'},
-        {'volume_type': {'extra_specs': {}},
-         'winner': 'host2'},
-        {'volume_type': {},
-         'winner': 'host2'},
-        {'volume_type': None,
-         'winner': 'host2'},
-    )
-    @ddt.unpack
-    def test_capacity_weight_multiplier2(self, volume_type, winner):
+    def test_capacity_weight_multiplier2(self):
         self.flags(capacity_weight_multiplier=2.0)
         hostinfo_list = self._get_all_hosts()
 
-        # Results for the 1st test
-        # {'provisioning:type': 'thin'}:
         # host1: thin_provisioning_support = False
         #        free_capacity_gb=1024,
         #        free=(1024-math.floor(1024*0.1))*2=1844
@@ -196,15 +135,9 @@ class CapacityWeigherTestCase(test.TestCase):
         #        Norm=0.1638001638
 
         # so, host2 should win:
-        weight_properties = {
-            'size': 1,
-            'volume_type': volume_type,
-        }
-        weighed_host = self._get_weighed_hosts(
-            hostinfo_list,
-            weight_properties=weight_properties)[0]
+        weighed_host = self._get_weighed_hosts(hostinfo_list)[0]
         self.assertEqual(1.0 * 2, weighed_host.weight)
-        self.assertEqual(winner, utils.extract_host(weighed_host.obj.host))
+        self.assertEqual('host2', utils.extract_host(weighed_host.obj.host))
 
     def test_capacity_weight_no_unknown_or_infinite(self):
         self.flags(capacity_weight_multiplier=-1.0)

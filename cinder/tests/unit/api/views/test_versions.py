@@ -48,6 +48,10 @@ FAKE_VERSIONS = {
             {
                 "base": "application/json",
                 "type": "application/vnd.openstack.share+json;version=1",
+            },
+            {
+                "base": "application/xml",
+                "type": "application/vnd.openstack.share+xml;version=1",
             }
         ],
     },

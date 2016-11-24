@@ -13,8 +13,6 @@
 #    under the License.
 
 import mock
-from oslo_utils import timeutils
-import pytz
 import six
 
 from cinder import exception
@@ -25,13 +23,13 @@ from cinder.tests.unit.objects.test_consistencygroup import \
     fake_consistencygroup
 
 fake_cgsnapshot = {
-    'id': fake.CGSNAPSHOT_ID,
-    'user_id': fake.USER_ID,
-    'project_id': fake.PROJECT_ID,
+    'id': fake.cgsnapshot_id,
+    'user_id': fake.user_id,
+    'project_id': fake.project_id,
     'name': 'fake_name',
     'description': 'fake_description',
     'status': 'creating',
-    'consistencygroup_id': fake.CONSISTENCY_GROUP_ID,
+    'consistencygroup_id': fake.consistency_group_id,
 }
 
 
@@ -41,7 +39,7 @@ class TestCGSnapshot(test_objects.BaseObjectsTestCase):
                 return_value=fake_cgsnapshot)
     def test_get_by_id(self, cgsnapshot_get):
         cgsnapshot = objects.CGSnapshot.get_by_id(self.context,
-                                                  fake.CGSNAPSHOT_ID)
+                                                  fake.cgsnapshot_id)
         self._compare(self, fake_cgsnapshot, cgsnapshot)
 
     @mock.patch('cinder.db.cgsnapshot_create',
@@ -55,7 +53,7 @@ class TestCGSnapshot(test_objects.BaseObjectsTestCase):
 
     def test_create_with_id_except_exception(self):
         cgsnapshot = objects.CGSnapshot(context=self.context,
-                                        **{'id': fake.CONSISTENCY_GROUP_ID})
+                                        **{'id': fake.consistency_group_id})
         self.assertRaises(exception.ObjectActionError, cgsnapshot.create)
 
     @mock.patch('cinder.db.cgsnapshot_update')
@@ -83,23 +81,14 @@ class TestCGSnapshot(test_objects.BaseObjectsTestCase):
                          cgsnapshot.obj_get_changes())
         self.assertRaises(exception.ObjectActionError, cgsnapshot.save)
 
-    @mock.patch('oslo_utils.timeutils.utcnow', return_value=timeutils.utcnow())
-    @mock.patch('cinder.db.sqlalchemy.api.cgsnapshot_destroy')
-    def test_destroy(self, cgsnapshot_destroy, utcnow_mock):
-        cgsnapshot_destroy.return_value = {
-            'status': 'deleted',
-            'deleted': True,
-            'deleted_at': utcnow_mock.return_value}
+    @mock.patch('cinder.db.cgsnapshot_destroy')
+    def test_destroy(self, cgsnapshot_destroy):
         cgsnapshot = objects.CGSnapshot(context=self.context,
-                                        id=fake.CGSNAPSHOT_ID)
+                                        id=fake.cgsnapshot_id)
         cgsnapshot.destroy()
         self.assertTrue(cgsnapshot_destroy.called)
         admin_context = cgsnapshot_destroy.call_args[0][0]
         self.assertTrue(admin_context.is_admin)
-        self.assertTrue(cgsnapshot.deleted)
-        self.assertEqual('deleted', cgsnapshot.status)
-        self.assertEqual(utcnow_mock.return_value.replace(tzinfo=pytz.UTC),
-                         cgsnapshot.deleted_at)
 
     @mock.patch('cinder.objects.consistencygroup.ConsistencyGroup.get_by_id')
     @mock.patch('cinder.objects.snapshot.SnapshotList.get_all_for_cgsnapshot')
@@ -109,15 +98,15 @@ class TestCGSnapshot(test_objects.BaseObjectsTestCase):
             self.context, objects.CGSnapshot(), fake_cgsnapshot)
         # Test consistencygroup lazy-loaded field
         consistencygroup = objects.ConsistencyGroup(
-            context=self.context, id=fake.CONSISTENCY_GROUP_ID)
+            context=self.context, id=fake.consistency_group_id)
         consistencygroup_get_by_id.return_value = consistencygroup
         self.assertEqual(consistencygroup, cgsnapshot.consistencygroup)
         consistencygroup_get_by_id.assert_called_once_with(
             self.context, cgsnapshot.consistencygroup_id)
         # Test snapshots lazy-loaded field
         snapshots_objs = [objects.Snapshot(context=self.context, id=i)
-                          for i in [fake.SNAPSHOT_ID, fake.SNAPSHOT2_ID,
-                                    fake.SNAPSHOT3_ID]]
+                          for i in [fake.snapshot_id, fake.snapshot2_id,
+                                    fake.snapshot3_id]]
         snapshots = objects.SnapshotList(context=self.context,
                                          objects=snapshots_objs)
         snapshotlist_get_for_cgs.return_value = snapshots
@@ -135,7 +124,7 @@ class TestCGSnapshot(test_objects.BaseObjectsTestCase):
         # description
         cgsnapshot_get.side_effect = [db_cgsnapshot1, db_cgsnapshot2]
         cgsnapshot = objects.CGSnapshot.get_by_id(self.context,
-                                                  fake.CGSNAPSHOT_ID)
+                                                  fake.cgsnapshot_id)
         self._compare(self, db_cgsnapshot1, cgsnapshot)
 
         # description was updated, so a CGSnapshot refresh should have a new
@@ -147,10 +136,10 @@ class TestCGSnapshot(test_objects.BaseObjectsTestCase):
         else:
             call_bool = mock.call.__nonzero__()
         cgsnapshot_get.assert_has_calls([mock.call(self.context,
-                                                   fake.CGSNAPSHOT_ID),
+                                                   fake.cgsnapshot_id),
                                          call_bool,
                                          mock.call(self.context,
-                                                   fake.CGSNAPSHOT_ID)])
+                                                   fake.cgsnapshot_id)])
 
 
 class TestCGSnapshotList(test_objects.BaseObjectsTestCase):

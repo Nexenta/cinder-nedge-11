@@ -31,7 +31,6 @@ from six.moves import urllib
 from cinder import exception
 from cinder.i18n import _, _LI
 from cinder.image import image_utils
-from cinder import interface
 from cinder import utils
 from cinder.volume.drivers import remotefs as remotefs_drv
 from cinder.volume import utils as volume_utils
@@ -54,7 +53,6 @@ CONF = cfg.CONF
 CONF.register_opts(volume_opts)
 
 
-@interface.volumedriver
 class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
     """Scality SOFS cinder driver.
 
@@ -66,9 +64,6 @@ class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
     driver_prefix = 'scality_sofs'
     volume_backend_name = 'Scality_SOFS'
     VERSION = '2.0.0'
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Scality_CI"
 
     def __init__(self, *args, **kwargs):
         super(ScalityDriver, self).__init__(*args, **kwargs)
@@ -84,10 +79,6 @@ class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
         # We want to use sparse file (ftruncated) without exposing this
         # as a config switch to customers.
         self.configuration.scality_sofs_sparsed_volumes = True
-
-        # TODO(smcginnis) Either remove this if CI requirements are met, or
-        # remove this driver in the Ocata release per normal deprecation
-        self._supported = False
 
     def check_for_setup_error(self):
         """Sanity checks before attempting to mount SOFS."""
@@ -195,14 +186,14 @@ class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
         active_file = self.get_active_image_from_info(volume)
         path = '%s/%s' % (self._get_mount_point_for_share(), active_file)
         sofs_rel_path = os.path.join(self.sofs_rel_volume_dir, "00",
-                                     volume.name)
+                                     volume['name'])
 
-        data = {'export': volume.provider_location,
+        data = {'export': volume['provider_location'],
                 'name': active_file,
                 'sofs_path': sofs_rel_path}
 
         # Test file for raw vs. qcow2 format
-        info = self._qemu_img_info(path, volume.name)
+        info = self._qemu_img_info(path, volume['name'])
         data['format'] = info.file_format
         if data['format'] not in ['raw', 'qcow2']:
             msg = _('%s must be a valid raw or qcow2 image.') % path
@@ -222,7 +213,7 @@ class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
     def extend_volume(self, volume, size_gb):
         volume_path = self.local_path(volume)
 
-        info = self._qemu_img_info(volume_path, volume.name)
+        info = self._qemu_img_info(volume_path, volume['name'])
         backing_fmt = info.file_format
 
         if backing_fmt not in ['raw', 'qcow2']:
@@ -239,7 +230,7 @@ class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
         qcow2.
         """
 
-        info_path = self._local_path_volume_info(snapshot.volume)
+        info_path = self._local_path_volume_info(snapshot['volume'])
 
         # For BC compat' with version < 2 of this driver
         try:
@@ -250,15 +241,15 @@ class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
             else:
                 path_to_snap_img = self.local_path(snapshot)
         else:
-            vol_path = self._local_volume_dir(snapshot.volume)
+            vol_path = self._local_volume_dir(snapshot['volume'])
 
-            forward_file = snap_info[snapshot.id]
+            forward_file = snap_info[snapshot['id']]
             forward_path = os.path.join(vol_path, forward_file)
 
             # Find the file which backs this file, which represents the point
             # when this snapshot was created.
             img_info = self._qemu_img_info(forward_path,
-                                           snapshot.volume.name)
+                                           snapshot['volume']['name'])
 
             path_to_snap_img = os.path.join(vol_path, img_info.backing_file)
 
@@ -279,7 +270,7 @@ class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
         """Create a new backup from an existing volume."""
         volume = self.db.volume_get(context, backup['volume_id'])
         volume_local_path = self.local_path(volume)
-        LOG.info(_LI('Begin backup of volume %s.'), volume.name)
+        LOG.info(_LI('Begin backup of volume %s.'), volume['name'])
 
         qemu_img_info = image_utils.qemu_img_info(volume_local_path)
         if qemu_img_info.file_format != 'raw':
@@ -299,8 +290,8 @@ class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
     def restore_backup(self, context, backup, volume, backup_service):
         """Restore an existing backup to a new or existing volume."""
         LOG.info(_LI('Restoring backup %(backup)s to volume %(volume)s.'),
-                 {'backup': backup['id'], 'volume': volume.name})
+                 {'backup': backup['id'], 'volume': volume['name']})
         volume_local_path = self.local_path(volume)
         with utils.temporary_chown(volume_local_path):
             with open(volume_local_path, 'wb') as volume_file:
-                backup_service.restore(backup, volume.id, volume_file)
+                backup_service.restore(backup, volume['id'], volume_file)

@@ -23,7 +23,6 @@ from six.moves import urllib
 from cinder import context
 from cinder import exception
 from cinder.i18n import _LE, _LI, _LW
-from cinder import interface
 from cinder.volume import driver
 from cinder.volume.drivers.san import san
 from cinder.volume import qos_specs
@@ -62,7 +61,7 @@ def RaiseXIODriverException():
     raise exception.XIODriverException()
 
 
-class XIOISEDriver(driver.VolumeDriver):
+class XIOISEDriver(object):
 
     VERSION = '1.1.4'
 
@@ -73,9 +72,6 @@ class XIOISEDriver(driver.VolumeDriver):
     # 1.1.2     Fix host object deletion (Bug 1433450).
     # 1.1.3     Wait for volume/snapshot to be deleted.
     # 1.1.4     Force target_lun to be int (Bug 1549048)
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "X-IO_technologies_CI"
 
     def __init__(self, *args, **kwargs):
         super(XIOISEDriver, self).__init__()
@@ -434,19 +430,21 @@ class XIOISEDriver(driver.VolumeDriver):
                 param_str.append("%s=%s" % (name, value))
         return '&'.join(param_str)
 
-    def _send_cmd(self, method, url, params=None):
+    def _send_cmd(self, method, url, params):
         """Prepare HTTP request and call _connect"""
-        params = params or {}
         # Add params to appropriate field based on method
-        if method in ('GET', 'PUT'):
-            if params:
+        body = ''
+        if method == 'GET':
+            if params != {}:
                 url += '?' + self._param_string(params)
             body = ''
         elif method == 'POST':
             body = self._param_string(params)
-        else:
-            # method like 'DELETE'
+        elif method == 'DELETE':
             body = ''
+        elif method == 'PUT':
+            if params != {}:
+                url += '?' + self._param_string(params)
         # ISE REST API is mostly synchronous but has some asynchronous
         # streaks. Add retries to work around design of ISE REST API that
         # does not allow certain operations to be in process concurrently.
@@ -460,7 +458,7 @@ class XIOISEDriver(driver.VolumeDriver):
         chap['chap_user'] = ''
         chap['chap_passwd'] = ''
         url = '/storage/arrays/%s/ionetworks' % (self._get_ise_globalid())
-        resp = self._send_cmd('GET', url)
+        resp = self._send_cmd('GET', url, {})
         status = resp['status']
         if status != 200:
             LOG.warning(_LW("IOnetworks GET failed (%d)"), status)
@@ -489,7 +487,7 @@ class XIOISEDriver(driver.VolumeDriver):
     def find_target_iqn(self, iscsi_ip):
         """Find Target IQN string"""
         url = '/storage/arrays/%s/controllers' % (self._get_ise_globalid())
-        resp = self._send_cmd('GET', url)
+        resp = self._send_cmd('GET', url, {})
         status = resp['status']
         if status != 200:
             # Not good. Throw an exception.
@@ -527,7 +525,7 @@ class XIOISEDriver(driver.VolumeDriver):
         target_wwns = []
         target = ''
         url = '/storage/arrays/%s/controllers' % (self._get_ise_globalid())
-        resp = self._send_cmd('GET', url)
+        resp = self._send_cmd('GET', url, {})
         status = resp['status']
         if status != 200:
             # Not good. Throw an exception.
@@ -554,7 +552,7 @@ class XIOISEDriver(driver.VolumeDriver):
 
     def _find_target_lun(self, location):
         """Return LUN for allocation specified in location string"""
-        resp = self._send_cmd('GET', location)
+        resp = self._send_cmd('GET', location, {})
         status = resp['status']
         if status != 200:
             # Not good. Throw an exception.
@@ -665,7 +663,7 @@ class XIOISEDriver(driver.VolumeDriver):
                 location = allocation.attrib['self']
                 # Delete allocation if requested.
                 if delete == 1:
-                    self._send_cmd('DELETE', location)
+                    self._send_cmd('DELETE', location, {})
                     location = ''
                     break
                 else:
@@ -953,7 +951,7 @@ class XIOISEDriver(driver.VolumeDriver):
         pool = {}
         vol_cnt = 0
         url = '/storage/pools'
-        resp = self._send_cmd('GET', url)
+        resp = self._send_cmd('GET', url, {})
         status = resp['status']
         if status != 200:
             # Request failed. Return what we have, which isn't much.
@@ -1377,21 +1375,16 @@ class XIOISEDriver(driver.VolumeDriver):
         host = self._find_host(endpoints)
         if host['locator'] != '':
             # Delete host
-            self._send_cmd('DELETE', host['locator'])
+            self._send_cmd('DELETE', host['locator'], {})
             LOG.debug("X-IO: host %s deleted", host['name'])
 
 
 # Protocol specific classes for entry.  They are wrappers around base class
 # above and every external API resuslts in a call to common function in base
 # class.
-@interface.volumedriver
 class XIOISEISCSIDriver(driver.ISCSIDriver):
 
     """Requires ISE Running FW version 3.1.0 or higher"""
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = 'X-IO_technologies_CI'
-    VERSION = XIOISEDriver.VERSION
 
     def __init__(self, *args, **kwargs):
         super(XIOISEISCSIDriver, self).__init__(*args, **kwargs)
@@ -1515,14 +1508,9 @@ class XIOISEISCSIDriver(driver.ISCSIDriver):
         return self.driver.remove_export(context, volume)
 
 
-@interface.volumedriver
 class XIOISEFCDriver(driver.FibreChannelDriver):
 
     """Requires ISE Running FW version 2.8.0 or higher"""
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = 'X-IO_technologies_CI'
-    VERSION = XIOISEDriver.VERSION
 
     def __init__(self, *args, **kwargs):
         super(XIOISEFCDriver, self).__init__(*args, **kwargs)

@@ -17,6 +17,8 @@
 Tests for consistency group code.
 """
 
+from xml.dom import minidom
+
 import ddt
 import mock
 from oslo_serialization import jsonutils
@@ -32,7 +34,6 @@ from cinder.objects import fields
 from cinder import test
 from cinder.tests.unit.api import fakes
 from cinder.tests.unit.api.v2 import stubs
-from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import utils
 from cinder.volume import api as volume_api
 
@@ -44,45 +45,39 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
     def setUp(self):
         super(ConsistencyGroupsAPITestCase, self).setUp()
         self.cg_api = cinder.consistencygroup.API()
-        self.ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
-                                           auth_token=True,
+        self.ctxt = context.RequestContext('fake', 'fake', auth_token=True,
                                            is_admin=True)
-        self.user_ctxt = context.RequestContext(
-            fake.USER_ID, fake.PROJECT_ID, auth_token=True)
 
     def _create_consistencygroup(
             self,
             ctxt=None,
             name='test_consistencygroup',
             description='this is a test consistency group',
-            volume_type_id=fake.VOLUME_TYPE_ID,
+            volume_type_id='123456',
             availability_zone='az1',
             host='fakehost',
-            status=fields.ConsistencyGroupStatus.CREATING,
-            **kwargs):
+            status=fields.ConsistencyGroupStatus.CREATING):
         """Create a consistency group object."""
         ctxt = ctxt or self.ctxt
         consistencygroup = objects.ConsistencyGroup(ctxt)
-        consistencygroup.user_id = fake.USER_ID
-        consistencygroup.project_id = fake.PROJECT_ID
+        consistencygroup.user_id = 'fake'
+        consistencygroup.project_id = 'fake'
         consistencygroup.availability_zone = availability_zone
         consistencygroup.name = name
         consistencygroup.description = description
         consistencygroup.volume_type_id = volume_type_id
         consistencygroup.host = host
         consistencygroup.status = status
-        consistencygroup.update(kwargs)
         consistencygroup.create()
         return consistencygroup
 
     def test_show_consistencygroup(self):
         consistencygroup = self._create_consistencygroup()
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s' %
+                                  consistencygroup.id)
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(200, res.status_int)
@@ -94,34 +89,45 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                          res_dict['consistencygroup']['name'])
         self.assertEqual('creating',
                          res_dict['consistencygroup']['status'])
-        self.assertEqual([fake.VOLUME_TYPE_ID],
+        self.assertEqual(['123456'],
                          res_dict['consistencygroup']['volume_types'])
 
         consistencygroup.destroy()
 
+    def test_show_consistencygroup_xml_content_type(self):
+        consistencygroup = self._create_consistencygroup()
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s' %
+                                  consistencygroup.id)
+        req.method = 'GET'
+        req.headers['Content-Type'] = 'application/xml'
+        req.headers['Accept'] = 'application/xml'
+        res = req.get_response(fakes.wsgi_app())
+        self.assertEqual(200, res.status_int)
+        dom = minidom.parseString(res.body)
+        consistencygroups = dom.getElementsByTagName('consistencygroup')
+        name = consistencygroups.item(0).getAttribute('name')
+        self.assertEqual("test_consistencygroup", name.strip())
+        consistencygroup.destroy()
+
     def test_show_consistencygroup_with_consistencygroup_NotFound(self):
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s' %
-                                  (fake.PROJECT_ID, fake.WILL_NOT_BE_FOUND_ID))
+        req = webob.Request.blank('/v2/fake/consistencygroups/9999')
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(404, res.status_int)
         self.assertEqual(404, res_dict['itemNotFound']['code'])
-        self.assertEqual('ConsistencyGroup %s could not be found.' %
-                         fake.WILL_NOT_BE_FOUND_ID,
+        self.assertEqual('ConsistencyGroup 9999 could not be found.',
                          res_dict['itemNotFound']['message'])
 
     def test_show_consistencygroup_with_null_volume_type(self):
         consistencygroup = self._create_consistencygroup(volume_type_id=None)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s' %
+                                  consistencygroup.id)
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(200, res.status_int)
@@ -137,20 +143,15 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
 
         consistencygroup.destroy()
 
-    @ddt.data(2, 3)
-    def test_list_consistencygroups_json(self, version):
+    def test_list_consistencygroups_json(self):
         consistencygroup1 = self._create_consistencygroup()
         consistencygroup2 = self._create_consistencygroup()
         consistencygroup3 = self._create_consistencygroup()
 
-        req = webob.Request.blank('/v%(version)s/%(project_id)s/'
-                                  'consistencygroups'
-                                  % {'version': version,
-                                     'project_id': fake.PROJECT_ID})
+        req = webob.Request.blank('/v2/fake/consistencygroups')
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(200, res.status_int)
@@ -171,29 +172,52 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         consistencygroup2.destroy()
         consistencygroup3.destroy()
 
+    def test_list_consistencygroups_xml(self):
+        consistencygroup1 = self._create_consistencygroup()
+        consistencygroup2 = self._create_consistencygroup()
+        consistencygroup3 = self._create_consistencygroup()
+
+        req = webob.Request.blank('/v2/fake/consistencygroups')
+        req.method = 'GET'
+        req.headers['Content-Type'] = 'application/xml'
+        req.headers['Accept'] = 'application/xml'
+        res = req.get_response(fakes.wsgi_app())
+
+        self.assertEqual(200, res.status_int)
+        dom = minidom.parseString(res.body)
+        consistencygroup_list = dom.getElementsByTagName('consistencygroup')
+
+        self.assertEqual(consistencygroup3.id,
+                         consistencygroup_list.item(0).getAttribute('id'))
+        self.assertEqual(consistencygroup2.id,
+                         consistencygroup_list.item(1).getAttribute('id'))
+        self.assertEqual(consistencygroup1.id,
+                         consistencygroup_list.item(2).getAttribute('id'))
+
+        consistencygroup3.destroy()
+        consistencygroup2.destroy()
+        consistencygroup1.destroy()
+
     @ddt.data(False, True)
     def test_list_consistencygroups_with_limit(self, is_detail):
         consistencygroup1 = self._create_consistencygroup()
         consistencygroup2 = self._create_consistencygroup()
         consistencygroup3 = self._create_consistencygroup()
-        url = '/v2/%s/consistencygroups?limit=1' % fake.PROJECT_ID
+        url = '/v2/fake/consistencygroups?limit=1'
         if is_detail:
-            url = '/v2/%s/consistencygroups/detail?limit=1' % fake.PROJECT_ID
+            url = '/v2/fake/consistencygroups/detail?limit=1'
         req = webob.Request.blank(url)
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(200, res.status_int)
         self.assertEqual(1, len(res_dict['consistencygroups']))
         self.assertEqual(consistencygroup3.id,
                          res_dict['consistencygroups'][0]['id'])
-        next_link = (
-            'http://localhost/v2/%s/consistencygroups?limit='
-            '1&marker=%s' %
-            (fake.PROJECT_ID, res_dict['consistencygroups'][0]['id']))
+        next_link = ('http://localhost/v2/fake/consistencygroups?limit='
+                     '1&marker=%s') % res_dict['consistencygroups'][0]['id']
         self.assertEqual(next_link,
                          res_dict['consistencygroup_links'][0]['href'])
         consistencygroup1.destroy()
@@ -205,14 +229,13 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         consistencygroup1 = self._create_consistencygroup()
         consistencygroup2 = self._create_consistencygroup()
         consistencygroup3 = self._create_consistencygroup()
-        url = '/v2/%s/consistencygroups?offset=1' % fake.PROJECT_ID
+        url = '/v2/fake/consistencygroups?offset=1'
         if is_detail:
-            url = '/v2/%s/consistencygroups/detail?offset=1' % fake.PROJECT_ID
+            url = '/v2/fake/consistencygroups/detail?offset=1'
         req = webob.Request.blank(url)
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(200, res.status_int)
@@ -227,16 +250,13 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
 
     @ddt.data(False, True)
     def test_list_consistencygroups_with_offset_out_of_range(self, is_detail):
-        url = ('/v2/%s/consistencygroups?offset=234523423455454' %
-               fake.PROJECT_ID)
+        url = '/v2/fake/consistencygroups?offset=234523423455454'
         if is_detail:
-            url = ('/v2/%s/consistencygroups/detail?offset=234523423455454' %
-                   fake.PROJECT_ID)
+            url = '/v2/fake/consistencygroups/detail?offset=234523423455454'
         req = webob.Request.blank(url)
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         self.assertEqual(400, res.status_int)
 
     @ddt.data(False, True)
@@ -244,15 +264,13 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         consistencygroup1 = self._create_consistencygroup()
         consistencygroup2 = self._create_consistencygroup()
         consistencygroup3 = self._create_consistencygroup()
-        url = '/v2/%s/consistencygroups?limit=2&offset=1' % fake.PROJECT_ID
+        url = '/v2/fake/consistencygroups?limit=2&offset=1'
         if is_detail:
-            url = ('/v2/%s/consistencygroups/detail?limit=2&offset=1' %
-                   fake.PROJECT_ID)
+            url = '/v2/fake/consistencygroups/detail?limit=2&offset=1'
         req = webob.Request.blank(url)
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(200, res.status_int)
@@ -269,17 +287,14 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
     def test_list_consistencygroups_with_filter(self, is_detail):
         consistencygroup1 = self._create_consistencygroup()
         consistencygroup2 = self._create_consistencygroup()
-        common_ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
-                                             auth_token=True,
+        common_ctxt = context.RequestContext('fake', 'fake', auth_token=True,
                                              is_admin=False)
         consistencygroup3 = self._create_consistencygroup(ctxt=common_ctxt)
-        url = ('/v2/%s/consistencygroups?'
-               'all_tenants=True&id=%s') % (fake.PROJECT_ID,
-                                            consistencygroup3.id)
+        url = ('/v2/fake/consistencygroups?'
+               'all_tenants=True&id=%s') % consistencygroup3.id
         if is_detail:
-            url = ('/v2/%s/consistencygroups/detail?'
-                   'all_tenants=True&id=%s') % (fake.PROJECT_ID,
-                                                consistencygroup3.id)
+            url = ('/v2/fake/consistencygroups/detail?'
+                   'all_tenants=True&id=%s') % consistencygroup3.id
         req = webob.Request.blank(url)
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
@@ -299,15 +314,13 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         consistencygroup1 = self._create_consistencygroup()
         consistencygroup2 = self._create_consistencygroup()
         consistencygroup3 = self._create_consistencygroup()
-        url = '/v2/%s/consistencygroups?sort=id:asc' % fake.PROJECT_ID
+        url = '/v2/fake/consistencygroups?sort=id:asc'
         if is_detail:
-            url = ('/v2/%s/consistencygroups/detail?sort=id:asc' %
-                   fake.PROJECT_ID)
+            url = '/v2/fake/consistencygroups/detail?sort=id:asc'
         req = webob.Request.blank(url)
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
         expect_result = [consistencygroup1.id, consistencygroup2.id,
                          consistencygroup3.id]
@@ -328,16 +341,14 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
     def test_list_consistencygroups_detail_json(self):
         consistencygroup1 = self._create_consistencygroup()
         consistencygroup2 = self._create_consistencygroup()
-        consistencygroup3 = self._create_consistencygroup(
-            volume_type_id='%s,%s' % (fake.VOLUME_TYPE_ID,
-                                      fake.VOLUME_TYPE2_ID))
-        req = webob.Request.blank('/v2/%s/consistencygroups/detail' %
-                                  fake.PROJECT_ID)
+        consistencygroup3 = self._create_consistencygroup(volume_type_id=(
+                                                          'uuid1,uuid2'))
+
+        req = webob.Request.blank('/v2/fake/consistencygroups/detail')
         req.method = 'GET'
         req.headers['Content-Type'] = 'application/json'
         req.headers['Accept'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(200, res.status_int)
@@ -351,7 +362,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                          res_dict['consistencygroups'][0]['id'])
         self.assertEqual('creating',
                          res_dict['consistencygroups'][0]['status'])
-        self.assertEqual([fake.VOLUME_TYPE_ID, fake.VOLUME_TYPE2_ID],
+        self.assertEqual(['uuid1', 'uuid2'],
                          res_dict['consistencygroups'][0]['volume_types'])
 
         self.assertEqual('az1',
@@ -364,7 +375,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                          res_dict['consistencygroups'][1]['id'])
         self.assertEqual('creating',
                          res_dict['consistencygroups'][1]['status'])
-        self.assertEqual([fake.VOLUME_TYPE_ID],
+        self.assertEqual(['123456'],
                          res_dict['consistencygroups'][1]['volume_types'])
 
         self.assertEqual('az1',
@@ -377,33 +388,99 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                          res_dict['consistencygroups'][2]['id'])
         self.assertEqual('creating',
                          res_dict['consistencygroups'][2]['status'])
-        self.assertEqual([fake.VOLUME_TYPE_ID],
+        self.assertEqual(['123456'],
                          res_dict['consistencygroups'][2]['volume_types'])
 
         consistencygroup1.destroy()
         consistencygroup2.destroy()
         consistencygroup3.destroy()
 
+    def test_list_consistencygroups_detail_xml(self):
+        consistencygroup1 = self._create_consistencygroup()
+        consistencygroup2 = self._create_consistencygroup()
+        consistencygroup3 = self._create_consistencygroup()
+
+        req = webob.Request.blank('/v2/fake/consistencygroups/detail')
+        req.method = 'GET'
+        req.headers['Content-Type'] = 'application/xml'
+        req.headers['Accept'] = 'application/xml'
+        res = req.get_response(fakes.wsgi_app())
+
+        self.assertEqual(200, res.status_int)
+        dom = minidom.parseString(res.body)
+        consistencygroup_detail = dom.getElementsByTagName('consistencygroup')
+
+        self.assertEqual(
+            'az1',
+            consistencygroup_detail.item(0).getAttribute('availability_zone'))
+        self.assertEqual(
+            'this is a test consistency group',
+            consistencygroup_detail.item(0).getAttribute('description'))
+        self.assertEqual(
+            'test_consistencygroup',
+            consistencygroup_detail.item(0).getAttribute('name'))
+        self.assertEqual(
+            consistencygroup3.id,
+            consistencygroup_detail.item(0).getAttribute('id'))
+        self.assertEqual(
+            'creating',
+            consistencygroup_detail.item(0).getAttribute('status'))
+
+        self.assertEqual(
+            'az1',
+            consistencygroup_detail.item(1).getAttribute('availability_zone'))
+        self.assertEqual(
+            'this is a test consistency group',
+            consistencygroup_detail.item(1).getAttribute('description'))
+        self.assertEqual(
+            'test_consistencygroup',
+            consistencygroup_detail.item(1).getAttribute('name'))
+        self.assertEqual(
+            consistencygroup2.id,
+            consistencygroup_detail.item(1).getAttribute('id'))
+        self.assertEqual(
+            'creating',
+            consistencygroup_detail.item(1).getAttribute('status'))
+
+        self.assertEqual(
+            'az1',
+            consistencygroup_detail.item(2).getAttribute('availability_zone'))
+        self.assertEqual(
+            'this is a test consistency group',
+            consistencygroup_detail.item(2).getAttribute('description'))
+        self.assertEqual(
+            'test_consistencygroup',
+            consistencygroup_detail.item(2).getAttribute('name'))
+        self.assertEqual(
+            consistencygroup1.id,
+            consistencygroup_detail.item(2).getAttribute('id'))
+        self.assertEqual(
+            'creating',
+            consistencygroup_detail.item(2).getAttribute('status'))
+
+        consistencygroup3.destroy()
+        consistencygroup2.destroy()
+        consistencygroup1.destroy()
+
     @mock.patch(
         'cinder.api.openstack.wsgi.Controller.validate_name_and_description')
     def test_create_consistencygroup_json(self, mock_validate):
-        group_id = fake.CONSISTENCY_GROUP_ID
+        group_id = "1"
 
         # Create volume type
         vol_type = 'test'
-        db.volume_type_create(self.ctxt,
+        db.volume_type_create(context.get_admin_context(),
                               {'name': vol_type, 'extra_specs': {}})
 
         body = {"consistencygroup": {"name": "cg1",
                                      "volume_types": vol_type,
                                      "description":
                                      "Consistency Group 1", }}
-        req = webob.Request.blank('/v2/%s/consistencygroups' % fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(202, res.status_int)
@@ -411,19 +488,18 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         self.assertTrue(mock_validate.called)
 
         group_id = res_dict['consistencygroup']['id']
-        cg = objects.ConsistencyGroup.get_by_id(self.ctxt,
+        cg = objects.ConsistencyGroup.get_by_id(context.get_admin_context(),
                                                 group_id)
         cg.destroy()
 
     def test_create_consistencygroup_with_no_body(self):
         # omit body from the request
-        req = webob.Request.blank('/v2/%s/consistencygroups' % fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups')
         req.body = jsonutils.dump_as_bytes(None)
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.headers['Accept'] = 'application/json'
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -435,74 +511,13 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
     def test_delete_consistencygroup_available(self):
         consistencygroup = self._create_consistencygroup(
             status=fields.ConsistencyGroupStatus.AVAILABLE)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/delete' %
+                                  consistencygroup.id)
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
-        req.body = jsonutils.dump_as_bytes({})
-        res = req.get_response(fakes.wsgi_app())
-
-        consistencygroup = objects.ConsistencyGroup.get_by_id(
-            self.ctxt, consistencygroup.id)
-        self.assertEqual(202, res.status_int)
-        self.assertEqual('deleting', consistencygroup.status)
-
-        consistencygroup.destroy()
-
-    def test_delete_consistencygroup_available_used_as_source(self):
-        consistencygroup = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.AVAILABLE)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
-        cg2 = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.CREATING,
-            source_cgid=consistencygroup.id)
-        req.method = 'POST'
-        req.headers['Content-Type'] = 'application/json'
-        req.body = jsonutils.dump_as_bytes({})
-        res = req.get_response(fakes.wsgi_app())
-
-        consistencygroup = objects.ConsistencyGroup.get_by_id(
-            self.ctxt, consistencygroup.id)
-        self.assertEqual(400, res.status_int)
-        self.assertEqual('available', consistencygroup.status)
-
-        consistencygroup.destroy()
-        cg2.destroy()
-
-    def test_delete_consistencygroup_available_used_as_source_success(self):
-        consistencygroup = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.AVAILABLE)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
-        # The other CG used the first CG as source, but it's no longer in
-        # creating status, so we should be able to delete it.
-        cg2 = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.AVAILABLE,
-            source_cgid=consistencygroup.id)
-        req.method = 'POST'
-        req.headers['Content-Type'] = 'application/json'
-        req.body = jsonutils.dump_as_bytes({})
-        res = req.get_response(fakes.wsgi_app())
-
-        consistencygroup = objects.ConsistencyGroup.get_by_id(
-            self.ctxt, consistencygroup.id)
-        self.assertEqual(202, res.status_int)
-        self.assertEqual('deleting', consistencygroup.status)
-
-        consistencygroup.destroy()
-        cg2.destroy()
-
-    def test_delete_consistencygroup_available_no_force(self):
-        consistencygroup = self._create_consistencygroup(status='available')
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
-        req.method = 'POST'
-        req.headers['Content-Type'] = 'application/json'
-        body = {"consistencygroup": {"force": False}}
+        body = {"consistencygroup": {"force": True}}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
 
         consistencygroup = objects.ConsistencyGroup.get_by_id(
             self.ctxt, consistencygroup.id)
@@ -513,55 +528,49 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         consistencygroup.destroy()
 
     def test_delete_consistencygroup_with_consistencygroup_NotFound(self):
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, fake.WILL_NOT_BE_FOUND_ID))
+        req = webob.Request.blank('/v2/fake/consistencygroups/9999/delete')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(None)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(404, res.status_int)
         self.assertEqual(404, res_dict['itemNotFound']['code'])
-        self.assertEqual('ConsistencyGroup %s could not be found.' %
-                         fake.WILL_NOT_BE_FOUND_ID,
+        self.assertEqual('ConsistencyGroup 9999 could not be found.',
                          res_dict['itemNotFound']['message'])
 
-    def test_delete_consistencygroup_with_invalid_consistencygroup(self):
+    def test_delete_consistencygroup_with_Invalidconsistencygroup(self):
         consistencygroup = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.CREATING)
-        self._assert_deleting_result_400(consistencygroup.id)
-        consistencygroup.destroy()
-
-    def test_delete_consistencygroup_invalid_force(self):
-        consistencygroup = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.CREATING)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+            status=fields.ConsistencyGroupStatus.IN_USE)
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/delete' %
+                                  consistencygroup.id)
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
-        body = {"consistencygroup": {"force": True}}
+        body = {"consistencygroup": {"force": False}}
         req.body = jsonutils.dump_as_bytes(body)
         res = req.get_response(fakes.wsgi_app())
+        res_dict = jsonutils.loads(res.body)
 
-        consistencygroup = objects.ConsistencyGroup.get_by_id(
-            self.ctxt, consistencygroup.id)
-        self.assertEqual(202, res.status_int)
-        self.assertEqual('deleting', consistencygroup.status)
+        self.assertEqual(400, res.status_int)
+        self.assertEqual(400, res_dict['badRequest']['code'])
+        msg = (_('Invalid ConsistencyGroup: Consistency group status must be '
+                 'available or error, but current status is: in-use'))
+        self.assertEqual(msg, res_dict['badRequest']['message'])
+
+        consistencygroup.destroy()
 
     def test_delete_consistencygroup_no_host(self):
         consistencygroup = self._create_consistencygroup(
             host=None,
             status=fields.ConsistencyGroupStatus.ERROR)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/delete' %
+                                  consistencygroup.id)
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         body = {"consistencygroup": {"force": True}}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         self.assertEqual(202, res.status_int)
 
         cg = objects.ConsistencyGroup.get_by_id(
@@ -573,22 +582,24 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
     def test_create_delete_consistencygroup_update_quota(self):
         name = 'mycg'
         description = 'consistency group 1'
-        fake_type = {'id': fake.CONSISTENCY_GROUP_ID, 'name': 'fake_type'}
-        self.mock_object(db, 'volume_types_get_by_name_or_id',
-                         return_value=[fake_type])
-        self.mock_object(self.cg_api, '_cast_create_consistencygroup')
-        self.mock_object(self.cg_api, 'update_quota')
+        fake_type = {'id': '1', 'name': 'fake_type'}
+        self.stubs.Set(db, 'volume_types_get_by_name_or_id',
+                       mock.Mock(return_value=[fake_type]))
+        self.stubs.Set(self.cg_api,
+                       '_cast_create_consistencygroup',
+                       mock.Mock())
+        self.stubs.Set(self.cg_api, 'update_quota',
+                       mock.Mock())
+
         cg = self.cg_api.create(self.ctxt, name, description,
                                 fake_type['name'])
         self.cg_api.update_quota.assert_called_once_with(
             self.ctxt, cg, 1)
-
         self.assertEqual(fields.ConsistencyGroupStatus.CREATING, cg.status)
         self.assertIsNone(cg.host)
         self.cg_api.update_quota.reset_mock()
         cg.status = fields.ConsistencyGroupStatus.ERROR
         self.cg_api.delete(self.ctxt, cg)
-
         self.cg_api.update_quota.assert_called_once_with(
             self.ctxt, cg, -1, self.ctxt.project_id)
         cg = objects.ConsistencyGroup.get_by_id(
@@ -599,166 +610,52 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
     def test_delete_consistencygroup_with_invalid_body(self):
         consistencygroup = self._create_consistencygroup(
             status=fields.ConsistencyGroupStatus.AVAILABLE)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/delete' %
+                                  consistencygroup.id)
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         body = {"invalid_request_element": {"force": False}}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
 
         self.assertEqual(400, res.status_int)
 
     def test_delete_consistencygroup_with_invalid_force_value_in_body(self):
         consistencygroup = self._create_consistencygroup(
             status=fields.ConsistencyGroupStatus.AVAILABLE)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/delete' %
+                                  consistencygroup.id)
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         body = {"consistencygroup": {"force": "abcd"}}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
 
         self.assertEqual(400, res.status_int)
 
     def test_delete_consistencygroup_with_empty_force_value_in_body(self):
         consistencygroup = self._create_consistencygroup(
             status=fields.ConsistencyGroupStatus.AVAILABLE)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/delete' %
+                                  consistencygroup.id)
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         body = {"consistencygroup": {"force": ""}}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
 
         self.assertEqual(400, res.status_int)
-
-    def _assert_deleting_result_400(self, cg_id, force=False):
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, cg_id))
-        req.method = 'POST'
-        req.headers['Content-Type'] = 'application/json'
-        body = {"consistencygroup": {"force": force}}
-        req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app())
-        self.assertEqual(400, res.status_int)
-
-        if force:
-            reason = _('Consistency group must not have attached volumes, '
-                       'volumes with snapshots, or dependent cgsnapshots')
-        else:
-            reason = _('Consistency group status must be available or '
-                       'error and must not have volumes or dependent '
-                       'cgsnapshots')
-        msg = (_('Invalid ConsistencyGroup: Cannot delete consistency group '
-                 '%(id)s. %(reason)s, and it cannot be the source for an '
-                 'ongoing CG or CG Snapshot creation.')
-               % {'id': cg_id, 'reason': reason})
-
-        res_dict = jsonutils.loads(res.body)
-        self.assertEqual(400, res_dict['badRequest']['code'])
-        self.assertEqual(msg, res_dict['badRequest']['message'])
-
-    def test_delete_consistencygroup_with_volumes(self):
-        consistencygroup = self._create_consistencygroup(status='available')
-        utils.create_volume(self.ctxt, consistencygroup_id=consistencygroup.id,
-                            testcase_instance=self)
-        self._assert_deleting_result_400(consistencygroup.id)
-        consistencygroup.destroy()
-
-    def test_delete_consistencygroup_with_cgsnapshot(self):
-        consistencygroup = self._create_consistencygroup(status='available')
-        # If we don't add a volume to the CG the cgsnapshot creation will fail
-        utils.create_volume(self.ctxt,
-                            consistencygroup_id=consistencygroup.id,
-                            testcase_instance=self)
-        cg_snap = utils.create_cgsnapshot(self.ctxt, consistencygroup.id)
-        self._assert_deleting_result_400(consistencygroup.id)
-        cg_snap.destroy()
-        consistencygroup.destroy()
-
-    def test_delete_consistencygroup_with_cgsnapshot_force(self):
-        consistencygroup = self._create_consistencygroup(status='available')
-        # If we don't add a volume to the CG the cgsnapshot creation will fail
-        utils.create_volume(self.ctxt,
-                            consistencygroup_id=consistencygroup.id,
-                            testcase_instance=self)
-        cg_snap = utils.create_cgsnapshot(self.ctxt, consistencygroup.id)
-        self._assert_deleting_result_400(consistencygroup.id, force=True)
-        cg_snap.destroy()
-        consistencygroup.destroy()
-
-    def test_delete_consistencygroup_force_with_volumes(self):
-        consistencygroup = self._create_consistencygroup(status='available')
-        utils.create_volume(self.ctxt, consistencygroup_id=consistencygroup.id,
-                            testcase_instance=self)
-
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
-        req.method = 'POST'
-        req.headers['Content-Type'] = 'application/json'
-        body = {"consistencygroup": {"force": True}}
-        req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app())
-
-        consistencygroup = objects.ConsistencyGroup.get_by_id(
-            self.ctxt, consistencygroup.id)
-        self.assertEqual(202, res.status_int)
-        self.assertEqual('deleting', consistencygroup.status)
-        consistencygroup.destroy()
-
-    def test_delete_consistencygroup_force_with_attached_volumes(self):
-        consistencygroup = self._create_consistencygroup(status='available')
-        utils.create_volume(self.ctxt, consistencygroup_id=consistencygroup.id,
-                            testcase_instance=self, attach_status='attached')
-        self._assert_deleting_result_400(consistencygroup.id, force=True)
-        consistencygroup.destroy()
-
-    def test_delete_consistencygroup_force_with_volumes_with_snapshots(self):
-        consistencygroup = self._create_consistencygroup(status='available')
-        vol = utils.create_volume(self.ctxt, testcase_instance=self,
-                                  consistencygroup_id=consistencygroup.id)
-        utils.create_snapshot(self.ctxt, vol.id)
-        self._assert_deleting_result_400(consistencygroup.id, force=True)
-        consistencygroup.destroy()
-
-    def test_delete_cg_force_with_volumes_with_deleted_snapshots(self):
-        consistencygroup = self._create_consistencygroup(status='available')
-        vol = utils.create_volume(self.ctxt, testcase_instance=self,
-                                  consistencygroup_id=consistencygroup.id)
-        utils.create_snapshot(self.ctxt, vol.id, status='deleted',
-                              deleted=True, testcase_instance=self)
-
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/delete' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
-        req.method = 'POST'
-        req.headers['Content-Type'] = 'application/json'
-        body = {"consistencygroup": {"force": True}}
-        req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app())
-
-        consistencygroup = objects.ConsistencyGroup.get_by_id(
-            self.ctxt, consistencygroup.id)
-        self.assertEqual(202, res.status_int)
-        self.assertEqual('deleting', consistencygroup.status)
-        consistencygroup.destroy()
 
     def test_create_consistencygroup_failed_no_volume_type(self):
         name = 'cg1'
         body = {"consistencygroup": {"name": name,
                                      "description":
                                      "Consistency Group 1", }}
-        req = webob.Request.blank('/v2/%s/consistencygroups' % fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -770,17 +667,10 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
     @mock.patch(
         'cinder.api.openstack.wsgi.Controller.validate_name_and_description')
     def test_update_consistencygroup_success(self, mock_validate):
-        volume_type_id = fake.VOLUME_TYPE_ID
+        volume_type_id = '123456'
         consistencygroup = self._create_consistencygroup(
             status=fields.ConsistencyGroupStatus.AVAILABLE,
             host='test_host')
-
-        # We create another CG from the one we are updating to confirm that
-        # it will not affect the update if it is not CREATING
-        cg2 = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.AVAILABLE,
-            host='test_host',
-            source_cgid=consistencygroup.id)
 
         remove_volume_id = utils.create_volume(
             self.ctxt,
@@ -813,8 +703,8 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         add_volume_id2 = utils.create_volume(
             self.ctxt,
             volume_type_id=volume_type_id)['id']
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/update' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/update' %
+                                  consistencygroup.id)
         req.method = 'PUT'
         req.headers['Content-Type'] = 'application/json'
         name = 'newcg'
@@ -827,8 +717,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                      "add_volumes": add_volumes,
                                      "remove_volumes": remove_volumes, }}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
 
         consistencygroup = objects.ConsistencyGroup.get_by_id(
             self.ctxt, consistencygroup.id)
@@ -838,103 +727,13 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                          consistencygroup.status)
 
         consistencygroup.destroy()
-        cg2.destroy()
-
-    @mock.patch(
-        'cinder.api.openstack.wsgi.Controller.validate_name_and_description')
-    def test_update_consistencygroup_sourcing_cg(self, mock_validate):
-        volume_type_id = fake.VOLUME_TYPE_ID
-        consistencygroup = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.AVAILABLE,
-            host='test_host')
-
-        cg2 = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.CREATING,
-            host='test_host',
-            source_cgid=consistencygroup.id)
-
-        remove_volume_id = utils.create_volume(
-            self.ctxt,
-            volume_type_id=volume_type_id,
-            consistencygroup_id=consistencygroup.id)['id']
-        remove_volume_id2 = utils.create_volume(
-            self.ctxt,
-            volume_type_id=volume_type_id,
-            consistencygroup_id=consistencygroup.id)['id']
-
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/update' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
-        req.method = 'PUT'
-        req.headers['Content-Type'] = 'application/json'
-        name = 'newcg'
-        description = 'New Consistency Group Description'
-        remove_volumes = remove_volume_id + "," + remove_volume_id2
-        body = {"consistencygroup": {"name": name,
-                                     "description": description,
-                                     "remove_volumes": remove_volumes, }}
-        req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app())
-
-        consistencygroup = objects.ConsistencyGroup.get_by_id(
-            self.ctxt, consistencygroup.id)
-        self.assertEqual(400, res.status_int)
-        self.assertEqual(fields.ConsistencyGroupStatus.AVAILABLE,
-                         consistencygroup.status)
-
-        consistencygroup.destroy()
-        cg2.destroy()
-
-    @mock.patch(
-        'cinder.api.openstack.wsgi.Controller.validate_name_and_description')
-    def test_update_consistencygroup_creating_cgsnapshot(self, mock_validate):
-        volume_type_id = fake.VOLUME_TYPE_ID
-        consistencygroup = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.AVAILABLE,
-            host='test_host')
-
-        # If we don't add a volume to the CG the cgsnapshot creation will fail
-        utils.create_volume(self.ctxt,
-                            consistencygroup_id=consistencygroup.id,
-                            testcase_instance=self)
-
-        cgsnapshot = utils.create_cgsnapshot(
-            self.ctxt, consistencygroup_id=consistencygroup.id)
-
-        add_volume_id = utils.create_volume(
-            self.ctxt,
-            volume_type_id=volume_type_id)['id']
-        add_volume_id2 = utils.create_volume(
-            self.ctxt,
-            volume_type_id=volume_type_id)['id']
-
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/update' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
-        req.method = 'PUT'
-        req.headers['Content-Type'] = 'application/json'
-        name = 'newcg'
-        description = 'New Consistency Group Description'
-        add_volumes = add_volume_id + "," + add_volume_id2
-        body = {"consistencygroup": {"name": name,
-                                     "description": description,
-                                     "add_volumes": add_volumes}}
-        req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app())
-
-        consistencygroup = objects.ConsistencyGroup.get_by_id(
-            self.ctxt, consistencygroup.id)
-        self.assertEqual(400, res.status_int)
-        self.assertEqual(fields.ConsistencyGroupStatus.AVAILABLE,
-                         consistencygroup.status)
-
-        consistencygroup.destroy()
-        cgsnapshot.destroy()
 
     def test_update_consistencygroup_add_volume_not_found(self):
         consistencygroup = self._create_consistencygroup(
             ctxt=self.ctxt,
             status=fields.ConsistencyGroupStatus.AVAILABLE)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/update' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/update' %
+                                  consistencygroup.id)
         req.method = 'PUT'
         req.headers['Content-Type'] = 'application/json'
         body = {"consistencygroup": {"name": None,
@@ -942,8 +741,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                      "add_volumes": "fake-volume-uuid",
                                      "remove_volumes": None, }}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -960,8 +758,8 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         consistencygroup = self._create_consistencygroup(
             ctxt=self.ctxt,
             status=fields.ConsistencyGroupStatus.AVAILABLE)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/update' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/update' %
+                                  consistencygroup.id)
         req.method = 'PUT'
         req.headers['Content-Type'] = 'application/json'
         body = {"consistencygroup": {"name": None,
@@ -969,8 +767,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                      "add_volumes": None,
                                      "remove_volumes": "fake-volume-uuid", }}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -987,8 +784,8 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         consistencygroup = self._create_consistencygroup(
             ctxt=self.ctxt,
             status=fields.ConsistencyGroupStatus.AVAILABLE)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/update' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/update' %
+                                  consistencygroup.id)
         req.method = 'PUT'
         req.headers['Content-Type'] = 'application/json'
         body = {"consistencygroup": {"name": "",
@@ -996,8 +793,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                      "add_volumes": None,
                                      "remove_volumes": None, }}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1006,7 +802,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         consistencygroup.destroy()
 
     def test_update_consistencygroup_add_volume_invalid_state(self):
-        volume_type_id = fake.VOLUME_TYPE_ID
+        volume_type_id = '123456'
         consistencygroup = self._create_consistencygroup(
             ctxt=self.ctxt,
             status=fields.ConsistencyGroupStatus.AVAILABLE)
@@ -1014,8 +810,8 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
             self.ctxt,
             volume_type_id=volume_type_id,
             status='wrong_status')['id']
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/update' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/update' %
+                                  consistencygroup.id)
         req.method = 'PUT'
         req.headers['Content-Type'] = 'application/json'
         add_volumes = add_volume_id
@@ -1024,8 +820,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                      "add_volumes": add_volumes,
                                      "remove_volumes": None, }}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1045,12 +840,12 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         consistencygroup = self._create_consistencygroup(
             ctxt=self.ctxt,
             status=fields.ConsistencyGroupStatus.AVAILABLE)
-        wrong_type = fake.VOLUME_TYPE2_ID
+        wrong_type = 'wrong-volume-type-id'
         add_volume_id = utils.create_volume(
             self.ctxt,
             volume_type_id=wrong_type)['id']
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/update' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/update' %
+                                  consistencygroup.id)
         req.method = 'PUT'
         req.headers['Content-Type'] = 'application/json'
         add_volumes = add_volume_id
@@ -1059,8 +854,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                      "add_volumes": add_volumes,
                                      "remove_volumes": None, }}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1081,9 +875,9 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
             status=fields.ConsistencyGroupStatus.AVAILABLE)
         add_volume_id = utils.create_volume(
             self.ctxt,
-            consistencygroup_id=fake.CONSISTENCY_GROUP2_ID)['id']
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/update' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+            consistencygroup_id='some_other_cg')['id']
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/update' %
+                                  consistencygroup.id)
         req.method = 'PUT'
         req.headers['Content-Type'] = 'application/json'
         add_volumes = add_volume_id
@@ -1092,8 +886,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                      "add_volumes": add_volumes,
                                      "remove_volumes": None, }}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1104,10 +897,10 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
 
     def test_update_consistencygroup_invalid_state(self):
         consistencygroup = self._create_consistencygroup(
-            status=fields.ConsistencyGroupStatus.CREATING,
+            status=fields.ConsistencyGroupStatus.IN_USE,
             ctxt=self.ctxt)
-        req = webob.Request.blank('/v2/%s/consistencygroups/%s/update' %
-                                  (fake.PROJECT_ID, consistencygroup.id))
+        req = webob.Request.blank('/v2/fake/consistencygroups/%s/update' %
+                                  consistencygroup.id)
         req.method = 'PUT'
         req.headers['Content-Type'] = 'application/json'
         body = {"consistencygroup": {"name": "new name",
@@ -1115,16 +908,14 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                      "add_volumes": None,
                                      "remove_volumes": None, }}
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
         self.assertEqual(400, res_dict['badRequest']['code'])
-        msg = (_("Invalid ConsistencyGroup: Cannot update consistency group "
-                 "%s, status must be available, and it cannot be the source "
-                 "for an ongoing CG or CG Snapshot creation.")
-               % consistencygroup.id)
+        msg = _("Invalid ConsistencyGroup: Consistency group status must be "
+                "available, but current status is: %s.") % (
+            fields.ConsistencyGroupStatus.IN_USE)
         self.assertEqual(msg, res_dict['badRequest']['message'])
 
         consistencygroup.destroy()
@@ -1132,7 +923,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
     @mock.patch(
         'cinder.api.openstack.wsgi.Controller.validate_name_and_description')
     def test_create_consistencygroup_from_src(self, mock_validate):
-        self.mock_object(volume_api.API, "create", stubs.stub_volume_create)
+        self.stubs.Set(volume_api.API, "create", stubs.stub_volume_create)
 
         consistencygroup = utils.create_consistencygroup(self.ctxt)
         volume_id = utils.create_volume(
@@ -1144,20 +935,18 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
             self.ctxt,
             volume_id,
             cgsnapshot_id=cgsnapshot.id,
-            status=fields.SnapshotStatus.AVAILABLE)
+            status='available')
 
         test_cg_name = 'test cg'
         body = {"consistencygroup-from-src": {"name": test_cg_name,
                                               "description":
                                               "Consistency Group 1",
                                               "cgsnapshot_id": cgsnapshot.id}}
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(202, res.status_int)
@@ -1187,13 +976,11 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                               "description":
                                               "Consistency Group 1",
                                               "source_cgid": source_cg.id}}
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(202, res.status_int)
@@ -1202,12 +989,12 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
 
         cg = objects.ConsistencyGroup.get_by_id(
             self.ctxt, res_dict['consistencygroup']['id'])
-        cg.destroy()
+        cg.destroy
         db.volume_destroy(self.ctxt.elevated(), volume_id)
         source_cg.destroy()
 
     def test_create_consistencygroup_from_src_both_snap_cg(self):
-        self.mock_object(volume_api.API, "create", stubs.stub_volume_create)
+        self.stubs.Set(volume_api.API, "create", stubs.stub_volume_create)
 
         consistencygroup = utils.create_consistencygroup(self.ctxt)
         volume_id = utils.create_volume(
@@ -1220,7 +1007,7 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
             self.ctxt,
             volume_id,
             cgsnapshot_id=cgsnapshot_id,
-            status=fields.SnapshotStatus.AVAILABLE)
+            status='available')
 
         test_cg_name = 'test cg'
         body = {"consistencygroup-from-src": {"name": test_cg_name,
@@ -1229,13 +1016,11 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                               "cgsnapshot_id": cgsnapshot_id,
                                               "source_cgid":
                                                   consistencygroup.id}}
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1252,13 +1037,11 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         body = {"invalid": {"name": name,
                             "description":
                             "Consistency Group 1", }}
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1271,13 +1054,11 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
         body = {"consistencygroup-from-src": {"name": name,
                                               "description":
                                               "Consistency Group 1", }}
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1295,20 +1076,18 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
             self.ctxt,
             volume_id,
             cgsnapshot_id=cgsnapshot.id,
-            status=fields.SnapshotStatus.AVAILABLE)
+            status='available')
 
         test_cg_name = 'test cg'
         body = {"consistencygroup-from-src": {"name": test_cg_name,
                                               "description":
                                               "Consistency Group 1",
                                               "cgsnapshot_id": cgsnapshot.id}}
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1336,13 +1115,11 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                               "description":
                                               "Consistency Group 1",
                                               "cgsnapshot_id": cgsnapshot.id}}
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1361,13 +1138,11 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                               "description":
                                               "Consistency Group 1",
                                               "source_cgid": source_cg.id}}
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1383,21 +1158,15 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
             consistencygroup_id=consistencygroup.id)['id']
 
         test_cg_name = 'test cg'
-        body = {
-            "consistencygroup-from-src":
-            {
-                "name": test_cg_name,
-                "description": "Consistency Group 1",
-                "source_cgid": fake.CGSNAPSHOT_ID
-            }
-        }
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        body = {"consistencygroup-from-src": {"name": test_cg_name,
+                                              "description":
+                                              "Consistency Group 1",
+                                              "cgsnapshot_id": "fake_cgsnap"}}
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(404, res.status_int)
@@ -1409,21 +1178,15 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
 
     def test_create_consistencygroup_from_src_source_cg_notfound(self):
         test_cg_name = 'test cg'
-        body = {
-            "consistencygroup-from-src":
-            {
-                "name": test_cg_name,
-                "description": "Consistency Group 1",
-                "source_cgid": fake.CONSISTENCY_GROUP_ID
-            }
-        }
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        body = {"consistencygroup-from-src": {"name": test_cg_name,
+                                              "description":
+                                              "Consistency Group 1",
+                                              "source_cgid": "fake_source_cg"}}
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(404, res.status_int)
@@ -1445,20 +1208,18 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
             self.ctxt,
             volume_id,
             cgsnapshot_id=cgsnapshot.id,
-            status=fields.SnapshotStatus.AVAILABLE)
+            status='available')
 
         test_cg_name = 'test cg'
         body = {"consistencygroup-from-src": {"name": test_cg_name,
                                               "description":
                                               "Consistency Group 1",
                                               "cgsnapshot_id": cgsnapshot.id}}
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)
@@ -1486,13 +1247,11 @@ class ConsistencyGroupsAPITestCase(test.TestCase):
                                               "description":
                                               "Consistency Group 1",
                                               "source_cgid": source_cg.id}}
-        req = webob.Request.blank('/v2/%s/consistencygroups/create_from_src' %
-                                  fake.PROJECT_ID)
+        req = webob.Request.blank('/v2/fake/consistencygroups/create_from_src')
         req.method = 'POST'
         req.headers['Content-Type'] = 'application/json'
         req.body = jsonutils.dump_as_bytes(body)
-        res = req.get_response(fakes.wsgi_app(
-            fake_auth_context=self.user_ctxt))
+        res = req.get_response(fakes.wsgi_app())
         res_dict = jsonutils.loads(res.body)
 
         self.assertEqual(400, res.status_int)

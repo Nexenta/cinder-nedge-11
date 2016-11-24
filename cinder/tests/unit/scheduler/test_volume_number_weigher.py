@@ -17,15 +17,16 @@ Tests For Volume Number Weigher.
 """
 
 import mock
+from oslo_config import cfg
 
-from cinder.common import constants
 from cinder import context
 from cinder.db.sqlalchemy import api
 from cinder.scheduler import weights
 from cinder import test
-from cinder.tests.unit import fake_constants
 from cinder.tests.unit.scheduler import fakes
 from cinder.volume import utils
+
+CONF = cfg.CONF
 
 
 def fake_volume_data_get_for_host(context, host, count_only=False):
@@ -45,18 +46,11 @@ def fake_volume_data_get_for_host(context, host, count_only=False):
 
 
 class VolumeNumberWeigherTestCase(test.TestCase):
-
     def setUp(self):
         super(VolumeNumberWeigherTestCase, self).setUp()
-        uid = fake_constants.USER_ID
-        pid = fake_constants.PROJECT_ID
-        self.context = context.RequestContext(user_id=uid,
-                                              project_id=pid,
-                                              is_admin=False,
-                                              read_deleted="no",
-                                              overwrite=False)
+        self.context = context.get_admin_context()
         self.host_manager = fakes.FakeHostManager()
-        self.weight_handler = weights.OrderedHostWeightHandler(
+        self.weight_handler = weights.HostWeightHandler(
             'cinder.scheduler.weights')
 
     def _get_weighed_host(self, hosts, weight_properties=None):
@@ -67,17 +61,14 @@ class VolumeNumberWeigherTestCase(test.TestCase):
             hosts,
             weight_properties)[0]
 
-    @mock.patch('cinder.db.sqlalchemy.api.service_get_all')
-    def _get_all_hosts(self, _mock_service_get_all, disabled=False):
+    @mock.patch('cinder.db.sqlalchemy.api.service_get_all_by_topic')
+    def _get_all_hosts(self, _mock_service_get_all_by_topic, disabled=False):
         ctxt = context.get_admin_context()
-        fakes.mock_host_manager_db_calls(_mock_service_get_all,
+        fakes.mock_host_manager_db_calls(_mock_service_get_all_by_topic,
                                          disabled=disabled)
         host_states = self.host_manager.get_all_host_states(ctxt)
-        _mock_service_get_all.assert_called_once_with(
-            ctxt,
-            None,  # backend_match_level
-            topic=constants.VOLUME_TOPIC,
-            disabled=disabled)
+        _mock_service_get_all_by_topic.assert_called_once_with(
+            ctxt, CONF.volume_topic, disabled=disabled)
         return host_states
 
     def test_volume_number_weight_multiplier1(self):

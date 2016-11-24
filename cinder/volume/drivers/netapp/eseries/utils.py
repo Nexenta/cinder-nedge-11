@@ -20,8 +20,11 @@ import base64
 import binascii
 import uuid
 
+from oslo_log import log as logging
 import six
 
+
+LOG = logging.getLogger(__name__)
 
 MULTI_ATTACH_HOST_GROUP_NAME = 'cinder-multi-attach'
 NULL_REF = '0000000000000000000000000000000000000000'

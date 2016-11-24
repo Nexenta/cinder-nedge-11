@@ -21,17 +21,14 @@ from oslo_utils import units
 
 from cinder import exception
 from cinder.i18n import _, _LE, _LI
-from cinder import interface
 from cinder.volume import driver
 from cinder.volume.drivers.nexenta.nexentaedge import jsonrpc
 from cinder.volume.drivers.nexenta import options
-from cinder.volume.drivers.nexenta import utils as nexenta_utils
 
 
 LOG = logging.getLogger(__name__)
 
 
-@interface.volumedriver
 class NexentaEdgeISCSIDriver(driver.ISCSIDriver):
     """Executes volume driver commands on NexentaEdge cluster.
 
@@ -42,9 +39,6 @@ class NexentaEdgeISCSIDriver(driver.ISCSIDriver):
     """
 
     VERSION = '1.0.2'
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Nexenta_Edge_CI"
 
     def __init__(self, *args, **kwargs):
         super(NexentaEdgeISCSIDriver, self).__init__(*args, **kwargs)
@@ -121,21 +115,19 @@ class NexentaEdgeISCSIDriver(driver.ISCSIDriver):
                             break
                     if not found:
                         raise exception.VolumeBackendAPIException(
-                            message=_("nexenta_client_address doesn't match "
-                                      "any VIPs provided by service: {}"
-                                      ).format(
-                                ", ".join([host['ip'] for host in vips])))
+                            _("nexenta_client_address doesn't match any VIPs "
+                              "provided by service: {}".format(
+                                ", ".join([host['ip'] for host in vips]))))
                 else:
                     if len(vips) == 1:
                         target_vip = vips[0]['ip']
-                        self.ha_vip = '/'.join(
-                            (vips[0]['ip'], vips[0]['mask']))
+                        self.ha_vip = '/'.join((vips[0]['ip'], vips[0]['mask']))
             if not target_vip:
                 LOG.error(_LE('No VIP configured for service %s'),
                           self.iscsi_service)
                 raise exception.VolumeBackendAPIException(
-                    message=_('No service VIP configured and '
-                              'no nexenta_client_address'))
+                    _('No service VIP configured and '
+                      'no nexenta_client_address'))
             self.target_vip = target_vip
         except exception.VolumeBackendAPIException:
             with excutils.save_and_reraise_exception():
@@ -177,6 +169,7 @@ class NexentaEdgeISCSIDriver(driver.ISCSIDriver):
         }
 
     def create_volume(self, volume):
+        LOG.warning(volume['name'])
         data = {
             'objectPath': self.bucket_path + '/' + volume['name'],
             'volSizeMB': int(volume['size']) * units.Ki,
@@ -198,7 +191,7 @@ class NexentaEdgeISCSIDriver(driver.ISCSIDriver):
                                            '/' + volume['name']})
         except exception.VolumeBackendAPIException:
             LOG.info(
-                _LI('Volume was already deleted from appliance, skipping.'),
+                _LI('Volume was already deleted from appliance, skipping'),
                 resource=volume)
 
     def extend_volume(self, volume, new_size):
@@ -270,8 +263,6 @@ class NexentaEdgeISCSIDriver(driver.ISCSIDriver):
         except exception.VolumeBackendAPIException:
             with excutils.save_and_reraise_exception():
                 LOG.exception(_LE('Error creating cloned volume'))
-        if volume['size'] > src_vref['size']:
-            self.extend_volume(volume, volume['size'])
 
     def create_export(self, context, volume, connector=None):
         return {'provider_location': self._get_provider_location(volume)}
@@ -286,11 +277,6 @@ class NexentaEdgeISCSIDriver(driver.ISCSIDriver):
         raise NotImplementedError
 
     def get_volume_stats(self, refresh=False):
-        resp = self.restapi.get('system/stats')
-        summary = resp['stats']['summary']
-        total = nexenta_utils.str2gib_size(summary['total_capacity'])
-        free = nexenta_utils.str2gib_size(summary['total_available'])
-
         location_info = '%(driver)s:%(host)s:%(bucket)s' % {
             'driver': self.__class__.__name__,
             'host': self._get_target_address(None),
@@ -301,8 +287,8 @@ class NexentaEdgeISCSIDriver(driver.ISCSIDriver):
             'driver_version': self.VERSION,
             'storage_protocol': 'iSCSI',
             'reserved_percentage': 0,
-            'total_capacity_gb': total,
-            'free_capacity_gb': free,
+            'total_capacity_gb': 'unknown',
+            'free_capacity_gb': 'unknown',
             'QoS_support': False,
             'volume_backend_name': self.backend_name,
             'location_info': location_info,

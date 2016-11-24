@@ -20,7 +20,6 @@ from cinder.api.openstack import wsgi
 from cinder import exception
 from cinder import test
 from cinder.tests.unit.api import fakes
-from cinder.tests.unit import fake_constants as fake
 
 
 class FakeRequest(object):
@@ -37,8 +36,7 @@ class UsedLimitsTestCase(test.TestCase):
     @mock.patch('cinder.quota.QUOTAS.get_project_quotas')
     @mock.patch('cinder.policy.enforce')
     def test_used_limits(self, _mock_policy_enforce, _mock_get_project_quotas):
-        fake_req = FakeRequest(fakes.FakeRequestContext(fake.USER_ID,
-                                                        fake.PROJECT_ID))
+        fake_req = FakeRequest(fakes.FakeRequestContext('fake', 'fake'))
         obj = {
             "limits": {
                 "rate": [],

@@ -19,32 +19,24 @@ Unit Tests for cinder.scheduler.rpcapi
 
 import copy
 
-import ddt
 import mock
 
 from cinder import context
 from cinder.scheduler import rpcapi as scheduler_rpcapi
 from cinder import test
-from cinder.tests.unit import fake_constants
-from cinder.tests.unit import fake_volume
 
 
-@ddt.ddt
 class SchedulerRpcAPITestCase(test.TestCase):
 
     def setUp(self):
         super(SchedulerRpcAPITestCase, self).setUp()
-        self.patch('oslo_messaging.RPCClient.can_send_version',
-                   return_value=True)
-        self.context = context.RequestContext('fake_user', 'fake_project')
-        self.volume_id = fake_constants.VOLUME_ID
 
     def tearDown(self):
         super(SchedulerRpcAPITestCase, self).tearDown()
 
     def _test_scheduler_api(self, method, rpc_method,
                             fanout=False, **kwargs):
-        ctxt = self.context
+        ctxt = context.RequestContext('fake_user', 'fake_project')
         rpcapi = scheduler_rpcapi.SchedulerAPI()
         expected_retval = 'foo' if rpc_method == 'call' else None
 
@@ -83,100 +75,153 @@ class SchedulerRpcAPITestCase(test.TestCase):
                 for kwarg, value in self.fake_kwargs.items():
                     self.assertEqual(expected_msg[kwarg], value)
 
-    def test_update_service_capabilities(self):
+    @mock.patch('oslo_messaging.RPCClient.can_send_version', return_value=True)
+    def test_update_service_capabilities(self, can_send_version):
         self._test_scheduler_api('update_service_capabilities',
                                  rpc_method='cast',
                                  service_name='fake_name',
                                  host='fake_host',
                                  capabilities='fake_capabilities',
                                  fanout=True,
-                                 version='3.0')
+                                 version='2.0')
+        can_send_version.assert_called_once_with('2.0')
 
-    @mock.patch('oslo_messaging.RPCClient.can_send_version', return_value=True)
+    @mock.patch('oslo_messaging.RPCClient.can_send_version',
+                return_value=False)
+    def test_update_service_capabilities_old(self, can_send_version):
+        self._test_scheduler_api('update_service_capabilities',
+                                 rpc_method='cast',
+                                 service_name='fake_name',
+                                 host='fake_host',
+                                 capabilities='fake_capabilities',
+                                 fanout=True,
+                                 version='1.0')
+        can_send_version.assert_called_once_with('2.0')
+
+    @mock.patch('oslo_messaging.RPCClient.can_send_version',
+                return_value=True)
     def test_create_volume(self, can_send_version):
         self._test_scheduler_api('create_volume',
                                  rpc_method='cast',
                                  topic='topic',
-                                 volume_id=self.volume_id,
+                                 volume_id='volume_id',
                                  snapshot_id='snapshot_id',
                                  image_id='image_id',
                                  request_spec='fake_request_spec',
                                  filter_properties='filter_properties',
-                                 volume=fake_volume.fake_volume_obj(
-                                     self.context),
-                                 version='3.0')
-        can_send_version.assert_has_calls([mock.call('3.0')])
+                                 volume='volume',
+                                 version='2.0')
+        can_send_version.assert_called_once_with('2.0')
 
     @mock.patch('oslo_messaging.RPCClient.can_send_version',
                 return_value=False)
-    def test_create_volume_serialization(self, can_send_version):
+    def test_create_volume_old(self, can_send_version):
+        # Tests backwards compatibility with older clients
         self._test_scheduler_api('create_volume',
                                  rpc_method='cast',
                                  topic='topic',
-                                 volume_id=self.volume_id,
+                                 volume_id='volume_id',
                                  snapshot_id='snapshot_id',
                                  image_id='image_id',
                                  request_spec='fake_request_spec',
                                  filter_properties='filter_properties',
-                                 volume=fake_volume.fake_volume_obj(
-                                     self.context),
-                                 version='2.0')
-        can_send_version.assert_has_calls([mock.call('3.0'), mock.call('2.2')])
+                                 version='1.2')
+        can_send_version.assert_has_calls([mock.call('2.0'), mock.call('1.9')])
 
-    def test_migrate_volume_to_host(self):
+    @mock.patch('oslo_messaging.RPCClient.can_send_version',
+                return_value=True)
+    def test_migrate_volume_to_host(self, can_send_version):
         self._test_scheduler_api('migrate_volume_to_host',
                                  rpc_method='cast',
                                  topic='topic',
-                                 volume_id=self.volume_id,
+                                 volume_id='volume_id',
                                  host='host',
                                  force_host_copy=True,
                                  request_spec='fake_request_spec',
                                  filter_properties='filter_properties',
-                                 volume=fake_volume.fake_volume_obj(
-                                     self.context),
-                                 version='3.0')
+                                 volume='volume',
+                                 version='2.0')
+        can_send_version.assert_called_once_with('2.0')
 
-    def test_retype(self):
+    @mock.patch('oslo_messaging.RPCClient.can_send_version',
+                return_value=False)
+    def test_migrate_volume_to_host_old(self, can_send_version):
+        self._test_scheduler_api('migrate_volume_to_host',
+                                 rpc_method='cast',
+                                 topic='topic',
+                                 volume_id='volume_id',
+                                 host='host',
+                                 force_host_copy=True,
+                                 request_spec='fake_request_spec',
+                                 filter_properties='filter_properties',
+                                 volume='volume',
+                                 version='1.3')
+        can_send_version.assert_has_calls([mock.call('2.0'),
+                                           mock.call('1.11')])
+
+    @mock.patch('oslo_messaging.RPCClient.can_send_version',
+                return_value=True)
+    def test_retype(self, can_send_version):
         self._test_scheduler_api('retype',
                                  rpc_method='cast',
                                  topic='topic',
-                                 volume_id=self.volume_id,
+                                 volume_id='volume_id',
                                  request_spec='fake_request_spec',
                                  filter_properties='filter_properties',
-                                 volume=fake_volume.fake_volume_obj(
-                                     self.context),
-                                 version='3.0')
+                                 volume='volume',
+                                 version='2.0')
+        can_send_version.assert_called_with('2.0')
 
-    @ddt.data('2.0', '2.1')
-    @mock.patch('oslo_messaging.RPCClient.can_send_version')
-    def test_manage_existing(self, version, can_send_version):
-        can_send_version.side_effect = lambda x: x == version
+    @mock.patch('oslo_messaging.RPCClient.can_send_version',
+                return_value=False)
+    def test_retype_old(self, can_send_version):
+        self._test_scheduler_api('retype',
+                                 rpc_method='cast',
+                                 topic='topic',
+                                 volume_id='volume_id',
+                                 request_spec='fake_request_spec',
+                                 filter_properties='filter_properties',
+                                 volume='volume',
+                                 version='1.4')
+        can_send_version.assert_has_calls([mock.call('2.0'),
+                                           mock.call('1.10')])
+
+    @mock.patch('oslo_messaging.RPCClient.can_send_version', return_value=True)
+    def test_manage_existing(self, can_send_version):
         self._test_scheduler_api('manage_existing',
                                  rpc_method='cast',
                                  topic='topic',
-                                 volume_id=self.volume_id,
+                                 volume_id='volume_id',
                                  request_spec='fake_request_spec',
                                  filter_properties='filter_properties',
-                                 volume=fake_volume.fake_volume_obj(
-                                     self.context),
-                                 version=version)
-        can_send_version.assert_has_calls([mock.call('3.0'), mock.call('2.1')])
+                                 version='2.0')
+        can_send_version.assert_called_with('2.0')
 
-    def test_get_pools(self):
+    @mock.patch('oslo_messaging.RPCClient.can_send_version',
+                return_value=False)
+    def test_manage_existing_old(self, can_send_version):
+        self._test_scheduler_api('manage_existing',
+                                 rpc_method='cast',
+                                 topic='topic',
+                                 volume_id='volume_id',
+                                 request_spec='fake_request_spec',
+                                 filter_properties='filter_properties',
+                                 version='1.5')
+        can_send_version.assert_called_with('2.0')
+
+    @mock.patch('oslo_messaging.RPCClient.can_send_version', return_value=True)
+    def test_get_pools(self, can_send_version):
         self._test_scheduler_api('get_pools',
                                  rpc_method='call',
                                  filters=None,
-                                 version='3.0')
+                                 version='2.0')
+        can_send_version.assert_called_with('2.0')
 
-    def test_create_group(self):
-        self._test_scheduler_api('create_group',
-                                 rpc_method='cast',
-                                 topic='topic',
-                                 group='group',
-                                 group_spec='group_spec_p',
-                                 request_spec_list=['fake_request_spec_list'],
-                                 group_filter_properties=
-                                 'fake_group_filter_properties',
-                                 filter_properties_list=
-                                 ['fake_filter_properties_list'],
-                                 version='3.0')
+    @mock.patch('oslo_messaging.RPCClient.can_send_version',
+                return_value=False)
+    def test_get_pools_old(self, can_send_version):
+        self._test_scheduler_api('get_pools',
+                                 rpc_method='call',
+                                 filters=None,
+                                 version='1.7')
+        can_send_version.assert_called_with('2.0')

@@ -2,12 +2,14 @@
 cinder-manage
 =============
 
-------------------------------------------
+------------------------------------------------------
 Control and manage OpenStack block storage
-------------------------------------------
+------------------------------------------------------
 
 :Author: openstack@lists.openstack.org
+:Date:   2015-11-03
 :Copyright: OpenStack Foundation
+:Version: 7.0.0
 :Manual section: 1
 :Manual group: cloud computing
 

@@ -15,7 +15,6 @@
 
 from cinder import context
 from cinder import exception
-from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit.volume.drivers.emc import scaleio
 from cinder.tests.unit.volume.drivers.emc.scaleio import mocks
@@ -35,9 +34,9 @@ class TestManageExisting(scaleio.TestScaleIODriver):
         super(TestManageExisting, self).setUp()
         ctx = context.RequestContext('fake', 'fake', auth_token=True)
         self.volume = fake_volume.fake_volume_obj(
-            ctx, **{'provider_id': fake.PROVIDER_ID})
+            ctx, **{'provider_id': 'pid_1'})
         self.volume_attached = fake_volume.fake_volume_obj(
-            ctx, **{'provider_id': fake.PROVIDER2_ID})
+            ctx, **{'provider_id': 'pid_2'})
         self.volume_no_provider_id = fake_volume.fake_volume_obj(ctx)
         self.volume_name_2x_enc = urllib.parse.quote(
             urllib.parse.quote(self.driver._id_to_base64(self.volume.id))
@@ -47,8 +46,8 @@ class TestManageExisting(scaleio.TestScaleIODriver):
             self.RESPONSE_MODE.Valid: {
                 'instances/Volume::' + self.volume['provider_id']:
                     mocks.MockHTTPSResponse({
-                        'id': fake.PROVIDER_ID,
-                        'sizeInKb': 8000000,
+                        'id': 'pid_1',
+                        'sizeInKb': 8388608,
                         'mappedSdcInfo': None
                     }, 200)
             },
@@ -60,7 +59,7 @@ class TestManageExisting(scaleio.TestScaleIODriver):
                     }, 401),
                 'instances/Volume::' + self.volume_attached['provider_id']:
                     mocks.MockHTTPSResponse({
-                        'id': fake.PROVIDER2_ID,
+                        'id': 'pid_2',
                         'sizeInKb': 8388608,
                         'mappedSdcInfo': 'Mapped'
                     }, 200)
@@ -75,7 +74,7 @@ class TestManageExisting(scaleio.TestScaleIODriver):
 
     def test_no_type_id(self):
         self.volume['volume_type_id'] = None
-        existing_ref = {'source-id': fake.PROVIDER_ID}
+        existing_ref = {'source-id': 'pid_1'}
         self.assertRaises(exception.ManageExistingVolumeTypeMismatch,
                           self.driver.manage_existing, self.volume,
                           existing_ref)
@@ -85,8 +84,8 @@ class TestManageExisting(scaleio.TestScaleIODriver):
         'get_volume_type',
         return_value={'extra_specs': {'volume_backend_name': 'ScaleIO'}})
     def test_volume_not_found(self, _mock_volume_type):
-        self.volume['volume_type_id'] = fake.VOLUME_TYPE_ID
-        existing_ref = {'source-id': fake.PROVIDER_ID}
+        self.volume['volume_type_id'] = 'ScaleIO'
+        existing_ref = {'source-id': 'pid_1'}
         self.set_https_response_mode(self.RESPONSE_MODE.BadStatus)
         self.assertRaises(exception.ManageExistingInvalidReference,
                           self.driver.manage_existing, self.volume,
@@ -97,8 +96,8 @@ class TestManageExisting(scaleio.TestScaleIODriver):
         'get_volume_type',
         return_value={'extra_specs': {'volume_backend_name': 'ScaleIO'}})
     def test_volume_attached(self, _mock_volume_type):
-        self.volume_attached['volume_type_id'] = fake.VOLUME_TYPE_ID
-        existing_ref = {'source-id': fake.PROVIDER2_ID}
+        self.volume_attached['volume_type_id'] = 'ScaleIO'
+        existing_ref = {'source-id': 'pid_2'}
         self.set_https_response_mode(self.RESPONSE_MODE.BadStatus)
         self.assertRaises(exception.ManageExistingInvalidReference,
                           self.driver.manage_existing, self.volume_attached,
@@ -109,8 +108,8 @@ class TestManageExisting(scaleio.TestScaleIODriver):
         'get_volume_type',
         return_value={'extra_specs': {'volume_backend_name': 'ScaleIO'}})
     def test_manage_get_size_calc(self, _mock_volume_type):
-        self.volume['volume_type_id'] = fake.VOLUME_TYPE_ID
-        existing_ref = {'source-id': fake.PROVIDER_ID}
+        self.volume['volume_type_id'] = 'ScaleIO'
+        existing_ref = {'source-id': 'pid_1'}
         self.set_https_response_mode(self.RESPONSE_MODE.Valid)
         result = self.driver.manage_existing_get_size(self.volume,
                                                       existing_ref)
@@ -121,7 +120,7 @@ class TestManageExisting(scaleio.TestScaleIODriver):
         'get_volume_type',
         return_value={'extra_specs': {'volume_backend_name': 'ScaleIO'}})
     def test_manage_existing_valid(self, _mock_volume_type):
-        self.volume['volume_type_id'] = fake.VOLUME_TYPE_ID
-        existing_ref = {'source-id': fake.PROVIDER_ID}
+        self.volume['volume_type_id'] = 'ScaleIO'
+        existing_ref = {'source-id': 'pid_1'}
         result = self.driver.manage_existing(self.volume, existing_ref)
-        self.assertEqual(fake.PROVIDER_ID, result['provider_id'])
+        self.assertEqual('pid_1', result['provider_id'])

@@ -31,12 +31,10 @@ if os.name == 'nt':
 else:
     eventlet.monkey_patch()
 
-import shlex
 import sys
 
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_privsep import priv_context
 from oslo_reports import guru_meditation_report as gmr
 from oslo_reports import opts as gmr_opts
 
@@ -46,27 +44,17 @@ i18n.enable_lazy()
 # Need to register global_opts
 from cinder.common import config  # noqa
 from cinder.db import api as session
-from cinder.i18n import _, _LW
+from cinder.i18n import _
 from cinder import service
 from cinder import utils
 from cinder import version
 
 
-CONF = cfg.CONF
-
 deprecated_host_opt = cfg.DeprecatedOpt('host')
 host_opt = cfg.StrOpt('backend_host', help='Backend override of host value.',
                       deprecated_opts=[deprecated_host_opt])
-CONF.register_cli_opt(host_opt)
-
-# TODO(geguileo): Once we complete the work on A-A update the option's help.
-cluster_opt = cfg.StrOpt('cluster',
-                         default=None,
-                         help='Name of this cluster.  Used to group volume '
-                              'hosts that share the same backend '
-                              'configurations to work in HA Active-Active '
-                              'mode.  Active-Active is not yet supported.')
-CONF.register_opt(cluster_opt)
+cfg.CONF.register_cli_opt(host_opt)
+CONF = cfg.CONF
 
 
 def main():
@@ -76,7 +64,6 @@ def main():
          version=version.version_string())
     logging.setup(CONF, "cinder")
     python_logging.captureWarnings(True)
-    priv_context.init(root_helper=shlex.split(utils.get_root_helper()))
     utils.monkey_patch()
     gmr.TextGuruMeditation.setup_autorun(version, conf=CONF)
     launcher = service.get_launcher()
@@ -84,20 +71,14 @@ def main():
     service_started = False
 
     if CONF.enabled_backends:
-        for backend in filter(None, CONF.enabled_backends):
+        for backend in CONF.enabled_backends:
             CONF.register_opt(host_opt, group=backend)
             backend_host = getattr(CONF, backend).backend_host
             host = "%s@%s" % (backend_host or CONF.host, backend)
-            # We also want to set cluster to None on empty strings, and we
-            # ignore leading and trailing spaces.
-            cluster = CONF.cluster and CONF.cluster.strip()
-            cluster = (cluster or None) and '%s@%s' % (cluster, backend)
             try:
                 server = service.Service.create(host=host,
                                                 service_name=backend,
-                                                binary='cinder-volume',
-                                                coordination=True,
-                                                cluster=cluster)
+                                                binary='cinder-volume')
             except Exception:
                 msg = _('Volume service %s failed to start.') % host
                 LOG.exception(msg)
@@ -109,13 +90,7 @@ def main():
                 launcher.launch_service(server)
                 service_started = True
     else:
-        LOG.warning(_LW('Configuration for cinder-volume does not specify '
-                        '"enabled_backends", using DEFAULT as backend. '
-                        'Support for DEFAULT section to configure drivers '
-                        'will be removed in the next release.'))
-        server = service.Service.create(binary='cinder-volume',
-                                        coordination=True,
-                                        cluster=CONF.cluster)
+        server = service.Service.create(binary='cinder-volume')
         launcher.launch_service(server)
         service_started = True
 

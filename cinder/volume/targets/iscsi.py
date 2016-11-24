@@ -192,7 +192,7 @@ class ISCSITarget(driver.Target):
 
         # Verify we haven't setup a CHAP creds file already
         # if DNE no big deal, we'll just create it
-        chap_auth = self._get_target_chap_auth(context, volume)
+        chap_auth = self._get_target_chap_auth(context, iscsi_name)
         if not chap_auth:
             chap_auth = (vutils.generate_username(),
                          vutils.generate_password())
@@ -249,7 +249,12 @@ class ISCSITarget(driver.Target):
         iscsi_name = "%s%s" % (self.configuration.iscsi_target_prefix,
                                volume['name'])
 
-        chap_auth = self._get_target_chap_auth(context, volume)
+        # Verify we haven't setup a CHAP creds file already
+        # if DNE no big deal, we'll just create it
+        chap_auth = self._get_target_chap_auth(context, iscsi_name)
+        if not chap_auth:
+            LOG.info(_LI("Skipping ensure_export. No iscsi_target "
+                         "provision for volume: %s"), volume['id'])
 
         # Get portals ips and port
         portals_config = self._get_portals_config()
@@ -316,16 +321,17 @@ class ISCSITarget(driver.Target):
         if tid is None:
             raise exception.NotFound()
 
-    def _get_target_chap_auth(self, context, volume):
+    def _get_target_chap_auth(self, context, iscsi_name):
         """Get the current chap auth username and password."""
         try:
-            # Query DB to get latest state of volume
-            volume_info = self.db.volume_get(context, volume['id'])
+            # 'iscsi_name': 'iqn.2010-10.org.openstack:volume-00000001'
+            vol_id = iscsi_name.split(':volume-')[1]
+            volume_info = self.db.volume_get(context, vol_id)
             # 'provider_auth': 'CHAP user_id password'
             if volume_info['provider_auth']:
                 return tuple(volume_info['provider_auth'].split(' ', 3)[1:])
         except exception.NotFound:
-            LOG.debug('Failed to get CHAP auth from DB for %s.', volume['id'])
+            LOG.debug('Failed to get CHAP auth from DB for %s.', vol_id)
 
     @abc.abstractmethod
     def _get_target_and_lun(self, context, volume):
@@ -358,6 +364,9 @@ class SanISCSITarget(ISCSITarget):
     and local block devices when we create and manage our own targets.
 
     """
+    def __init__(self, *args, **kwargs):
+        super(SanISCSITarget, self).__init__(*args, **kwargs)
+
     @abc.abstractmethod
     def create_export(self, context, volume, volume_path):
         pass
@@ -383,7 +392,7 @@ class SanISCSITarget(ISCSITarget):
     def _get_target_and_lun(self, context, volume):
         pass
 
-    def _get_target_chap_auth(self, context, volume):
+    def _get_target_chap_auth(self, context, iscsi_name):
         pass
 
     def create_iscsi_target(self, name, tid, lun, path,

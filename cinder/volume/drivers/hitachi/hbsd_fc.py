@@ -26,7 +26,6 @@ import six
 
 from cinder import exception
 from cinder.i18n import _LI, _LW
-from cinder import interface
 from cinder import utils
 import cinder.volume.driver
 from cinder.volume.drivers.hitachi import hbsd_basiclib as basic_lib
@@ -45,12 +44,8 @@ CONF = cfg.CONF
 CONF.register_opts(volume_opts)
 
 
-@interface.volumedriver
 class HBSDFCDriver(cinder.volume.driver.FibreChannelDriver):
     VERSION = common.VERSION
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = ["Hitachi_HBSD_CI", "Hitachi_HBSD2_CI"]
 
     def __init__(self, *args, **kwargs):
         os.environ['LANG'] = 'C'

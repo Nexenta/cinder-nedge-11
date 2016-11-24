@@ -119,12 +119,7 @@ class NetAppBlockStorage7modeLibrary(block_base.NetAppBlockStorageLibrary):
                     'Ensure that the configuration option '
                     'netapp_pool_name_search_pattern is set correctly.')
             raise exception.NetAppDriverException(msg)
-        self._add_looping_tasks()
         super(NetAppBlockStorage7modeLibrary, self).check_for_setup_error()
-
-    def _add_looping_tasks(self):
-        """Add tasks that need to be executed at a fixed interval."""
-        super(NetAppBlockStorage7modeLibrary, self)._add_looping_tasks()
 
     def _create_lun(self, volume_name, lun_name, size,
                     metadata, qos_policy_group_name=None):
@@ -199,12 +194,8 @@ class NetAppBlockStorage7modeLibrary(block_base.NetAppBlockStorageLibrary):
 
     def _clone_lun(self, name, new_name, space_reserved=None,
                    qos_policy_group_name=None, src_block=0, dest_block=0,
-                   block_count=0, source_snapshot=None, is_snapshot=False):
-        """Clone LUN with the given handle to the new name.
-
-        :param: is_snapshot Not used, present for method signature consistency
-        """
-
+                   block_count=0, source_snapshot=None):
+        """Clone LUN with the given handle to the new name."""
         if not space_reserved:
             space_reserved = self.lun_space_reservation
         if qos_policy_group_name is not None:
@@ -306,7 +297,6 @@ class NetAppBlockStorage7modeLibrary(block_base.NetAppBlockStorageLibrary):
             pool = dict()
             pool['pool_name'] = volume_name
             pool['QoS_support'] = False
-            pool['multiattach'] = True
             pool['reserved_percentage'] = (
                 self.reserved_percentage)
             pool['max_over_subscription_ratio'] = (
@@ -449,7 +439,3 @@ class NetAppBlockStorage7modeLibrary(block_base.NetAppBlockStorageLibrary):
 
         return (super(NetAppBlockStorage7modeLibrary, self)
                 ._get_preferred_target_from_list(target_details_list))
-
-    def _get_backing_flexvol_names(self):
-        """Returns a list of backing flexvol names."""
-        return self.volume_list or []

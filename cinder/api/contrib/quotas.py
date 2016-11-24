@@ -15,10 +15,9 @@
 
 import webob
 
-from oslo_utils import strutils
-
 from cinder.api import extensions
 from cinder.api.openstack import wsgi
+from cinder.api import xmlutil
 from cinder import db
 from cinder.db.sqlalchemy import api as sqlalchemy_api
 from cinder import exception
@@ -27,12 +26,29 @@ from cinder import quota
 from cinder import quota_utils
 from cinder import utils
 
+from oslo_config import cfg
+from oslo_utils import strutils
+
+
+CONF = cfg.CONF
 QUOTAS = quota.QUOTAS
 NON_QUOTA_KEYS = ['tenant_id', 'id']
 
 authorize_update = extensions.extension_authorizer('volume', 'quotas:update')
 authorize_show = extensions.extension_authorizer('volume', 'quotas:show')
 authorize_delete = extensions.extension_authorizer('volume', 'quotas:delete')
+
+
+class QuotaTemplate(xmlutil.TemplateBuilder):
+    def construct(self):
+        root = xmlutil.TemplateElement('quota_set', selector='quota_set')
+        root.set('id')
+
+        for resource in QUOTAS.resources:
+            elem = xmlutil.SubTemplateElement(root, resource)
+            elem.text = resource
+
+        return xmlutil.MasterTemplate(root, 1)
 
 
 class QuotaSetsController(wsgi.Controller):
@@ -148,6 +164,7 @@ class QuotaSetsController(wsgi.Controller):
                     return True
         return False
 
+    @wsgi.serializers(xml=QuotaTemplate)
     def show(self, req, id):
         """Show quota for a particular tenant
 
@@ -165,7 +182,7 @@ class QuotaSetsController(wsgi.Controller):
         target_project_id = id
 
         if not hasattr(params, '__call__') and 'usage' in params:
-            usage = utils.get_bool_param('usage', params)
+            usage = strutils.bool_from_string(params['usage'])
         else:
             usage = False
 
@@ -190,6 +207,7 @@ class QuotaSetsController(wsgi.Controller):
         quotas = self._get_quotas(context, target_project_id, usage)
         return self._format_quota_set(target_project_id, quotas)
 
+    @wsgi.serializers(xml=QuotaTemplate)
     def update(self, req, id, body):
         """Update Quota for a particular tenant
 
@@ -280,7 +298,7 @@ class QuotaSetsController(wsgi.Controller):
                 except exception.OverQuota as e:
                     if reservations:
                         db.reservation_rollback(context, reservations)
-                    raise webob.exc.HTTPBadRequest(explanation=e.msg)
+                    raise webob.exc.HTTPBadRequest(explanation=e.message)
 
             valid_quotas[key] = value
 
@@ -330,6 +348,7 @@ class QuotaSetsController(wsgi.Controller):
 
         return reservations
 
+    @wsgi.serializers(xml=QuotaTemplate)
     def defaults(self, req, id):
         context = req.environ['cinder.context']
         authorize_show(context)
@@ -337,6 +356,7 @@ class QuotaSetsController(wsgi.Controller):
         return self._format_quota_set(id, QUOTAS.get_defaults(
             context, project_id=id))
 
+    @wsgi.serializers(xml=QuotaTemplate)
     def delete(self, req, id):
         """Delete Quota for a particular tenant.
 
@@ -427,6 +447,7 @@ class Quotas(extensions.ExtensionDescriptor):
 
     name = "Quotas"
     alias = "os-quota-sets"
+    namespace = "http://docs.openstack.org/volume/ext/quotas-sets/api/v1.1"
     updated = "2011-08-08T00:00:00+00:00"
 
     def get_resources(self):

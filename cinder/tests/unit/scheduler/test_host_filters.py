@@ -15,7 +15,6 @@
 Tests For Scheduler Host Filters.
 """
 
-import ddt
 import mock
 from oslo_serialization import jsonutils
 from requests import exceptions as request_exceptions
@@ -25,7 +24,6 @@ from cinder import context
 from cinder import db
 from cinder import exception
 from cinder.scheduler import filters
-from cinder.scheduler.filters import extra_specs_ops
 from cinder import test
 from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit.scheduler import fakes
@@ -37,7 +35,7 @@ class HostFiltersTestCase(test.TestCase):
 
     def setUp(self):
         super(HostFiltersTestCase, self).setUp()
-        self.context = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        self.context = context.RequestContext(fake.user_id, fake.project_id)
         # This has a side effect of testing 'get_filter_classes'
         # when specifying a method (in this case, our standard filters)
         filter_handler = filters.HostFilterHandler('cinder.scheduler.filters')
@@ -47,7 +45,6 @@ class HostFiltersTestCase(test.TestCase):
             self.class_map[cls.__name__] = cls
 
 
-@ddt.ddt
 class CapacityFilterTestCase(HostFiltersTestCase):
     def setUp(self):
         super(CapacityFilterTestCase, self).setUp()
@@ -498,33 +495,6 @@ class CapacityFilterTestCase(HostFiltersTestCase):
                                  '<is> True',
                              'capabilities:thick_provisioning_support':
                                  '<is> True'}
-        service = {'disabled': False}
-        host = fakes.FakeHostState('host1',
-                                   {'total_capacity_gb': 500,
-                                    'free_capacity_gb': 100,
-                                    'provisioned_capacity_gb': 400,
-                                    'max_over_subscription_ratio': 2.0,
-                                    'reserved_percentage': 0,
-                                    'thin_provisioning_support': True,
-                                    'thick_provisioning_support': True,
-                                    'updated_at': None,
-                                    'service': service})
-        self.assertTrue(filt_cls.host_passes(host, filter_properties))
-
-    @ddt.data(
-        {'volume_type': {'extra_specs': {'provisioning:type': 'thick'}}},
-        {'volume_type': {'extra_specs': {'provisioning:type': 'thin'}}},
-        {'volume_type': {'extra_specs': {}}},
-        {'volume_type': {}},
-        {'volume_type': None},
-    )
-    @ddt.unpack
-    @mock.patch('cinder.utils.service_is_up')
-    def test_filter_provisioning_type(self, _mock_serv_is_up, volume_type):
-        _mock_serv_is_up.return_value = True
-        filt_cls = self.class_map['CapacityFilter']()
-        filter_properties = {'size': 100,
-                             'volume_type': volume_type}
         service = {'disabled': False}
         host = fakes.FakeHostState('host1',
                                    {'total_capacity_gb': 500,
@@ -1025,11 +995,13 @@ class InstanceLocalityFilterTestCase(HostFiltersTestCase):
         filter_properties = {'context': self.context, 'size': 100}
         self.assertTrue(filt_cls.host_passes(host, filter_properties))
 
-    @mock.patch('cinder.compute.nova.novaclient')
-    def test_nova_timeout(self, mock_novaclient):
+    @mock.patch('novaclient.client.discover_extensions')
+    @mock.patch('requests.request')
+    def test_nova_timeout(self, _mock_request, fake_extensions):
         # Simulate a HTTP timeout
-        mock_show_all = mock_novaclient.return_value.list_extensions.show_all
-        mock_show_all.side_effect = request_exceptions.Timeout
+        _mock_request.side_effect = request_exceptions.Timeout
+        fake_extensions.return_value = (
+            fakes.FakeNovaClient().list_extensions.show_all())
 
         filt_cls = self.class_map['InstanceLocalityFilter']()
         host = fakes.FakeHostState('host1', {})
@@ -1053,7 +1025,7 @@ class TestBogusFilter(object):
 class ExtraSpecsOpsTestCase(test.TestCase):
     def _do_extra_specs_ops_test(self, value, req, matches):
         assertion = self.assertTrue if matches else self.assertFalse
-        assertion(extra_specs_ops.match(value, req))
+        assertion(filters.extra_specs_ops.match(value, req))
 
     def test_extra_specs_matches_simple(self):
         self._do_extra_specs_ops_test(
@@ -1265,20 +1237,7 @@ class ExtraSpecsOpsTestCase(test.TestCase):
             req='>= 3',
             matches=False)
 
-    def test_extra_specs_fails_none_req(self):
-        self._do_extra_specs_ops_test(
-            value='foo',
-            req=None,
-            matches=False)
 
-    def test_extra_specs_matches_none_req(self):
-        self._do_extra_specs_ops_test(
-            value=None,
-            req=None,
-            matches=True)
-
-
-@ddt.ddt
 class BasicFiltersTestCase(HostFiltersTestCase):
     """Test case for host filters."""
 
@@ -1290,10 +1249,10 @@ class BasicFiltersTestCase(HostFiltersTestCase):
 
     def test_all_filters(self):
         # Double check at least a couple of known filters exist
-        self.assertIn('JsonFilter', self.class_map)
-        self.assertIn('CapabilitiesFilter', self.class_map)
-        self.assertIn('AvailabilityZoneFilter', self.class_map)
-        self.assertIn('IgnoreAttemptedHostsFilter', self.class_map)
+        self.assertTrue('JsonFilter' in self.class_map)
+        self.assertTrue('CapabilitiesFilter' in self.class_map)
+        self.assertTrue('AvailabilityZoneFilter' in self.class_map)
+        self.assertTrue('IgnoreAttemptedHostsFilter' in self.class_map)
 
     def _do_test_type_filter_extra_specs(self, ecaps, especs, passes):
         filt_cls = self.class_map['CapabilitiesFilter']()
@@ -1333,31 +1292,6 @@ class BasicFiltersTestCase(HostFiltersTestCase):
             especs={'opt1': '>= 2', 'opt2': '>= 8'},
             passes=False)
 
-    def test_capability_filter_passes_extra_specs_list_simple(self):
-        self._do_test_type_filter_extra_specs(
-            ecaps={'opt1': ['1', '2'], 'opt2': '2'},
-            especs={'opt1': '1', 'opt2': '2'},
-            passes=True)
-
-    @ddt.data('<is> True', '<is> False')
-    def test_capability_filter_passes_extra_specs_list_complex(self, opt1):
-        self._do_test_type_filter_extra_specs(
-            ecaps={'opt1': [True, False], 'opt2': ['1', '2']},
-            especs={'opt1': opt1, 'opt2': '<= 8'},
-            passes=True)
-
-    def test_capability_filter_fails_extra_specs_list_simple(self):
-        self._do_test_type_filter_extra_specs(
-            ecaps={'opt1': ['1', '2'], 'opt2': ['2']},
-            especs={'opt1': '3', 'opt2': '2'},
-            passes=False)
-
-    def test_capability_filter_fails_extra_specs_list_complex(self):
-        self._do_test_type_filter_extra_specs(
-            ecaps={'opt1': [True, False], 'opt2': ['1', '2']},
-            especs={'opt1': 'fake', 'opt2': '<= 8'},
-            passes=False)
-
     def test_capability_filter_passes_scope_extra_specs(self):
         self._do_test_type_filter_extra_specs(
             ecaps={'scope_lv1': {'opt1': 10}},
@@ -1383,74 +1317,10 @@ class BasicFiltersTestCase(HostFiltersTestCase):
             especs={'capabilities:scope_lv0:scope_lv1:scope_lv2:opt1': '>= 2'},
             passes=True)
 
-    def test_capability_filter_fails_unenough_level_scope_extra_specs(self):
-        self._do_test_type_filter_extra_specs(
-            ecaps={'scope_lv0': {'scope_lv1': None}},
-            especs={'capabilities:scope_lv0:scope_lv1:scope_lv2:opt1': '>= 2'},
-            passes=False)
-
     def test_capability_filter_fails_wrong_scope_extra_specs(self):
         self._do_test_type_filter_extra_specs(
             ecaps={'scope_lv0': {'opt1': 10}},
             especs={'capabilities:scope_lv1:opt1': '>= 2'},
-            passes=False)
-
-    def test_capability_filter_passes_none_extra_specs(self):
-        self._do_test_type_filter_extra_specs(
-            ecaps={'scope_lv0': {'opt1': None}},
-            especs={'capabilities:scope_lv0:opt1': None},
-            passes=True)
-
-    def test_capability_filter_fails_none_extra_specs(self):
-        self._do_test_type_filter_extra_specs(
-            ecaps={'scope_lv0': {'opt1': 10}},
-            especs={'capabilities:scope_lv0:opt1': None},
-            passes=False)
-
-    def test_capability_filter_fails_none_caps(self):
-        self._do_test_type_filter_extra_specs(
-            ecaps={'scope_lv0': {'opt1': None}},
-            especs={'capabilities:scope_lv0:opt1': 'foo'},
-            passes=False)
-
-    def test_capability_filter_passes_multi_level_scope_extra_specs_list(self):
-        self._do_test_type_filter_extra_specs(
-            ecaps={
-                'scope_lv0': {
-                    'scope_lv1': {
-                        'scope_lv2': {
-                            'opt1': [True, False],
-                        },
-                    },
-                },
-            },
-            especs={
-                'capabilities:scope_lv0:scope_lv1:scope_lv2:opt1': '<is> True',
-            },
-            passes=True)
-
-    def test_capability_filter_fails_multi_level_scope_extra_specs_list(self):
-        self._do_test_type_filter_extra_specs(
-            ecaps={
-                'scope_lv0': {
-                    'scope_lv1': {
-                        'scope_lv2': {
-                            'opt1': [True, False],
-                            'opt2': ['1', '2'],
-                        },
-                    },
-                },
-            },
-            especs={
-                'capabilities:scope_lv0:scope_lv1:scope_lv2:opt1': '<is> True',
-                'capabilities:scope_lv0:scope_lv1:scope_lv2:opt2': '3',
-            },
-            passes=False)
-
-    def test_capability_filter_fails_wrong_scope_extra_specs_list(self):
-        self._do_test_type_filter_extra_specs(
-            ecaps={'scope_lv0': {'opt1': [True, False]}},
-            especs={'capabilities:scope_lv1:opt1': '<is> True'},
             passes=False)
 
     def test_json_filter_passes(self):

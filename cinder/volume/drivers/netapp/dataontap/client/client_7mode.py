@@ -14,6 +14,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+
+import copy
 import math
 import time
 
@@ -52,6 +54,45 @@ class Client(client_base.Client):
 
         ontapi_1_20 = ontapi_version >= (1, 20)
         self.features.add_feature('SYSTEM_METRICS', supported=ontapi_1_20)
+
+    def _invoke_vfiler_api(self, na_element, vfiler):
+        server = copy.copy(self.connection)
+        server.set_vfiler(vfiler)
+        result = server.invoke_successfully(na_element, True)
+        return result
+
+    def _invoke_7mode_iterator_getter(self, start_api_name, next_api_name,
+                                      end_api_name, record_container_tag_name,
+                                      maximum=100):
+        """Invoke a 7-mode iterator-style getter API."""
+        data = []
+
+        start_api = netapp_api.NaElement(start_api_name)
+        start_result = self.connection.invoke_successfully(start_api)
+        tag = start_result.get_child_content('tag')
+        if not tag:
+            return data
+
+        try:
+            while True:
+                next_api = netapp_api.NaElement(next_api_name)
+                next_api.add_new_child('tag', tag)
+                next_api.add_new_child('maximum', six.text_type(maximum))
+                next_result = self.connection.invoke_successfully(next_api)
+                records = next_result.get_child_content('records') or 0
+                if int(records) == 0:
+                    break
+
+                record_container = next_result.get_child_by_name(
+                    record_container_tag_name) or netapp_api.NaElement('none')
+
+                data.extend(record_container.get_children())
+        finally:
+            end_api = netapp_api.NaElement(end_api_name)
+            end_api.add_new_child('tag', tag)
+            self.connection.invoke_successfully(end_api)
+
+        return data
 
     def get_iscsi_target_details(self):
         """Gets the iSCSI target portal details."""
@@ -326,19 +367,14 @@ class Client(client_base.Client):
         raise exception.NotFound(_('No storage path found for export path %s')
                                  % (export_path))
 
-    def clone_file(self, src_path, dest_path, source_snapshot=None):
+    def clone_file(self, src_path, dest_path):
         LOG.debug("Cloning with src %(src_path)s, dest %(dest_path)s",
                   {'src_path': src_path, 'dest_path': dest_path})
-        zapi_args = {
-            'source-path': src_path,
-            'destination-path': dest_path,
-            'no-snap': 'true',
-        }
-        if source_snapshot:
-            zapi_args['snapshot-name'] = source_snapshot
-
         clone_start = netapp_api.NaElement.create_node_with_children(
-            'clone-start', **zapi_args)
+            'clone-start',
+            **{'source-path': src_path,
+               'destination-path': dest_path,
+               'no-snap': 'true'})
         result = self.connection.invoke_successfully(clone_start,
                                                      enable_tunneling=True)
         clone_id_el = result.get_child_by_name('clone-id')
@@ -429,14 +465,12 @@ class Client(client_base.Client):
         flexvol_info_list = result.get_child_by_name('volumes')
         flexvol_info = flexvol_info_list.get_children()[0]
 
-        size_total = float(flexvol_info.get_child_content('size-total'))
-        size_available = float(
+        total_bytes = float(
+            flexvol_info.get_child_content('size-total'))
+        available_bytes = float(
             flexvol_info.get_child_content('size-available'))
 
-        return {
-            'size-total': size_total,
-            'size-available': size_available,
-        }
+        return total_bytes, available_bytes
 
     def get_performance_instance_names(self, object_name):
         """Get names of performance instances for a node."""
@@ -549,40 +583,3 @@ class Client(client_base.Client):
             raise exception.SnapshotNotFound(snapshot_id=snapshot_name)
 
         return snapshot
-
-    def get_snapshots_marked_for_deletion(self, volume_list=None):
-        """Get a list of snapshots marked for deletion."""
-        snapshots = []
-
-        for volume_name in volume_list:
-            api_args = {
-                'target-name': volume_name,
-                'target-type': 'volume',
-                'terse': 'true',
-            }
-            result = self.send_request('snapshot-list-info', api_args)
-            snapshots.extend(
-                self._parse_snapshot_list_info_result(result, volume_name))
-
-        return snapshots
-
-    def _parse_snapshot_list_info_result(self, result, volume_name):
-        snapshots = []
-        snapshots_elem = result.get_child_by_name(
-            'snapshots') or netapp_api.NaElement('none')
-        snapshot_info_list = snapshots_elem.get_children()
-        for snapshot_info in snapshot_info_list:
-            snapshot_name = snapshot_info.get_child_content('name')
-            snapshot_busy = strutils.bool_from_string(
-                snapshot_info.get_child_content('busy'))
-            snapshot_id = snapshot_info.get_child_content(
-                'snapshot-instance-uuid')
-            if (not snapshot_busy and
-                    snapshot_name.startswith(client_base.DELETED_PREFIX)):
-                snapshots.append({
-                    'name': snapshot_name,
-                    'instance_id': snapshot_id,
-                    'volume_name': volume_name,
-                })
-
-        return snapshots

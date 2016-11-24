@@ -18,7 +18,6 @@ from oslo_log import log as logging
 
 from cinder import exception
 from cinder.i18n import _
-from cinder import interface
 import cinder.volume.driver
 from cinder.volume.drivers.dothill import dothill_common as dothillcommon
 from cinder.volume.drivers.san import san
@@ -28,7 +27,6 @@ DEFAULT_ISCSI_PORT = "3260"
 LOG = logging.getLogger(__name__)
 
 
-@interface.volumedriver
 class DotHillISCSIDriver(cinder.volume.driver.ISCSIDriver):
     """OpenStack iSCSI cinder drivers for DotHill Arrays.
 
@@ -49,9 +47,6 @@ class DotHillISCSIDriver(cinder.volume.driver.ISCSIDriver):
     """
 
     VERSION = "1.0"
-
-    # ThirdPartySystems CI wiki
-    CI_WIKI_NAME = "Vedams_DotHillDriver_CI"
 
     def __init__(self, *args, **kwargs):
         super(DotHillISCSIDriver, self).__init__(*args, **kwargs)

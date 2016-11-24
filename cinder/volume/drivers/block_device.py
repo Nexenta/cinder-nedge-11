@@ -24,7 +24,6 @@ from cinder import context
 from cinder import exception
 from cinder.i18n import _, _LI, _LW
 from cinder.image import image_utils
-from cinder import interface
 from cinder import objects
 from cinder import utils
 from cinder.volume import driver
@@ -43,13 +42,9 @@ CONF = cfg.CONF
 CONF.register_opts(volume_opts)
 
 
-@interface.volumedriver
 class BlockDeviceDriver(driver.BaseVD, driver.LocalVD,
                         driver.CloneableImageVD, driver.TransferVD):
     VERSION = '2.3.0'
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Cinder_Jenkins"
 
     def __init__(self, *args, **kwargs):
         super(BlockDeviceDriver, self).__init__(*args, **kwargs)

@@ -34,7 +34,6 @@ from cinder import exception
 from cinder import utils
 from cinder.i18n import _, _LE, _LI, _LW
 from cinder.image import image_utils
-from cinder import interface
 from cinder.volume import driver
 from cinder.volume.drivers import nfs
 
@@ -66,7 +65,6 @@ CONF = cfg.CONF
 CONF.register_opts(tintri_opts)
 
 
-@interface.volumedriver
 class TintriDriver(driver.ManageableVD,
                    driver.CloneableImageVD,
                    driver.SnapshotVD,
@@ -74,8 +72,6 @@ class TintriDriver(driver.ManageableVD,
     """Base class for Tintri driver.
 
     Version History
-
-    .. code-block:: none
 
         2.1.0.1 - Liberty driver
         2.2.0.1 - Mitaka driver
@@ -86,9 +82,6 @@ class TintriDriver(driver.ManageableVD,
 
     VENDOR = 'Tintri'
     VERSION = '2.2.0.1'
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "Tintri_CI"
-
     REQUIRED_OPTIONS = ['tintri_server_hostname', 'tintri_server_username',
                         'tintri_server_password']
 
@@ -738,8 +731,8 @@ class TintriDriver(driver.ManageableVD,
 
         try:
             volume_path = os.path.join(nfs_mount, volume_name)
-            vol_size = int(math.ceil(float(utils.get_file_size(volume_path)) /
-                                     units.Gi))
+            vol_size = math.ceil(float(utils.get_file_size(volume_path)) /
+                                 units.Gi)
         except OSError:
             msg = (_('Failed to get size of volume %s') %
                    existing_ref['source-name'])

@@ -14,31 +14,33 @@
 
 import copy
 import mock
-from oslo_utils import timeutils
-import pytz
 import six
+
+from oslo_log import log as logging
 
 from cinder.db.sqlalchemy import models
 from cinder import exception
 from cinder import objects
-from cinder.objects import fields
 from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit import objects as test_objects
 
 
+LOG = logging.getLogger(__name__)
+
+
 fake_db_snapshot = fake_snapshot.fake_db_snapshot(
-    cgsnapshot_id=fake.CGSNAPSHOT_ID)
+    cgsnapshot_id=fake.cgsnapshot_id)
 del fake_db_snapshot['metadata']
 del fake_db_snapshot['volume']
 
 
 # NOTE(andrey-mp): make Snapshot object here to check object algorithms
 fake_snapshot_obj = {
-    'id': fake.SNAPSHOT_ID,
-    'volume_id': fake.VOLUME_ID,
-    'status': fields.SnapshotStatus.CREATING,
+    'id': fake.snapshot_id,
+    'volume_id': fake.volume_id,
+    'status': "creating",
     'progress': '0%',
     'volume_size': 1,
     'display_name': 'fake_name',
@@ -79,11 +81,11 @@ class TestSnapshot(test_objects.BaseObjectsTestCase):
     @mock.patch('cinder.db.snapshot_create')
     def test_create_with_provider_id(self, snapshot_create):
         snapshot_create.return_value = copy.deepcopy(fake_db_snapshot)
-        snapshot_create.return_value['provider_id'] = fake.PROVIDER_ID
+        snapshot_create.return_value['provider_id'] = fake.provider_id
 
         snapshot = objects.Snapshot(context=self.context)
         snapshot.create()
-        self.assertEqual(fake.PROVIDER_ID, snapshot.provider_id)
+        self.assertEqual(fake.provider_id, snapshot.provider_id)
 
     @mock.patch('cinder.db.snapshot_update')
     def test_save(self, snapshot_update):
@@ -110,45 +112,36 @@ class TestSnapshot(test_objects.BaseObjectsTestCase):
         snapshot_update.assert_called_once_with(self.context, snapshot.id,
                                                 {'display_name': 'foobar'})
         snapshot_metadata_update.assert_called_once_with(self.context,
-                                                         fake.SNAPSHOT_ID,
+                                                         fake.snapshot_id,
                                                          {'key1': 'value1'},
                                                          True)
 
-    @mock.patch('oslo_utils.timeutils.utcnow', return_value=timeutils.utcnow())
-    @mock.patch('cinder.db.sqlalchemy.api.snapshot_destroy')
-    def test_destroy(self, snapshot_destroy, utcnow_mock):
-        snapshot_destroy.return_value = {
-            'status': 'deleted',
-            'deleted': True,
-            'deleted_at': utcnow_mock.return_value}
-        snapshot = objects.Snapshot(context=self.context, id=fake.SNAPSHOT_ID)
+    @mock.patch('cinder.db.snapshot_destroy')
+    def test_destroy(self, snapshot_destroy):
+        snapshot = objects.Snapshot(context=self.context, id=fake.snapshot_id)
         snapshot.destroy()
         snapshot_destroy.assert_called_once_with(self.context,
-                                                 fake.SNAPSHOT_ID)
-        self.assertTrue(snapshot.deleted)
-        self.assertEqual('deleted', snapshot.status)
-        self.assertEqual(utcnow_mock.return_value.replace(tzinfo=pytz.UTC),
-                         snapshot.deleted_at)
+                                                 fake.snapshot_id)
 
     @mock.patch('cinder.db.snapshot_metadata_delete')
     def test_delete_metadata_key(self, snapshot_metadata_delete):
-        snapshot = objects.Snapshot(self.context, id=fake.SNAPSHOT_ID)
+        snapshot = objects.Snapshot(self.context, id=fake.snapshot_id)
         snapshot.metadata = {'key1': 'value1', 'key2': 'value2'}
         self.assertEqual({}, snapshot._orig_metadata)
         snapshot.delete_metadata_key(self.context, 'key2')
         self.assertEqual({'key1': 'value1'}, snapshot.metadata)
         snapshot_metadata_delete.assert_called_once_with(self.context,
-                                                         fake.SNAPSHOT_ID,
+                                                         fake.snapshot_id,
                                                          'key2')
 
     def test_obj_fields(self):
-        volume = objects.Volume(context=self.context, id=fake.VOLUME_ID,
-                                _name_id=fake.VOLUME_NAME_ID)
-        snapshot = objects.Snapshot(context=self.context, id=fake.VOLUME_ID,
+        volume = objects.Volume(context=self.context, id=fake.volume_id,
+                                _name_id=fake.volume_name_id)
+        snapshot = objects.Snapshot(context=self.context, id=fake.volume_id,
                                     volume=volume)
         self.assertEqual(['name', 'volume_name'], snapshot.obj_extra_fields)
-        self.assertEqual('snapshot-%s' % fake.VOLUME_ID, snapshot.name)
-        self.assertEqual('volume-%s' % fake.VOLUME_NAME_ID,
+        self.assertEqual('snapshot-%s' % fake.volume_id, snapshot.name)
+        self.assertEqual('volume-%s' % fake.volume_name_id,
                          snapshot.volume_name)
 
     @mock.patch('cinder.objects.volume.Volume.get_by_id')
@@ -157,14 +150,14 @@ class TestSnapshot(test_objects.BaseObjectsTestCase):
         snapshot = objects.Snapshot._from_db_object(
             self.context, objects.Snapshot(), fake_db_snapshot)
         # Test volume lazy-loaded field
-        volume = objects.Volume(context=self.context, id=fake.VOLUME_ID)
+        volume = objects.Volume(context=self.context, id=fake.volume_id)
         volume_get_by_id.return_value = volume
         self.assertEqual(volume, snapshot.volume)
         volume_get_by_id.assert_called_once_with(self.context,
                                                  snapshot.volume_id)
         # Test cgsnapshot lazy-loaded field
         cgsnapshot = objects.CGSnapshot(context=self.context,
-                                        id=fake.CGSNAPSHOT_ID)
+                                        id=fake.cgsnapshot_id)
         cgsnapshot_get_by_id.return_value = cgsnapshot
         self.assertEqual(cgsnapshot, snapshot.cgsnapshot)
         cgsnapshot_get_by_id.assert_called_once_with(self.context,
@@ -191,7 +184,7 @@ class TestSnapshot(test_objects.BaseObjectsTestCase):
         # On the second snapshot_get, return the snapshot with an updated
         # display_name
         snapshot_get.side_effect = [db_snapshot1, db_snapshot2]
-        snapshot = objects.Snapshot.get_by_id(self.context, fake.SNAPSHOT_ID)
+        snapshot = objects.Snapshot.get_by_id(self.context, fake.snapshot_id)
         self._compare(self, db_snapshot1, snapshot)
 
         # display_name was updated, so a snapshot refresh should have a new
@@ -204,10 +197,10 @@ class TestSnapshot(test_objects.BaseObjectsTestCase):
             call_bool = mock.call.__nonzero__()
         snapshot_get.assert_has_calls([
             mock.call(self.context,
-                      fake.SNAPSHOT_ID),
+                      fake.snapshot_id),
             call_bool,
             mock.call(self.context,
-                      fake.SNAPSHOT_ID)])
+                      fake.snapshot_id)])
 
 
 class TestSnapshotList(test_objects.BaseObjectsTestCase):

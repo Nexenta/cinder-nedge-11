@@ -134,7 +134,7 @@ def resolve_hostname(hostname):
     return sockaddr[0]
 
 
-def round_down(value, precision='0.00'):
+def round_down(value, precision):
     return float(decimal.Decimal(six.text_type(value)).quantize(
         decimal.Decimal(precision), rounding=decimal.ROUND_DOWN))
 

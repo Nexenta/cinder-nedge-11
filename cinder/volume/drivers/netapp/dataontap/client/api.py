@@ -21,6 +21,7 @@ NetApp API for Data ONTAP and OnCommand DFM.
 Contains classes required to issue API calls to Data ONTAP and OnCommand DFM.
 """
 
+import copy
 from eventlet import greenthread
 from eventlet import semaphore
 
@@ -31,24 +32,15 @@ import six
 from six.moves import urllib
 
 from cinder import exception
-from cinder.i18n import _, _LE
+from cinder.i18n import _
 from cinder import ssh_utils
 from cinder import utils
 
 LOG = logging.getLogger(__name__)
 
-EAPIERROR = '13001'
-EAPIPRIVILEGE = '13003'
 EAPINOTFOUND = '13005'
-ESNAPSHOTNOTALLOWED = '13023'
 ESIS_CLONE_NOT_LICENSED = '14956'
-EOBJECTNOTFOUND = '15661'
-ESOURCE_IS_DIFFERENT = '17105'
-ERELATION_EXISTS = '17122'
-ERELATION_NOT_QUIESCED = '17127'
-ENOTRANSFER_IN_PROGRESS = '17130'
-EANOTHER_OP_ACTIVE = '17131'
-ETRANSFER_IN_PROGRESS = '17137'
+ESNAPSHOTNOTALLOWED = '13023'
 
 
 class NaServer(object):
@@ -80,6 +72,10 @@ class NaServer(object):
 
         LOG.debug('Using NetApp controller: %s', self._host)
 
+    def get_transport_type(self):
+        """Get the transport type protocol."""
+        return self._protocol
+
     def set_transport_type(self, transport_type):
         """Set the transport type protocol for API.
 
@@ -104,6 +100,10 @@ class NaServer(object):
                 self.set_port(8488)
         self._refresh_conn = True
 
+    def get_style(self):
+        """Get the authorization style for communicating with the server."""
+        return self._auth_style
+
     def set_style(self, style):
         """Set the authorization style for communicating with the server.
 
@@ -113,6 +113,10 @@ class NaServer(object):
                                  NaServer.STYLE_CERTIFICATE):
             raise ValueError('Unsupported authentication style')
         self._auth_style = style.lower()
+
+    def get_server_type(self):
+        """Get the target server type."""
+        return self._server_type
 
     def set_server_type(self, server_type):
         """Set the target server type.
@@ -156,6 +160,10 @@ class NaServer(object):
         self._port = six.text_type(port)
         self._refresh_conn = True
 
+    def get_port(self):
+        """Get the server communication port."""
+        return self._port
+
     def set_timeout(self, seconds):
         """Sets the timeout in seconds."""
         try:
@@ -163,13 +171,37 @@ class NaServer(object):
         except ValueError:
             raise ValueError('timeout in seconds must be integer')
 
+    def get_timeout(self):
+        """Gets the timeout in seconds if set."""
+        if hasattr(self, '_timeout'):
+            return self._timeout
+        return None
+
+    def get_vfiler(self):
+        """Get the vfiler to use in tunneling."""
+        return self._vfiler
+
     def set_vfiler(self, vfiler):
         """Set the vfiler to use if tunneling gets enabled."""
         self._vfiler = vfiler
 
+    def get_vserver(self):
+        """Get the vserver to use in tunneling."""
+        return self._vserver
+
     def set_vserver(self, vserver):
         """Set the vserver to use if tunneling gets enabled."""
         self._vserver = vserver
+
+    def set_username(self, username):
+        """Set the user name for authentication."""
+        self._username = username
+        self._refresh_conn = True
+
+    def set_password(self, password):
+        """Set the password for authentication."""
+        self._password = password
+        self._refresh_conn = True
 
     @utils.trace_api
     def send_http_request(self, na_element, enable_tunneling=False):
@@ -191,7 +223,6 @@ class NaServer(object):
         except urllib.error.HTTPError as e:
             raise NaApiError(e.code, e.msg)
         except Exception:
-            LOG.exception(_LE("Error communicating with NetApp filer."))
             raise NaApiError('Unexpected error')
 
         response_xml = response.read()
@@ -411,9 +442,6 @@ class NaElement(object):
     def __eq__(self, other):
         return str(self) == str(other)
 
-    def __ne__(self, other):
-        return not self.__eq__(other)
-
     def __hash__(self):
         return hash(str(self))
 
@@ -466,42 +494,26 @@ class NaElement(object):
         """Convert list, tuple, dict to NaElement and appends.
 
            Example usage:
-
            1.
-
-           .. code-block:: xml
-
-                <root>
-                    <elem1>vl1</elem1>
-                    <elem2>vl2</elem2>
-                    <elem3>vl3</elem3>
-                </root>
-
+           <root>
+               <elem1>vl1</elem1>
+               <elem2>vl2</elem2>
+               <elem3>vl3</elem3>
+           </root>
            The above can be achieved by doing
-
-           .. code-block:: python
-
-                root = NaElement('root')
-                root.translate_struct({'elem1': 'vl1', 'elem2': 'vl2',
-                                       'elem3': 'vl3'})
-
+           root = NaElement('root')
+           root.translate_struct({'elem1': 'vl1', 'elem2': 'vl2',
+                                  'elem3': 'vl3'})
            2.
-
-           .. code-block:: xml
-
-                <root>
-                    <elem1>vl1</elem1>
-                    <elem2>vl2</elem2>
-                    <elem1>vl3</elem1>
-                </root>
-
+           <root>
+               <elem1>vl1</elem1>
+               <elem2>vl2</elem2>
+               <elem1>vl3</elem1>
+           </root>
            The above can be achieved by doing
-
-           .. code-block:: python
-
-                root = NaElement('root')
-                root.translate_struct([{'elem1': 'vl1', 'elem2': 'vl2'},
-                                       {'elem1': 'vl3'}])
+           root = NaElement('root')
+           root.translate_struct([{'elem1': 'vl1', 'elem2': 'vl2'},
+                                  {'elem1': 'vl3'}])
         """
         if isinstance(data_struct, (list, tuple)):
             for el in data_struct:
@@ -531,6 +543,91 @@ class NaApiError(Exception):
 
     def __str__(self, *args, **kwargs):
         return 'NetApp API failed. Reason - %s:%s' % (self.code, self.message)
+
+
+NaErrors = {'API_NOT_FOUND': NaApiError('13005', 'Unable to find API'),
+            'INSUFFICIENT_PRIVS': NaApiError('13003',
+                                             'Insufficient privileges')}
+
+
+def invoke_api(na_server, api_name, api_family='cm', query=None,
+               des_result=None, additional_elems=None,
+               is_iter=False, records=0, tag=None,
+               timeout=0, tunnel=None):
+    """Invokes any given API call to a NetApp server.
+
+        :param na_server: na_server instance
+        :param api_name: API name string
+        :param api_family: cm or 7m
+        :param query: API query as dict
+        :param des_result: desired result as dict
+        :param additional_elems: dict other than query and des_result
+        :param is_iter: is iterator API
+        :param records: limit for records, 0 for infinite
+        :param timeout: timeout seconds
+        :param tunnel: tunnel entity, vserver or vfiler name
+    """
+    record_step = 50
+    if not (na_server or isinstance(na_server, NaServer)):
+        msg = _("Requires an NaServer instance.")
+        raise exception.InvalidInput(reason=msg)
+    server = copy.copy(na_server)
+    if api_family == 'cm':
+        server.set_vserver(tunnel)
+    else:
+        server.set_vfiler(tunnel)
+    if timeout > 0:
+        server.set_timeout(timeout)
+    iter_records = 0
+    cond = True
+    while cond:
+        na_element = create_api_request(
+            api_name, query, des_result, additional_elems,
+            is_iter, record_step, tag)
+        result = server.invoke_successfully(na_element, True)
+        if is_iter:
+            if records > 0:
+                iter_records = iter_records + record_step
+                if iter_records >= records:
+                    cond = False
+            tag_el = result.get_child_by_name('next-tag')
+            tag = tag_el.get_content() if tag_el else None
+            if not tag:
+                cond = False
+        else:
+            cond = False
+        yield result
+
+
+def create_api_request(api_name, query=None, des_result=None,
+                       additional_elems=None, is_iter=False,
+                       record_step=50, tag=None):
+    """Creates a NetApp API request.
+
+        :param api_name: API name string
+        :param query: API query as dict
+        :param des_result: desired result as dict
+        :param additional_elems: dict other than query and des_result
+        :param is_iter: is iterator API
+        :param record_step: records at a time for iter API
+        :param tag: next tag for iter API
+    """
+    api_el = NaElement(api_name)
+    if query:
+        query_el = NaElement('query')
+        query_el.translate_struct(query)
+        api_el.add_child_elem(query_el)
+    if des_result:
+        res_el = NaElement('desired-attributes')
+        res_el.translate_struct(des_result)
+        api_el.add_child_elem(res_el)
+    if additional_elems:
+        api_el.translate_struct(additional_elems)
+    if is_iter:
+        api_el.add_new_child('max-records', six.text_type(record_step))
+    if tag:
+        api_el.add_new_child('tag', tag, True)
+    return api_el
 
 
 class SSHUtil(object):

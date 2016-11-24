@@ -16,9 +16,7 @@
 
 
 import ast
-import functools
 import math
-import operator
 import re
 import time
 import uuid
@@ -40,11 +38,9 @@ from cinder import context
 from cinder import db
 from cinder import exception
 from cinder.i18n import _, _LI, _LW, _LE
-from cinder import objects
 from cinder import rpc
 from cinder import utils
 from cinder.volume import throttling
-from cinder.volume import volume_types
 
 
 CONF = cfg.CONF
@@ -80,7 +76,7 @@ def _usage_from_volume(context, volume_ref, **kw):
 
     usage_info.update(kw)
     try:
-        attachments = db.volume_attachment_get_all_by_volume_id(
+        attachments = db.volume_attachment_get_used_by_volume_id(
             context, volume_ref['id'])
         usage_info['volume_attachment'] = attachments
 
@@ -95,24 +91,24 @@ def _usage_from_volume(context, volume_ref, **kw):
     return usage_info
 
 
-def _usage_from_backup(backup, **kw):
-    num_dependent_backups = backup.num_dependent_backups
-    usage_info = dict(tenant_id=backup.project_id,
-                      user_id=backup.user_id,
-                      availability_zone=backup.availability_zone,
-                      backup_id=backup.id,
-                      host=backup.host,
-                      display_name=backup.display_name,
-                      created_at=str(backup.created_at),
-                      status=backup.status,
-                      volume_id=backup.volume_id,
-                      size=backup.size,
-                      service_metadata=backup.service_metadata,
-                      service=backup.service,
-                      fail_reason=backup.fail_reason,
-                      parent_id=backup.parent_id,
+def _usage_from_backup(backup_ref, **kw):
+    num_dependent_backups = backup_ref['num_dependent_backups']
+    usage_info = dict(tenant_id=backup_ref['project_id'],
+                      user_id=backup_ref['user_id'],
+                      availability_zone=backup_ref['availability_zone'],
+                      backup_id=backup_ref['id'],
+                      host=backup_ref['host'],
+                      display_name=backup_ref['display_name'],
+                      created_at=str(backup_ref['created_at']),
+                      status=backup_ref['status'],
+                      volume_id=backup_ref['volume_id'],
+                      size=backup_ref['size'],
+                      service_metadata=backup_ref['service_metadata'],
+                      service=backup_ref['service'],
+                      fail_reason=backup_ref['fail_reason'],
+                      parent_id=backup_ref['parent_id'],
                       num_dependent_backups=num_dependent_backups,
-                      snapshot_id=backup.snapshot_id,
+                      snapshot_id=backup_ref['snapshot_id'],
                       )
 
     usage_info.update(kw)
@@ -244,37 +240,6 @@ def notify_about_consistencygroup_usage(context, group, event_suffix,
         usage_info)
 
 
-def _usage_from_group(group_ref, **kw):
-    usage_info = dict(tenant_id=group_ref.project_id,
-                      user_id=group_ref.user_id,
-                      availability_zone=group_ref.availability_zone,
-                      group_id=group_ref.id,
-                      group_type=group_ref.group_type_id,
-                      name=group_ref.name,
-                      created_at=group_ref.created_at.isoformat(),
-                      status=group_ref.status)
-
-    usage_info.update(kw)
-    return usage_info
-
-
-def notify_about_group_usage(context, group, event_suffix,
-                             extra_usage_info=None, host=None):
-    if not host:
-        host = CONF.host
-
-    if not extra_usage_info:
-        extra_usage_info = {}
-
-    usage_info = _usage_from_group(group,
-                                   **extra_usage_info)
-
-    rpc.get_notifier("group", host).info(
-        context,
-        'group.%s' % event_suffix,
-        usage_info)
-
-
 def _usage_from_cgsnapshot(cgsnapshot, **kw):
     usage_info = dict(
         tenant_id=cgsnapshot.project_id,
@@ -284,21 +249,6 @@ def _usage_from_cgsnapshot(cgsnapshot, **kw):
         consistencygroup_id=cgsnapshot.consistencygroup_id,
         created_at=cgsnapshot.created_at.isoformat(),
         status=cgsnapshot.status)
-
-    usage_info.update(kw)
-    return usage_info
-
-
-def _usage_from_group_snapshot(group_snapshot, **kw):
-    usage_info = dict(
-        tenant_id=group_snapshot.project_id,
-        user_id=group_snapshot.user_id,
-        group_snapshot_id=group_snapshot.id,
-        name=group_snapshot.name,
-        group_id=group_snapshot.group_id,
-        group_type=group_snapshot.group_type_id,
-        created_at=group_snapshot.created_at.isoformat(),
-        status=group_snapshot.status)
 
     usage_info.update(kw)
     return usage_info
@@ -321,24 +271,7 @@ def notify_about_cgsnapshot_usage(context, cgsnapshot, event_suffix,
         usage_info)
 
 
-def notify_about_group_snapshot_usage(context, group_snapshot, event_suffix,
-                                      extra_usage_info=None, host=None):
-    if not host:
-        host = CONF.host
-
-    if not extra_usage_info:
-        extra_usage_info = {}
-
-    usage_info = _usage_from_group_snapshot(group_snapshot,
-                                            **extra_usage_info)
-
-    rpc.get_notifier("group_snapshot", host).info(
-        context,
-        'group_snapshot.%s' % event_suffix,
-        usage_info)
-
-
-def _check_blocksize(blocksize):
+def _calculate_count(size_in_m, blocksize):
 
     # Check if volume_dd_blocksize is valid
     try:
@@ -346,7 +279,7 @@ def _check_blocksize(blocksize):
         # cannot be caught by strutils
         if blocksize.startswith(('-', '0')) or '.' in blocksize:
             raise ValueError
-        strutils.string_to_bytes('%sB' % blocksize)
+        bs = strutils.string_to_bytes('%sB' % blocksize)
     except ValueError:
         LOG.warning(_LW("Incorrect value error: %(blocksize)s, "
                         "it may indicate that \'volume_dd_blocksize\' "
@@ -355,8 +288,11 @@ def _check_blocksize(blocksize):
         # Fall back to default blocksize
         CONF.clear_override('volume_dd_blocksize')
         blocksize = CONF.volume_dd_blocksize
+        bs = strutils.string_to_bytes('%sB' % blocksize)
 
-    return blocksize
+    count = math.ceil(size_in_m * units.Mi / bs)
+
+    return blocksize, int(count)
 
 
 def check_for_odirect_support(src, dest, flag='oflag=direct'):
@@ -379,37 +315,36 @@ def check_for_odirect_support(src, dest, flag='oflag=direct'):
 def _copy_volume_with_path(prefix, srcstr, deststr, size_in_m, blocksize,
                            sync=False, execute=utils.execute, ionice=None,
                            sparse=False):
-    cmd = prefix[:]
-
-    if ionice:
-        cmd.extend(('ionice', ionice))
-
-    blocksize = _check_blocksize(blocksize)
-    size_in_bytes = size_in_m * units.Mi
-
-    cmd.extend(('dd', 'if=%s' % srcstr, 'of=%s' % deststr,
-                'count=%d' % size_in_bytes, 'bs=%s' % blocksize))
-
     # Use O_DIRECT to avoid thrashing the system buffer cache
-    odirect = check_for_odirect_support(srcstr, deststr, 'iflag=direct')
-
-    cmd.append('iflag=count_bytes,direct' if odirect else 'iflag=count_bytes')
+    extra_flags = []
+    if check_for_odirect_support(srcstr, deststr, 'iflag=direct'):
+        extra_flags.append('iflag=direct')
 
     if check_for_odirect_support(srcstr, deststr, 'oflag=direct'):
-        cmd.append('oflag=direct')
-        odirect = True
+        extra_flags.append('oflag=direct')
 
     # If the volume is being unprovisioned then
     # request the data is persisted before returning,
     # so that it's not discarded from the cache.
     conv = []
-    if sync and not odirect:
+    if sync and not extra_flags:
         conv.append('fdatasync')
     if sparse:
         conv.append('sparse')
     if conv:
         conv_options = 'conv=' + ",".join(conv)
-        cmd.append(conv_options)
+        extra_flags.append(conv_options)
+
+    blocksize, count = _calculate_count(size_in_m, blocksize)
+
+    cmd = ['dd', 'if=%s' % srcstr, 'of=%s' % deststr,
+           'count=%d' % count, 'bs=%s' % blocksize]
+    cmd.extend(extra_flags)
+
+    if ionice is not None:
+        cmd = ['ionice', ionice] + cmd
+
+    cmd = prefix + cmd
 
     # Perform the copy
     start_time = timeutils.utcnow()
@@ -552,11 +487,6 @@ def clear_volume(volume_size, volume_path, volume_clear=None,
 
     LOG.info(_LI("Performing secure delete on volume: %s"), volume_path)
 
-    if volume_clear == 'shred':
-        LOG.warning(_LW("volume_clear=shred has been deprecated and will "
-                        "be removed in the next release. Clearing with dd."))
-        volume_clear = 'zero'
-
     # We pass sparse=False explicitly here so that zero blocks are not
     # skipped in order to clear the volume.
     if volume_clear == 'zero':
@@ -565,10 +495,25 @@ def clear_volume(volume_size, volume_path, volume_clear=None,
                            sync=True, execute=utils.execute,
                            ionice=volume_clear_ionice,
                            throttle=throttle, sparse=False)
+    elif volume_clear == 'shred':
+        clear_cmd = ['shred', '-n3']
+        if volume_clear_size:
+            clear_cmd.append('-s%dMiB' % volume_clear_size)
     else:
         raise exception.InvalidConfigurationValue(
             option='volume_clear',
             value=volume_clear)
+
+    clear_cmd.append(volume_path)
+    start_time = timeutils.utcnow()
+    utils.execute(*clear_cmd, run_as_root=True)
+    duration = timeutils.delta_seconds(start_time, timeutils.utcnow())
+
+    # NOTE(jdg): use a default of 1, mostly for unit test, but in
+    # some incredible event this is 0 (cirros image?) don't barf
+    if duration < 1:
+        duration = 1
+    LOG.info(_LI('Elapsed time for clear volume: %.2f sec'), duration)
 
 
 def supports_thin_provisioning():
@@ -718,83 +663,29 @@ def read_proc_mounts():
         return mounts.readlines()
 
 
-def extract_id_from_volume_name(vol_name):
+def _extract_id(vol_name):
     regex = re.compile(
         CONF.volume_name_template.replace('%s', '(?P<uuid>.+)'))
     match = regex.match(vol_name)
     return match.group('uuid') if match else None
 
 
-def check_already_managed_volume(vol_id):
+def check_already_managed_volume(db, vol_name):
     """Check cinder db for already managed volume.
 
-    :param vol_id: volume id parameter
+    :param db: database api parameter
+    :param vol_name: volume name parameter
     :returns: bool -- return True, if db entry with specified
-                      volume id exists, otherwise return False
+                      volume name exist, otherwise return False
     """
+    vol_id = _extract_id(vol_name)
     try:
-        return (vol_id and isinstance(vol_id, six.string_types) and
-                uuid.UUID(vol_id, version=4) and
-                objects.Volume.exists(context.get_admin_context(), vol_id))
-    except ValueError:
+        if vol_id and uuid.UUID(vol_id, version=4):
+            db.volume_get(context.get_admin_context(), vol_id)
+            return True
+    except (exception.VolumeNotFound, ValueError):
         return False
-
-
-def extract_id_from_snapshot_name(snap_name):
-    """Return a snapshot's ID from its name on the backend."""
-    regex = re.compile(
-        CONF.snapshot_name_template.replace('%s', '(?P<uuid>.+)'))
-    match = regex.match(snap_name)
-    return match.group('uuid') if match else None
-
-
-def paginate_entries_list(entries, marker, limit, offset, sort_keys,
-                          sort_dirs):
-    """Paginate a list of entries.
-
-    :param entries: list of dictionaries
-    :marker: The last element previously returned
-    :limit: The maximum number of items to return
-    :offset: The number of items to skip from the marker or from the first
-             element.
-    :sort_keys: A list of keys in the dictionaries to sort by
-    :sort_dirs: A list of sort directions, where each is either 'asc' or 'dec'
-    """
-    comparers = [(operator.itemgetter(key.strip()), multiplier)
-                 for (key, multiplier) in zip(sort_keys, sort_dirs)]
-
-    def comparer(left, right):
-        for fn, d in comparers:
-            left_val = fn(left)
-            right_val = fn(right)
-            if isinstance(left_val, dict):
-                left_val = sorted(left_val.values())[0]
-            if isinstance(right_val, dict):
-                right_val = sorted(right_val.values())[0]
-            if left_val == right_val:
-                continue
-            if d == 'asc':
-                return -1 if left_val < right_val else 1
-            else:
-                return -1 if left_val > right_val else 1
-        else:
-            return 0
-    sorted_entries = sorted(entries, key=functools.cmp_to_key(comparer))
-
-    start_index = 0
-    if offset is None:
-        offset = 0
-    if marker:
-        start_index = -1
-        for i, entry in enumerate(sorted_entries):
-            if entry['reference'] == marker:
-                start_index = i + 1
-                break
-        if start_index < 0:
-            msg = _('marker not found: %s') % marker
-            raise exception.InvalidInput(reason=msg)
-    range_end = start_index + limit
-    return sorted_entries[start_index + offset:range_end + offset]
+    return False
 
 
 def convert_config_string_to_dict(config_string):
@@ -821,17 +712,27 @@ def convert_config_string_to_dict(config_string):
     return resultant_dict
 
 
-def create_encryption_key(context, key_manager, volume_type_id):
-    encryption_key_id = None
-    if volume_types.is_encrypted(context, volume_type_id):
-        volume_type_encryption = (
-            volume_types.get_volume_type_encryption(context,
-                                                    volume_type_id))
-        cipher = volume_type_encryption.cipher
-        length = volume_type_encryption.key_size
-        algorithm = cipher.split('-')[0] if cipher else None
-        encryption_key_id = key_manager.create_key(
-            context,
-            algorithm=algorithm,
-            length=length)
-    return encryption_key_id
+def process_reserve_over_quota(context, overs, usages, quotas, size):
+    def _consumed(name):
+        return (usages[name]['reserved'] + usages[name]['in_use'])
+
+    for over in overs:
+        if 'gigabytes' in over:
+            msg = _LW("Quota exceeded for %(s_pid)s, tried to create "
+                      "%(s_size)sG snapshot (%(d_consumed)dG of "
+                      "%(d_quota)dG already consumed).")
+            LOG.warning(msg, {'s_pid': context.project_id,
+                              's_size': size,
+                              'd_consumed': _consumed(over),
+                              'd_quota': quotas[over]})
+            raise exception.VolumeSizeExceedsAvailableQuota(
+                requested=size,
+                consumed=_consumed('gigabytes'),
+                quota=quotas['gigabytes'])
+        elif 'snapshots' in over:
+            msg = _LW("Quota exceeded for %(s_pid)s, tried to create "
+                      "snapshot (%(d_consumed)d snapshots "
+                      "already consumed).")
+            LOG.warning(msg, {'s_pid': context.project_id,
+                              'd_consumed': _consumed(over)})
+            raise exception.SnapshotLimitExceeded(allowed=quotas[over])

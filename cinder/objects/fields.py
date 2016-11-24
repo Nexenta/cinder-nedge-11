@@ -23,12 +23,7 @@ Field = fields.Field
 FieldType = fields.FieldType
 
 
-class BaseCinderEnum(Enum):
-    def __init__(self):
-        super(BaseCinderEnum, self).__init__(valid_values=self.__class__.ALL)
-
-
-class BackupStatus(BaseCinderEnum):
+class BackupStatus(Enum):
     ERROR = 'error'
     ERROR_DELETING = 'error_deleting'
     CREATING = 'creating'
@@ -40,29 +35,15 @@ class BackupStatus(BaseCinderEnum):
     ALL = (ERROR, ERROR_DELETING, CREATING, AVAILABLE, DELETING, DELETED,
            RESTORING)
 
+    def __init__(self):
+        super(BackupStatus, self).__init__(valid_values=BackupStatus.ALL)
+
 
 class BackupStatusField(BaseEnumField):
     AUTO_TYPE = BackupStatus()
 
 
-class ConsistencyGroupStatus(BaseCinderEnum):
-    ERROR = 'error'
-    AVAILABLE = 'available'
-    CREATING = 'creating'
-    DELETING = 'deleting'
-    DELETED = 'deleted'
-    UPDATING = 'updating'
-    ERROR_DELETING = 'error_deleting'
-
-    ALL = (ERROR, AVAILABLE, CREATING, DELETING, DELETED,
-           UPDATING, ERROR_DELETING)
-
-
-class ConsistencyGroupStatusField(BaseEnumField):
-    AUTO_TYPE = ConsistencyGroupStatus()
-
-
-class GroupStatus(BaseCinderEnum):
+class ConsistencyGroupStatus(Enum):
     ERROR = 'error'
     AVAILABLE = 'available'
     CREATING = 'creating'
@@ -75,12 +56,16 @@ class GroupStatus(BaseCinderEnum):
     ALL = (ERROR, AVAILABLE, CREATING, DELETING, DELETED,
            UPDATING, IN_USE, ERROR_DELETING)
 
+    def __init__(self):
+        super(ConsistencyGroupStatus, self).__init__(
+            valid_values=ConsistencyGroupStatus.ALL)
 
-class GroupStatusField(BaseEnumField):
-    AUTO_TYPE = GroupStatus()
+
+class ConsistencyGroupStatusField(BaseEnumField):
+    AUTO_TYPE = ConsistencyGroupStatus()
 
 
-class ReplicationStatus(BaseCinderEnum):
+class ReplicationStatus(Enum):
     ERROR = 'error'
     ENABLED = 'enabled'
     DISABLED = 'disabled'
@@ -92,35 +77,10 @@ class ReplicationStatus(BaseCinderEnum):
     ALL = (ERROR, ENABLED, DISABLED, NOT_CAPABLE, FAILOVER_ERROR, FAILING_OVER,
            FAILED_OVER)
 
+    def __init__(self):
+        super(ReplicationStatus, self).__init__(
+            valid_values=ReplicationStatus.ALL)
+
 
 class ReplicationStatusField(BaseEnumField):
     AUTO_TYPE = ReplicationStatus()
-
-
-class SnapshotStatus(BaseCinderEnum):
-    ERROR = 'error'
-    AVAILABLE = 'available'
-    CREATING = 'creating'
-    DELETING = 'deleting'
-    DELETED = 'deleted'
-    UPDATING = 'updating'
-    ERROR_DELETING = 'error_deleting'
-
-    ALL = (ERROR, AVAILABLE, CREATING, DELETING, DELETED,
-           UPDATING, ERROR_DELETING)
-
-
-class SnapshotStatusField(BaseEnumField):
-    AUTO_TYPE = SnapshotStatus()
-
-
-class QoSConsumerValues(BaseCinderEnum):
-    BACK_END = 'back-end'
-    FRONT_END = 'front-end'
-    BOTH = 'both'
-
-    ALL = (BACK_END, FRONT_END, BOTH)
-
-
-class QoSConsumerField(BaseEnumField):
-    AUTO_TYPE = QoSConsumerValues()

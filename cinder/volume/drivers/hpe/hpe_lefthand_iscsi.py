@@ -44,9 +44,7 @@ from oslo_utils import units
 from cinder import context
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
-from cinder import interface
 from cinder.objects import fields
-from cinder import utils as cinder_utils
 from cinder.volume import driver
 from cinder.volume.drivers.san import san
 from cinder.volume import utils
@@ -122,14 +120,10 @@ extra_specs_value_map = {
 }
 
 
-@interface.volumedriver
 class HPELeftHandISCSIDriver(driver.ISCSIDriver):
     """Executes REST commands relating to HPE/LeftHand SAN ISCSI volumes.
 
     Version history:
-
-    .. code-block:: none
-
         1.0.0 - Initial REST iSCSI proxy
         1.0.1 - Added support for retype
         1.0.2 - Added support for volume migrate
@@ -158,13 +152,9 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         2.0.6 - Update replication to version 2.1
         2.0.7 - Fixed bug #1554746, Create clone volume with new size.
         2.0.8 - Add defaults for creating a replication client, bug #1556331
-        2.0.9 - Fix terminate connection on failover
-        2.0.10 - Add entry point tracing
     """
 
-    VERSION = "2.0.10"
-
-    CI_WIKI_NAME = "HPE_Storage_CI"
+    VERSION = "2.0.8"
 
     device_stats = {}
 
@@ -372,7 +362,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
             'proxy_ver': self.VERSION,
             'rest_ver': hpelefthandclient.get_version_string()})
 
-    @cinder_utils.trace
     def create_volume(self, volume):
         """Creates a volume."""
         client = self._login()
@@ -423,7 +412,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         finally:
             self._logout(client)
 
-    @cinder_utils.trace
     def delete_volume(self, volume):
         """Deletes a volume."""
         client = self._login()
@@ -444,7 +432,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         finally:
             self._logout(client)
 
-    @cinder_utils.trace
     def extend_volume(self, volume, new_size):
         """Extend the size of an existing volume."""
         client = self._login()
@@ -459,13 +446,11 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         finally:
             self._logout(client)
 
-    @cinder_utils.trace
     def create_consistencygroup(self, context, group):
         """Creates a consistencygroup."""
         model_update = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
         return model_update
 
-    @cinder_utils.trace
     def create_consistencygroup_from_src(self, context, group, volumes,
                                          cgsnapshot=None, snapshots=None,
                                          source_cg=None, source_vols=None):
@@ -475,7 +460,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         LOG.error(msg)
         raise NotImplementedError(msg)
 
-    @cinder_utils.trace
     def delete_consistencygroup(self, context, group, volumes):
         """Deletes a consistency group."""
         volume_model_updates = []
@@ -496,7 +480,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
         return model_update, volume_model_updates
 
-    @cinder_utils.trace
     def update_consistencygroup(self, context, group,
                                 add_volumes=None, remove_volumes=None):
         """Updates a consistency group.
@@ -509,7 +492,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         """
         return None, None, None
 
-    @cinder_utils.trace
     def create_cgsnapshot(self, context, cgsnapshot, snapshots):
         """Creates a consistency group snapshot."""
         client = self._login()
@@ -537,7 +519,7 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
                                    'snapshotName': snapshot_name}
                 snap_set.append(snap_set_member)
                 snapshot_update = {'id': snapshot['id'],
-                                   'status': fields.SnapshotStatus.AVAILABLE}
+                                   'status': 'available'}
                 snapshot_model_updates.append(snapshot_update)
 
             source_volume_id = snap_set[0]['volumeId']
@@ -564,7 +546,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
         return model_update, snapshot_model_updates
 
-    @cinder_utils.trace
     def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
         """Deletes a consistency group snapshot."""
 
@@ -578,20 +559,20 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
                 snap_name = snap_name_base + "-" + six.text_type(i)
                 snap_info = client.getSnapshotByName(snap_name)
                 client.deleteSnapshot(snap_info['id'])
-                snapshot_update['status'] = fields.SnapshotStatus.DELETED
+                snapshot_update['status'] = 'deleted'
             except hpeexceptions.HTTPServerError as ex:
                 in_use_msg = ('cannot be deleted because it is a clone '
                               'point')
                 if in_use_msg in ex.get_description():
                     LOG.error(_LE("The snapshot cannot be deleted because "
                                   "it is a clone point."))
-                snapshot_update['status'] = fields.SnapshotStatus.ERROR
+                snapshot_update['status'] = 'error'
             except Exception as ex:
                 LOG.error(_LE("There was an error deleting snapshot %(id)s: "
-                              "%(error)s."),
+                              "%(error)."),
                           {'id': snapshot['id'],
                            'error': six.text_type(ex)})
-                snapshot_update['status'] = fields.SnapshotStatus.ERROR
+                snapshot_update['status'] = 'error'
             snapshot_model_updates.append(snapshot_update)
 
         self._logout(client)
@@ -600,7 +581,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
         return model_update, snapshot_model_updates
 
-    @cinder_utils.trace
     def create_snapshot(self, snapshot):
         """Creates a snapshot."""
         client = self._login()
@@ -616,7 +596,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         finally:
             self._logout(client)
 
-    @cinder_utils.trace
     def delete_snapshot(self, snapshot):
         """Deletes a snapshot."""
         client = self._login()
@@ -637,7 +616,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         finally:
             self._logout(client)
 
-    @cinder_utils.trace
     def get_volume_stats(self, refresh=False):
         """Gets volume stats."""
         client = self._login()
@@ -704,7 +682,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
         self.device_stats = data
 
-    @cinder_utils.trace
     def initialize_connection(self, volume, connector):
         """Assigns the volume to a server.
 
@@ -747,7 +724,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         finally:
             self._logout(client)
 
-    @cinder_utils.trace
     def terminate_connection(self, volume, connector, **kwargs):
         """Unassign the volume from the host."""
         client = self._login()
@@ -768,28 +744,11 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
             if removeServer:
                 client.deleteServer(server_info['id'])
-        except hpeexceptions.HTTPNotFound as ex:
-            # If a host is failed-over, we want to allow the detach to
-            # to 'succeed' when it cannot find the host. We can simply
-            # return out of the terminate connection in order for things
-            # to be updated correctly.
-            if self._active_backend_id:
-                LOG.warning(_LW("Because the host is currently in a "
-                                "failed-over state, the volume will not "
-                                "be properly detached from the primary "
-                                "array. The detach will be considered a "
-                                "success as far as Cinder is concerned. "
-                                "The volume can now be attached to the "
-                                "secondary target."))
-                return
-            else:
-                raise exception.VolumeBackendAPIException(ex)
         except Exception as ex:
             raise exception.VolumeBackendAPIException(ex)
         finally:
             self._logout(client)
 
-    @cinder_utils.trace
     def create_volume_from_snapshot(self, volume, snapshot):
         """Creates a volume from a snapshot."""
         client = self._login()
@@ -814,7 +773,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         finally:
             self._logout(client)
 
-    @cinder_utils.trace
     def create_cloned_volume(self, volume, src_vref):
         client = self._login()
         try:
@@ -930,7 +888,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
     def remove_export(self, context, volume):
         pass
 
-    @cinder_utils.trace
     def retype(self, ctxt, volume, new_type, diff, host):
         """Convert the volume to be of the new type.
 
@@ -982,7 +939,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
         return False
 
-    @cinder_utils.trace
     def migrate_volume(self, ctxt, volume, host):
         """Migrate the volume to the specified host.
 
@@ -1079,7 +1035,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
         return (True, None)
 
-    @cinder_utils.trace
     def update_migrated_volume(self, context, volume, new_volume,
                                original_volume_status):
         """Rename the new (temp) volume to it's original name.
@@ -1119,7 +1074,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
         return {'_name_id': name_id, 'provider_location': provider_location}
 
-    @cinder_utils.trace
     def manage_existing(self, volume, existing_ref):
         """Manage an existing LeftHand volume.
 
@@ -1210,7 +1164,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         # any model updates from retype.
         return updates
 
-    @cinder_utils.trace
     def manage_existing_snapshot(self, snapshot, existing_ref):
         """Manage an existing LeftHand snapshot.
 
@@ -1281,7 +1234,7 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
             # Update the existing snapshot with the new name.
             client.modifySnapshot(snapshot_info['id'], new_vals)
         except hpeexceptions.HTTPServerError:
-            err = (_("An error occurred while attempting to modify "
+            err = (_("An error occured while attempting to modify"
                      "Snapshot '%s'.") % snapshot_info['id'])
             LOG.error(err)
 
@@ -1300,7 +1253,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
         return updates
 
-    @cinder_utils.trace
     def manage_existing_get_size(self, volume, existing_ref):
         """Return size of volume to be managed by manage_existing.
 
@@ -1334,7 +1286,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
         return int(math.ceil(float(volume_info['size']) / units.Gi))
 
-    @cinder_utils.trace
     def manage_existing_snapshot_get_size(self, snapshot, existing_ref):
         """Return size of volume to be managed by manage_existing.
 
@@ -1368,7 +1319,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
 
         return int(math.ceil(float(snapshot_info['size']) / units.Gi))
 
-    @cinder_utils.trace
     def unmanage(self, volume):
         """Removes the specified volume from Cinder management."""
         # Check API version.
@@ -1391,7 +1341,6 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
                   'vol': volume['name'],
                   'new': new_vol_name})
 
-    @cinder_utils.trace
     def unmanage_snapshot(self, snapshot):
         """Removes the specified snapshot from Cinder management."""
         # Check API version.
@@ -1454,16 +1403,15 @@ class HPELeftHandISCSIDriver(driver.ISCSIDriver):
         return volume_types.get_volume_type(ctxt, type_id)
 
     # v2 replication methods
-    @cinder_utils.trace
-    def failover_host(self, context, volumes, secondary_id=None):
+    def failover_host(self, context, volumes, secondary_backend_id):
         """Force failover to a secondary replication target."""
-        if secondary_id and secondary_id == self.FAILBACK_VALUE:
+        if secondary_backend_id == self.FAILBACK_VALUE:
             volume_update_list = self._replication_failback(volumes)
             target_id = None
         else:
             failover_target = None
             for target in self._replication_targets:
-                if target['backend_id'] == secondary_id:
+                if target['backend_id'] == secondary_backend_id:
                     failover_target = target
                     break
             if not failover_target:

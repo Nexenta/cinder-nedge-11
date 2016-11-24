@@ -16,12 +16,15 @@
 Volume driver for NetApp Data ONTAP (7-mode) iSCSI storage systems.
 """
 
-from cinder import interface
+from oslo_log import log as logging
+
 from cinder.volume import driver
 from cinder.volume.drivers.netapp.dataontap import block_7mode
 
 
-@interface.volumedriver
+LOG = logging.getLogger(__name__)
+
+
 class NetApp7modeISCSIDriver(driver.BaseVD,
                              driver.ConsistencyGroupVD,
                              driver.ManageableVD,
@@ -31,10 +34,6 @@ class NetApp7modeISCSIDriver(driver.BaseVD,
     """NetApp 7-mode iSCSI volume driver."""
 
     DRIVER_NAME = 'NetApp_iSCSI_7mode_direct'
-
-    # ThirdPartySystems wiki page
-    CI_WIKI_NAME = "NetApp_CI"
-    VERSION = block_7mode.NetAppBlockStorage7modeLibrary.VERSION
 
     def __init__(self, *args, **kwargs):
         super(NetApp7modeISCSIDriver, self).__init__(*args, **kwargs)
@@ -130,6 +129,3 @@ class NetApp7modeISCSIDriver(driver.BaseVD,
         return self.library.create_consistencygroup_from_src(
             group, volumes, cgsnapshot=cgsnapshot, snapshots=snapshots,
             source_cg=source_cg, source_vols=source_vols)
-
-    def failover_host(self, context, volumes, secondary_id=None):
-        raise NotImplementedError()

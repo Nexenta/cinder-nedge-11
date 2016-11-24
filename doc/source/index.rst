@@ -44,32 +44,18 @@ Developer Docs
    database_architecture
    scheduler-filters
    scheduler-weights
-   oslo-middleware
-
-Drivers
-=======
-
-Cinder maintains drivers for volume backends, backup targets, and fibre
-channel zone manager fabric types. The list of the available drivers can be
-found here:
-
-.. toctree::
-   :maxdepth: 1
-
    drivers
+   oslo-middleware
 
 API Extensions
 ==============
 
 Go to http://api.openstack.org for information about Cinder API extensions.
 
-Sample Configuration File
-=========================
+Outstanding Documentation Tasks
+===============================
 
-.. toctree::
-    :maxdepth: 1
-
-    sample_config
+.. todolist::
 
 Indices and tables
 ==================

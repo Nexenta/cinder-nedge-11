@@ -38,11 +38,11 @@ class APIMapper(routes.Mapper):
 
     def connect(self, *args, **kwargs):
         # NOTE(inhye): Default the format part of a route to only accept json
-        #             so it doesn't eat all characters after a '.'
+        #             and xml so it doesn't eat all characters after a '.'
         #             in the url.
         kwargs.setdefault('requirements', {})
         if not kwargs['requirements'].get('format'):
-            kwargs['requirements']['format'] = 'json'
+            kwargs['requirements']['format'] = 'json|xml'
         return routes.Mapper.connect(self, *args, **kwargs)
 
 

@@ -11,14 +11,15 @@
 #    under the License.
 
 import datetime
-import sys
-import time
-
-import ddt
-import mock
-from oslo_config import cfg
-from oslo_utils import timeutils
 import six
+import sys
+
+from cinder import rpc
+try:
+    from unittest import mock
+except ImportError:
+    import mock
+from oslo_config import cfg
 
 try:
     import rtslib_fb
@@ -34,14 +35,11 @@ from cinder.cmd import rtstool as cinder_rtstool
 from cinder.cmd import scheduler as cinder_scheduler
 from cinder.cmd import volume as cinder_volume
 from cinder.cmd import volume_usage_audit
-from cinder.common import constants
 from cinder import context
 from cinder import exception
 from cinder.objects import fields
 from cinder import test
-from cinder.tests.unit import fake_cluster
-from cinder.tests.unit import fake_constants as fake
-from cinder.tests.unit import fake_service
+from cinder.tests.unit import fake_constants
 from cinder.tests.unit import fake_volume
 from cinder import version
 
@@ -54,6 +52,7 @@ class TestCinderApiCmd(test.TestCase):
     def setUp(self):
         super(TestCinderApiCmd, self).setUp()
         sys.argv = ['cinder-api']
+        CONF(sys.argv[1:], project='cinder', version=version.version_string())
 
     def tearDown(self):
         super(TestCinderApiCmd, self).tearDown()
@@ -88,6 +87,7 @@ class TestCinderBackupCmd(test.TestCase):
     def setUp(self):
         super(TestCinderBackupCmd, self).setUp()
         sys.argv = ['cinder-backup']
+        CONF(sys.argv[1:], project='cinder', version=version.version_string())
 
     def tearDown(self):
         super(TestCinderBackupCmd, self).tearDown()
@@ -117,11 +117,11 @@ class TestCinderAllCmd(test.TestCase):
     def setUp(self):
         super(TestCinderAllCmd, self).setUp()
         sys.argv = ['cinder-all']
+        CONF(sys.argv[1:], project='cinder', version=version.version_string())
 
     def tearDown(self):
         super(TestCinderAllCmd, self).tearDown()
 
-    @mock.patch('oslo_log.versionutils.report_deprecated_feature')
     @mock.patch('cinder.rpc.init')
     @mock.patch('cinder.service.Service.create')
     @mock.patch('cinder.service.WSGIService')
@@ -130,7 +130,7 @@ class TestCinderAllCmd(test.TestCase):
     @mock.patch('oslo_log.log.getLogger')
     @mock.patch('oslo_log.log.setup')
     def test_main(self, log_setup, get_logger, monkey_patch, process_launcher,
-                  wsgi_service, service_create, rpc_init, mock_log_utils):
+                  wsgi_service, service_create, rpc_init):
         CONF.set_override('enabled_backends', None)
         launcher = process_launcher.return_value
         server = wsgi_service.return_value
@@ -139,7 +139,6 @@ class TestCinderAllCmd(test.TestCase):
 
         cinder_all.main()
 
-        self.assertTrue(mock_log_utils.called)
         self.assertEqual('cinder', CONF.project)
         self.assertEqual(CONF.version, version.version_string())
         log_setup.assert_called_once_with(CONF, "cinder")
@@ -150,11 +149,9 @@ class TestCinderAllCmd(test.TestCase):
         wsgi_service.assert_called_once_with('osapi_volume')
         launcher.launch_service.assert_any_call(server, workers=server.workers)
 
-        service_create.assert_has_calls([
-            mock.call(binary='cinder-scheduler'),
-            mock.call(binary='cinder-backup'),
-            mock.call(binary='cinder-volume', coordination=True)],
-            any_order=True)
+        service_create.assert_has_calls([mock.call(binary='cinder-scheduler'),
+                                         mock.call(binary='cinder-backup'),
+                                         mock.call(binary='cinder-volume')])
         self.assertEqual(3, service_create.call_count)
         launcher.launch_service.assert_has_calls([mock.call(service)] * 3)
         self.assertEqual(4, launcher.launch_service.call_count)
@@ -171,7 +168,7 @@ class TestCinderAllCmd(test.TestCase):
     def test_main_with_backend(self, log_setup, get_logger, monkey_patch,
                                process_launcher, wsgi_service, service_create,
                                rpc_init):
-        CONF.set_override('enabled_backends', ['', 'backend1', ''])
+        CONF.set_override('enabled_backends', ['backend1'])
         CONF.set_override('host', 'host')
         launcher = process_launcher.return_value
         server = wsgi_service.return_value
@@ -194,9 +191,7 @@ class TestCinderAllCmd(test.TestCase):
                                          mock.call(binary='cinder-backup'),
                                          mock.call(binary='cinder-volume',
                                                    host='host@backend1',
-                                                   service_name='backend1',
-                                                   coordination=True)],
-                                        any_order=True)
+                                                   service_name='backend1')])
         self.assertEqual(3, service_create.call_count)
         launcher.launch_service.assert_has_calls([mock.call(service)] * 3)
         self.assertEqual(4, launcher.launch_service.call_count)
@@ -279,11 +274,8 @@ class TestCinderAllCmd(test.TestCase):
         wsgi_service.assert_called_once_with('osapi_volume')
         launcher.launch_service.assert_any_call(server,
                                                 workers=server.workers)
-        services = (('cinder-volume', {'coordination': True}),
-                    ('cinder-backup', {}),
-                    ('cinder-scheduler', {}))
-        for binary, params in services:
-            service_create.assert_any_call(binary=binary, **params)
+        for binary in ['cinder-volume', 'cinder-scheduler', 'cinder-backup']:
+            service_create.assert_any_call(binary=binary)
             launcher.launch_service.assert_called_with(service)
         rpc_init.assert_called_once_with(CONF)
         self.assertTrue(mock_log.exception.called)
@@ -294,6 +286,7 @@ class TestCinderSchedulerCmd(test.TestCase):
     def setUp(self):
         super(TestCinderSchedulerCmd, self).setUp()
         sys.argv = ['cinder-scheduler']
+        CONF(sys.argv[1:], project='cinder', version=version.version_string())
 
     def tearDown(self):
         super(TestCinderSchedulerCmd, self).tearDown()
@@ -323,6 +316,7 @@ class TestCinderVolumeCmd(test.TestCase):
     def setUp(self):
         super(TestCinderVolumeCmd, self).setUp()
         sys.argv = ['cinder-volume']
+        CONF(sys.argv[1:], project='cinder', version=version.version_string())
 
     def tearDown(self):
         super(TestCinderVolumeCmd, self).tearDown()
@@ -344,9 +338,7 @@ class TestCinderVolumeCmd(test.TestCase):
         log_setup.assert_called_once_with(CONF, "cinder")
         monkey_patch.assert_called_once_with()
         get_launcher.assert_called_once_with()
-        service_create.assert_called_once_with(binary='cinder-volume',
-                                               coordination=True,
-                                               cluster=None)
+        service_create.assert_called_once_with(binary='cinder-volume')
         launcher.launch_service.assert_called_once_with(server)
         launcher.wait.assert_called_once_with()
 
@@ -356,9 +348,8 @@ class TestCinderVolumeCmd(test.TestCase):
     @mock.patch('oslo_log.log.setup')
     def test_main_with_backends(self, log_setup, monkey_patch, service_create,
                                 get_launcher):
-        backends = ['', 'backend1', 'backend2', '']
+        backends = ['backend1', 'backend2']
         CONF.set_override('enabled_backends', backends)
-        CONF.set_override('host', 'host')
         launcher = get_launcher.return_value
 
         cinder_volume.main()
@@ -368,31 +359,20 @@ class TestCinderVolumeCmd(test.TestCase):
         log_setup.assert_called_once_with(CONF, "cinder")
         monkey_patch.assert_called_once_with()
         get_launcher.assert_called_once_with()
-        c1 = mock.call(binary='cinder-volume', host='host@backend1',
-                       service_name='backend1', coordination=True,
-                       cluster=None)
-        c2 = mock.call(binary='cinder-volume', host='host@backend2',
-                       service_name='backend2', coordination=True,
-                       cluster=None)
-        service_create.assert_has_calls([c1, c2])
-        self.assertEqual(2, launcher.launch_service.call_count)
+        self.assertEqual(len(backends), service_create.call_count)
+        self.assertEqual(len(backends), launcher.launch_service.call_count)
         launcher.wait.assert_called_once_with()
 
 
-@ddt.ddt
 class TestCinderManageCmd(test.TestCase):
 
     def setUp(self):
         super(TestCinderManageCmd, self).setUp()
         sys.argv = ['cinder-manage']
+        CONF(sys.argv[1:], project='cinder', version=version.version_string())
 
     def tearDown(self):
         super(TestCinderManageCmd, self).tearDown()
-
-    def _test_purge_invalid_age_in_days(self, age_in_days):
-        db_cmds = cinder_manage.DbCommands()
-        ex = self.assertRaises(SystemExit, db_cmds.purge, age_in_days)
-        self.assertEqual(1, ex.code)
 
     @mock.patch('cinder.db.migration.db_sync')
     def test_db_commands_sync(self, db_sync):
@@ -429,36 +409,6 @@ class TestCinderManageCmd(test.TestCase):
             version_cmds.__call__()
             version_string.assert_called_once_with()
 
-    def test_purge_age_in_days_value_equal_to_zero(self):
-        age_in_days = 0
-        self._test_purge_invalid_age_in_days(age_in_days)
-
-    def test_purge_with_negative_age_in_days(self):
-        age_in_days = -1
-        self._test_purge_invalid_age_in_days(age_in_days)
-
-    def test_purge_exceeded_age_in_days_limit(self):
-        age_in_days = int(time.time() / 86400) + 1
-        self._test_purge_invalid_age_in_days(age_in_days)
-
-    @mock.patch('cinder.db.sqlalchemy.api.purge_deleted_rows')
-    @mock.patch('cinder.context.get_admin_context')
-    def test_purge_less_than_age_in_days_limit(self, get_admin_context,
-                                               purge_deleted_rows):
-        age_in_days = int(time.time() / 86400) - 1
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
-                                      is_admin=True)
-        get_admin_context.return_value = ctxt
-
-        purge_deleted_rows.return_value = None
-
-        db_cmds = cinder_manage.DbCommands()
-        db_cmds.purge(age_in_days)
-
-        get_admin_context.assert_called_once_with()
-        purge_deleted_rows.assert_called_once_with(
-            ctxt, age_in_days=age_in_days)
-
     @mock.patch('cinder.db.service_get_all')
     @mock.patch('cinder.context.get_admin_context')
     def test_host_commands_list(self, get_admin_context, service_get_all):
@@ -476,7 +426,7 @@ class TestCinderManageCmd(test.TestCase):
             host_cmds.list()
 
             get_admin_context.assert_called_once_with()
-            service_get_all.assert_called_once_with(mock.sentinel.ctxt)
+            service_get_all.assert_called_once_with(mock.sentinel.ctxt, None)
             self.assertEqual(expected_out, fake_out.getvalue())
 
     @mock.patch('cinder.db.service_get_all')
@@ -499,7 +449,7 @@ class TestCinderManageCmd(test.TestCase):
             host_cmds.list(zone='fake-az1')
 
             get_admin_context.assert_called_once_with()
-            service_get_all.assert_called_once_with(mock.sentinel.ctxt)
+            service_get_all.assert_called_once_with(mock.sentinel.ctxt, None)
             self.assertEqual(expected_out, fake_out.getvalue())
 
     @mock.patch('cinder.objects.base.CinderObjectSerializer')
@@ -509,6 +459,7 @@ class TestCinderManageCmd(test.TestCase):
     @mock.patch('oslo_messaging.Target')
     def test_volume_commands_init(self, messaging_target, rpc_initialized,
                                   rpc_init, get_client, object_serializer):
+        CONF.set_override('volume_topic', 'fake-topic')
         mock_target = messaging_target.return_value
         mock_rpc_client = get_client.return_value
 
@@ -517,7 +468,7 @@ class TestCinderManageCmd(test.TestCase):
 
         rpc_initialized.assert_called_once_with()
         rpc_init.assert_called_once_with(CONF)
-        messaging_target.assert_called_once_with(topic=constants.VOLUME_TOPIC)
+        messaging_target.assert_called_once_with(topic='fake-topic')
         get_client.assert_called_once_with(mock_target,
                                            serializer=object_serializer())
         self.assertEqual(mock_rpc_client, rpc_client)
@@ -557,7 +508,7 @@ class TestCinderManageCmd(test.TestCase):
     @mock.patch('cinder.rpc.init')
     def test_volume_commands_delete_no_host(self, rpc_init, get_admin_context,
                                             volume_get, volume_destroy):
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID,
+        ctxt = context.RequestContext('fake-user', 'fake-project',
                                       is_admin=True)
         get_admin_context.return_value = ctxt
         volume = fake_volume.fake_db_volume()
@@ -585,7 +536,7 @@ class TestCinderManageCmd(test.TestCase):
     def test_volume_commands_delete_volume_in_use(self, rpc_init,
                                                   get_admin_context,
                                                   volume_get, volume_destroy):
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
         db_volume = {'status': 'in-use', 'host': 'fake-host'}
         volume = fake_volume.fake_db_volume(**db_volume)
@@ -668,18 +619,18 @@ class TestCinderManageCmd(test.TestCase):
     @mock.patch('cinder.db.backup_get_all')
     @mock.patch('cinder.context.get_admin_context')
     def test_backup_commands_list(self, get_admin_context, backup_get_all):
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
-        backup = {'id': fake.BACKUP_ID,
-                  'user_id': fake.USER_ID,
-                  'project_id': fake.PROJECT_ID,
+        backup = {'id': 1,
+                  'user_id': 'fake-user-id',
+                  'project_id': 'fake-project-id',
                   'host': 'fake-host',
                   'display_name': 'fake-display-name',
                   'container': 'fake-container',
                   'status': fields.BackupStatus.AVAILABLE,
                   'size': 123,
                   'object_count': 1,
-                  'volume_id': fake.VOLUME_ID,
+                  'volume_id': 'fake-volume-id',
                   }
         backup_get_all.return_value = [backup]
         with mock.patch('sys.stdout', new=six.StringIO()) as fake_out:
@@ -721,18 +672,18 @@ class TestCinderManageCmd(test.TestCase):
     def test_update_backup_host(self, get_admin_context,
                                 backup_get_by_host,
                                 backup_update):
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
-        backup = {'id': fake.BACKUP_ID,
-                  'user_id': fake.USER_ID,
-                  'project_id': fake.PROJECT_ID,
+        backup = {'id': fake_constants.backup_id,
+                  'user_id': 'fake-user-id',
+                  'project_id': 'fake-project-id',
                   'host': 'fake-host',
                   'display_name': 'fake-display-name',
                   'container': 'fake-container',
                   'status': fields.BackupStatus.AVAILABLE,
                   'size': 123,
                   'object_count': 1,
-                  'volume_id': fake.VOLUME_ID,
+                  'volume_id': 'fake-volume-id',
                   }
         backup_get_by_host.return_value = [backup]
         backup_cmds = cinder_manage.BackupCommands()
@@ -740,7 +691,7 @@ class TestCinderManageCmd(test.TestCase):
 
         get_admin_context.assert_called_once_with()
         backup_get_by_host.assert_called_once_with(ctxt, 'fake_host')
-        backup_update.assert_called_once_with(ctxt, fake.BACKUP_ID,
+        backup_update.assert_called_once_with(ctxt, fake_constants.backup_id,
                                               {'host': 'fake_host2'})
 
     @mock.patch('cinder.utils.service_is_up')
@@ -748,12 +699,12 @@ class TestCinderManageCmd(test.TestCase):
     @mock.patch('cinder.context.get_admin_context')
     def _test_service_commands_list(self, service, get_admin_context,
                                     service_get_all, service_is_up):
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
         service_get_all.return_value = [service]
         service_is_up.return_value = True
         with mock.patch('sys.stdout', new=six.StringIO()) as fake_out:
-            format = "%-16s %-36s %-16s %-10s %-5s %-20s %-12s %-15s %-36s"
+            format = "%-16s %-36s %-16s %-10s %-5s %-20s %-12s %-15s"
             print_format = format % ('Binary',
                                      'Host',
                                      'Zone',
@@ -761,11 +712,13 @@ class TestCinderManageCmd(test.TestCase):
                                      'State',
                                      'Updated At',
                                      'RPC Version',
-                                     'Object Version',
-                                     'Cluster')
+                                     'Object Version')
             rpc_version = service['rpc_current_version']
+            if not rpc_version:
+                rpc_version = rpc.LIBERTY_RPC_VERSIONS[service['binary']]
             object_version = service['object_current_version']
-            cluster = service.get('cluster_name', '')
+            if not object_version:
+                object_version = 'liberty'
             service_format = format % (service['binary'],
                                        service['host'].partition('.')[0],
                                        service['availability_zone'],
@@ -773,8 +726,7 @@ class TestCinderManageCmd(test.TestCase):
                                        ':-)',
                                        service['updated_at'],
                                        rpc_version,
-                                       object_version,
-                                       cluster)
+                                       object_version)
             expected_out = print_format + '\n' + service_format + '\n'
 
             service_cmds = cinder_manage.ServiceCommands()
@@ -782,7 +734,7 @@ class TestCinderManageCmd(test.TestCase):
 
             self.assertEqual(expected_out, fake_out.getvalue())
             get_admin_context.assert_called_with()
-            service_get_all.assert_called_with(ctxt)
+            service_get_all.assert_called_with(ctxt, None)
 
     def test_service_commands_list(self):
         service = {'binary': 'cinder-binary',
@@ -791,203 +743,31 @@ class TestCinderManageCmd(test.TestCase):
                    'updated_at': '2014-06-30 11:22:33',
                    'disabled': False,
                    'rpc_current_version': '1.1',
-                   'object_current_version': '1.1',
-                   'cluster_name': 'my_cluster'}
-        for binary in ('volume', 'scheduler', 'backup'):
-            service['binary'] = 'cinder-%s' % binary
-            self._test_service_commands_list(service)
-
-    def test_service_commands_list_no_updated_at_or_cluster(self):
-        service = {'binary': 'cinder-binary',
-                   'host': 'fake-host.fake-domain',
-                   'availability_zone': 'fake-zone',
-                   'updated_at': None,
-                   'disabled': False,
-                   'rpc_current_version': '1.1',
                    'object_current_version': '1.1'}
         for binary in ('volume', 'scheduler', 'backup'):
             service['binary'] = 'cinder-%s' % binary
             self._test_service_commands_list(service)
 
-    @ddt.data(('foobar', 'foobar'), ('-foo bar', 'foo bar'),
-              ('--foo bar', 'foo bar'), ('--foo-bar', 'foo_bar'),
-              ('---foo-bar', '_foo_bar'))
-    @ddt.unpack
-    def test_get_arg_string(self, arg, expected):
-        self.assertEqual(expected, cinder_manage.get_arg_string(arg))
+    def test_service_commands_list_no_updated_at(self):
+        service = {'binary': 'cinder-binary',
+                   'host': 'fake-host.fake-domain',
+                   'availability_zone': 'fake-zone',
+                   'updated_at': None,
+                   'disabled': False,
+                   'rpc_current_version': None,
+                   'object_current_version': None}
+        for binary in ('volume', 'scheduler', 'backup'):
+            service['binary'] = 'cinder-%s' % binary
+            self._test_service_commands_list(service)
 
-    def test_fetch_func_args(self):
-        @cinder_manage.args('--full-rename')
-        @cinder_manage.args('--different-dest', dest='my_dest')
-        @cinder_manage.args('current')
-        def my_func():
-            pass
+    def test_get_arg_string(self):
+        args1 = "foobar"
+        args2 = "-foo bar"
+        args3 = "--foo bar"
 
-        expected = {'full_rename': mock.sentinel.full_rename,
-                    'my_dest': mock.sentinel.my_dest,
-                    'current': mock.sentinel.current}
-
-        with mock.patch.object(cinder_manage, 'CONF') as mock_conf:
-            mock_conf.category = mock.Mock(**expected)
-            self.assertDictEqual(expected,
-                                 cinder_manage.fetch_func_args(my_func))
-
-    @mock.patch('cinder.context.get_admin_context')
-    @mock.patch('cinder.db.cluster_get_all')
-    def tests_cluster_commands_list(self, get_all_mock, get_admin_mock,
-                                    ):
-        now = timeutils.utcnow()
-        cluster = fake_cluster.fake_cluster_orm(num_hosts=4, num_down_hosts=2,
-                                                created_at=now,
-                                                last_heartbeat=now)
-        get_all_mock.return_value = [cluster]
-
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
-        get_admin_mock.return_value = ctxt
-
-        with mock.patch('sys.stdout', new=six.StringIO()) as fake_out:
-            format_ = "%-36s %-16s %-10s %-5s %-20s %-7s %-12s %-20s"
-            print_format = format_ % ('Name',
-                                      'Binary',
-                                      'Status',
-                                      'State',
-                                      'Heartbeat',
-                                      'Hosts',
-                                      'Down Hosts',
-                                      'Updated At')
-            cluster_format = format_ % (cluster.name, cluster.binary,
-                                        'enabled', ':-)',
-                                        cluster.last_heartbeat,
-                                        cluster.num_hosts,
-                                        cluster.num_down_hosts,
-                                        None)
-            expected_out = print_format + '\n' + cluster_format + '\n'
-
-            cluster_cmds = cinder_manage.ClusterCommands()
-            cluster_cmds.list()
-
-            self.assertEqual(expected_out, fake_out.getvalue())
-            get_admin_mock.assert_called_with()
-            get_all_mock.assert_called_with(ctxt, is_up=None,
-                                            get_services=False,
-                                            services_summary=True,
-                                            read_deleted='no')
-
-    @mock.patch('cinder.db.sqlalchemy.api.cluster_get', auto_specs=True)
-    @mock.patch('cinder.context.get_admin_context')
-    def test_cluster_commands_remove_not_found(self, admin_ctxt_mock,
-                                               cluster_get_mock):
-        cluster_get_mock.side_effect = exception.ClusterNotFound(id=1)
-        cluster_commands = cinder_manage.ClusterCommands()
-        exit = cluster_commands.remove(False, 'abinary', 'acluster')
-        self.assertEqual(2, exit)
-        cluster_get_mock.assert_called_once_with(admin_ctxt_mock.return_value,
-                                                 None, name='acluster',
-                                                 binary='abinary',
-                                                 get_services=False)
-
-    @mock.patch('cinder.db.sqlalchemy.api.service_destroy', auto_specs=True)
-    @mock.patch('cinder.db.sqlalchemy.api.cluster_destroy', auto_specs=True)
-    @mock.patch('cinder.db.sqlalchemy.api.cluster_get', auto_specs=True)
-    @mock.patch('cinder.context.get_admin_context')
-    def test_cluster_commands_remove_fail_has_hosts(self, admin_ctxt_mock,
-                                                    cluster_get_mock,
-                                                    cluster_destroy_mock,
-                                                    service_destroy_mock):
-        cluster = fake_cluster.fake_cluster_ovo(mock.Mock())
-        cluster_get_mock.return_value = cluster
-        cluster_destroy_mock.side_effect = exception.ClusterHasHosts(id=1)
-        cluster_commands = cinder_manage.ClusterCommands()
-        exit = cluster_commands.remove(False, 'abinary', 'acluster')
-        self.assertEqual(2, exit)
-        cluster_get_mock.assert_called_once_with(admin_ctxt_mock.return_value,
-                                                 None, name='acluster',
-                                                 binary='abinary',
-                                                 get_services=False)
-        cluster_destroy_mock.assert_called_once_with(
-            admin_ctxt_mock.return_value.elevated.return_value, cluster.id)
-        service_destroy_mock.assert_not_called()
-
-    @mock.patch('cinder.db.sqlalchemy.api.service_destroy', auto_specs=True)
-    @mock.patch('cinder.db.sqlalchemy.api.cluster_destroy', auto_specs=True)
-    @mock.patch('cinder.db.sqlalchemy.api.cluster_get', auto_specs=True)
-    @mock.patch('cinder.context.get_admin_context')
-    def test_cluster_commands_remove_success_no_hosts(self, admin_ctxt_mock,
-                                                      cluster_get_mock,
-                                                      cluster_destroy_mock,
-                                                      service_destroy_mock):
-        cluster = fake_cluster.fake_cluster_orm()
-        cluster_get_mock.return_value = cluster
-        cluster_commands = cinder_manage.ClusterCommands()
-        exit = cluster_commands.remove(False, 'abinary', 'acluster')
-        self.assertIsNone(exit)
-        cluster_get_mock.assert_called_once_with(admin_ctxt_mock.return_value,
-                                                 None, name='acluster',
-                                                 binary='abinary',
-                                                 get_services=False)
-        cluster_destroy_mock.assert_called_once_with(
-            admin_ctxt_mock.return_value.elevated.return_value, cluster.id)
-        service_destroy_mock.assert_not_called()
-
-    @mock.patch('cinder.db.sqlalchemy.api.service_destroy', auto_specs=True)
-    @mock.patch('cinder.db.sqlalchemy.api.cluster_destroy', auto_specs=True)
-    @mock.patch('cinder.db.sqlalchemy.api.cluster_get', auto_specs=True)
-    @mock.patch('cinder.context.get_admin_context')
-    def test_cluster_commands_remove_recursive(self, admin_ctxt_mock,
-                                               cluster_get_mock,
-                                               cluster_destroy_mock,
-                                               service_destroy_mock):
-        cluster = fake_cluster.fake_cluster_orm()
-        cluster.services = [fake_service.fake_service_orm()]
-        cluster_get_mock.return_value = cluster
-        cluster_commands = cinder_manage.ClusterCommands()
-        exit = cluster_commands.remove(True, 'abinary', 'acluster')
-        self.assertIsNone(exit)
-        cluster_get_mock.assert_called_once_with(admin_ctxt_mock.return_value,
-                                                 None, name='acluster',
-                                                 binary='abinary',
-                                                 get_services=True)
-        cluster_destroy_mock.assert_called_once_with(
-            admin_ctxt_mock.return_value.elevated.return_value, cluster.id)
-        service_destroy_mock.assert_called_once_with(
-            admin_ctxt_mock.return_value.elevated.return_value,
-            cluster.services[0]['id'])
-
-    @mock.patch('cinder.db.sqlalchemy.api.volume_include_in_cluster',
-                auto_specs=True, return_value=1)
-    @mock.patch('cinder.db.sqlalchemy.api.consistencygroup_include_in_cluster',
-                auto_specs=True, return_value=2)
-    @mock.patch('cinder.context.get_admin_context')
-    def test_cluster_commands_rename(self, admin_ctxt_mock,
-                                     volume_include_mock, cg_include_mock):
-        """Test that cluster rename changes volumes and cgs."""
-        current_cluster_name = mock.sentinel.old_cluster_name
-        new_cluster_name = mock.sentinel.new_cluster_name
-        partial = mock.sentinel.partial
-        cluster_commands = cinder_manage.ClusterCommands()
-        exit = cluster_commands.rename(partial, current_cluster_name,
-                                       new_cluster_name)
-
-        self.assertIsNone(exit)
-        volume_include_mock.assert_called_once_with(
-            admin_ctxt_mock.return_value, new_cluster_name, partial,
-            cluster_name=current_cluster_name)
-        cg_include_mock.assert_called_once_with(
-            admin_ctxt_mock.return_value, new_cluster_name, partial,
-            cluster_name=current_cluster_name)
-
-    @mock.patch('cinder.db.sqlalchemy.api.volume_include_in_cluster',
-                auto_specs=True, return_value=0)
-    @mock.patch('cinder.db.sqlalchemy.api.consistencygroup_include_in_cluster',
-                auto_specs=True, return_value=0)
-    @mock.patch('cinder.context.get_admin_context')
-    def test_cluster_commands_rename_no_changes(self, admin_ctxt_mock,
-                                                volume_include_mock,
-                                                cg_include_mock):
-        """Test that we return an error when cluster rename has no effect."""
-        cluster_commands = cinder_manage.ClusterCommands()
-        exit = cluster_commands.rename(False, 'cluster', 'new_cluster')
-        self.assertEqual(2, exit)
+        self.assertEqual("foobar", cinder_manage.get_arg_string(args1))
+        self.assertEqual("foo bar", cinder_manage.get_arg_string(args2))
+        self.assertEqual("foo bar", cinder_manage.get_arg_string(args3))
 
     @mock.patch('oslo_config.cfg.ConfigOpts.register_cli_opt')
     def test_main_argv_lt_2(self, register_cli_opt):
@@ -1065,7 +845,8 @@ class TestCinderManageCmd(test.TestCase):
         self.assertEqual(2, exit)
 
     @mock.patch('cinder.db.service_destroy')
-    @mock.patch('cinder.db.service_get', return_value = {'id': '12'})
+    @mock.patch('cinder.db.service_get_by_args',
+                return_value = {'id': '12'})
     def test_remove_service_success(self, mock_get_by_args,
                                     mock_service_destroy):
         service_commands = cinder_manage.ServiceCommands()
@@ -1077,6 +858,7 @@ class TestCinderRtstoolCmd(test.TestCase):
     def setUp(self):
         super(TestCinderRtstoolCmd, self).setUp()
         sys.argv = ['cinder-rtstool']
+        CONF(sys.argv[1:], project='cinder', version=version.version_string())
 
         self.INITIATOR_IQN = 'iqn.2015.12.com.example.openstack.i:UNIT1'
         self.TARGET_IQN = 'iqn.2015.12.com.example.openstack.i:TARGET1'
@@ -1674,6 +1456,7 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
     def setUp(self):
         super(TestCinderVolumeUsageAuditCmd, self).setUp()
         sys.argv = ['cinder-volume-usage-audit']
+        CONF(sys.argv[1:], project='cinder', version=version.version_string())
 
     def tearDown(self):
         super(TestCinderVolumeUsageAuditCmd, self).tearDown()
@@ -1722,12 +1505,12 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         CONF.set_override('end_time', '2014-02-02 02:00:00')
         begin = datetime.datetime(2014, 1, 1, 1, 0)
         end = datetime.datetime(2014, 2, 2, 2, 0)
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
         last_completed_audit_period.return_value = (begin, end)
         volume1_created = datetime.datetime(2014, 1, 1, 2, 0)
         volume1_deleted = datetime.datetime(2014, 1, 1, 3, 0)
-        volume1 = mock.MagicMock(id=fake.VOLUME_ID, project_id=fake.PROJECT_ID,
+        volume1 = mock.MagicMock(id='1', project_id='fake-project',
                                  created_at=volume1_created,
                                  deleted_at=volume1_deleted)
         volume_get_active_by_window.return_value = [volume1]
@@ -1758,13 +1541,12 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         rpc_init.assert_called_once_with(CONF)
         last_completed_audit_period.assert_called_once_with()
         volume_get_active_by_window.assert_called_once_with(ctxt, begin, end)
-        notify_about_volume_usage.assert_has_calls([
-            mock.call(ctxt, volume1, 'exists', extra_usage_info=extra_info),
-            mock.call(ctxt, volume1, 'create.start',
-                      extra_usage_info=local_extra_info),
-            mock.call(ctxt, volume1, 'create.end',
-                      extra_usage_info=local_extra_info)
-        ])
+        notify_about_volume_usage.assert_any_call(ctxt, volume1, 'exists',
+                                                  extra_usage_info=extra_info)
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'create.start', extra_usage_info=local_extra_info)
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'create.end', extra_usage_info=local_extra_info)
 
     @mock.patch('cinder.volume.utils.notify_about_volume_usage')
     @mock.patch('cinder.db.volume_get_active_by_window')
@@ -1785,12 +1567,12 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         CONF.set_override('end_time', '2014-02-02 02:00:00')
         begin = datetime.datetime(2014, 1, 1, 1, 0)
         end = datetime.datetime(2014, 2, 2, 2, 0)
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
         last_completed_audit_period.return_value = (begin, end)
         volume1_created = datetime.datetime(2014, 1, 1, 2, 0)
         volume1_deleted = datetime.datetime(2014, 1, 1, 3, 0)
-        volume1 = mock.MagicMock(id=fake.VOLUME_ID, project_id=fake.PROJECT_ID,
+        volume1 = mock.MagicMock(id='1', project_id='fake-project',
                                  created_at=volume1_created,
                                  deleted_at=volume1_deleted)
         volume_get_active_by_window.return_value = [volume1]
@@ -1825,17 +1607,20 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         rpc_init.assert_called_once_with(CONF)
         last_completed_audit_period.assert_called_once_with()
         volume_get_active_by_window.assert_called_once_with(ctxt, begin, end)
-        notify_about_volume_usage.assert_has_calls([
-            mock.call(ctxt, volume1, 'exists', extra_usage_info=extra_info),
-            mock.call(ctxt, volume1, 'create.start',
-                      extra_usage_info=local_extra_info_create),
-            mock.call(ctxt, volume1, 'create.end',
-                      extra_usage_info=local_extra_info_create),
-            mock.call(ctxt, volume1, 'delete.start',
-                      extra_usage_info=local_extra_info_delete),
-            mock.call(ctxt, volume1, 'delete.end',
-                      extra_usage_info=local_extra_info_delete)
-        ])
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'exists', extra_usage_info=extra_info)
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'create.start',
+            extra_usage_info=local_extra_info_create)
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'create.end',
+            extra_usage_info=local_extra_info_create)
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'delete.start',
+            extra_usage_info=local_extra_info_delete)
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'delete.end',
+            extra_usage_info=local_extra_info_delete)
 
     @mock.patch('cinder.volume.utils.notify_about_snapshot_usage')
     @mock.patch('cinder.objects.snapshot.SnapshotList.get_active_by_window')
@@ -1860,13 +1645,12 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         CONF.set_override('end_time', '2014-02-02 02:00:00')
         begin = datetime.datetime(2014, 1, 1, 1, 0)
         end = datetime.datetime(2014, 2, 2, 2, 0)
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
         last_completed_audit_period.return_value = (begin, end)
         snapshot1_created = datetime.datetime(2014, 1, 1, 2, 0)
         snapshot1_deleted = datetime.datetime(2014, 1, 1, 3, 0)
-        snapshot1 = mock.MagicMock(id=fake.VOLUME_ID,
-                                   project_id=fake.PROJECT_ID,
+        snapshot1 = mock.MagicMock(id='1', project_id='fake-project',
                                    created_at=snapshot1_created,
                                    deleted_at=snapshot1_deleted)
         volume_get_active_by_window.return_value = []
@@ -1902,13 +1686,14 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         last_completed_audit_period.assert_called_once_with()
         volume_get_active_by_window.assert_called_once_with(ctxt, begin, end)
         self.assertFalse(notify_about_volume_usage.called)
-        notify_about_snapshot_usage.assert_has_calls([
-            mock.call(ctxt, snapshot1, 'exists', extra_info),
-            mock.call(ctxt, snapshot1, 'create.start',
-                      extra_usage_info=local_extra_info_create),
-            mock.call(ctxt, snapshot1, 'delete.start',
-                      extra_usage_info=local_extra_info_delete)
-        ])
+        notify_about_snapshot_usage.assert_any_call(ctxt, snapshot1, 'exists',
+                                                    extra_info)
+        notify_about_snapshot_usage.assert_any_call(
+            ctxt, snapshot1, 'create.start',
+            extra_usage_info=local_extra_info_create)
+        notify_about_snapshot_usage.assert_any_call(
+            ctxt, snapshot1, 'delete.start',
+            extra_usage_info=local_extra_info_delete)
 
     @mock.patch('cinder.volume.utils.notify_about_snapshot_usage')
     @mock.patch('cinder.objects.snapshot.SnapshotList.get_active_by_window')
@@ -1929,13 +1714,13 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         CONF.set_override('end_time', '2014-02-02 02:00:00')
         begin = datetime.datetime(2014, 1, 1, 1, 0)
         end = datetime.datetime(2014, 2, 2, 2, 0)
-        ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID)
+        ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
         last_completed_audit_period.return_value = (begin, end)
 
         volume1_created = datetime.datetime(2014, 1, 1, 2, 0)
         volume1_deleted = datetime.datetime(2014, 1, 1, 3, 0)
-        volume1 = mock.MagicMock(id=fake.VOLUME_ID, project_id=fake.PROJECT_ID,
+        volume1 = mock.MagicMock(id='1', project_id='fake-project',
                                  created_at=volume1_created,
                                  deleted_at=volume1_deleted)
         volume_get_active_by_window.return_value = [volume1]
@@ -1954,8 +1739,7 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
 
         snapshot1_created = datetime.datetime(2014, 1, 1, 2, 0)
         snapshot1_deleted = datetime.datetime(2014, 1, 1, 3, 0)
-        snapshot1 = mock.MagicMock(id=fake.VOLUME_ID,
-                                   project_id=fake.PROJECT_ID,
+        snapshot1 = mock.MagicMock(id='1', project_id='fake-project',
                                    created_at=snapshot1_created,
                                    deleted_at=snapshot1_deleted)
         snapshot_get_active_by_window.return_value = [snapshot1]
@@ -1978,26 +1762,32 @@ class TestCinderVolumeUsageAuditCmd(test.TestCase):
         rpc_init.assert_called_once_with(CONF)
         last_completed_audit_period.assert_called_once_with()
         volume_get_active_by_window.assert_called_once_with(ctxt, begin, end)
-        notify_about_volume_usage.assert_has_calls([
-            mock.call(ctxt, volume1, 'exists', extra_usage_info=extra_info),
-            mock.call(ctxt, volume1, 'create.start',
-                      extra_usage_info=extra_info_volume_create),
-            mock.call(ctxt, volume1, 'create.end',
-                      extra_usage_info=extra_info_volume_create),
-            mock.call(ctxt, volume1, 'delete.start',
-                      extra_usage_info=extra_info_volume_delete),
-            mock.call(ctxt, volume1, 'delete.end',
-                      extra_usage_info=extra_info_volume_delete)
-        ])
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'exists', extra_usage_info=extra_info)
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'create.start',
+            extra_usage_info=extra_info_volume_create)
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'create.end',
+            extra_usage_info=extra_info_volume_create)
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'delete.start',
+            extra_usage_info=extra_info_volume_delete)
+        notify_about_volume_usage.assert_any_call(
+            ctxt, volume1, 'delete.end',
+            extra_usage_info=extra_info_volume_delete)
 
-        notify_about_snapshot_usage.assert_has_calls([
-            mock.call(ctxt, snapshot1, 'exists', extra_info),
-            mock.call(ctxt, snapshot1, 'create.start',
-                      extra_usage_info=extra_info_snapshot_create),
-            mock.call(ctxt, snapshot1, 'create.end',
-                      extra_usage_info=extra_info_snapshot_create),
-            mock.call(ctxt, snapshot1, 'delete.start',
-                      extra_usage_info=extra_info_snapshot_delete),
-            mock.call(ctxt, snapshot1, 'delete.end',
-                      extra_usage_info=extra_info_snapshot_delete)
-        ])
+        notify_about_snapshot_usage.assert_any_call(ctxt, snapshot1,
+                                                    'exists', extra_info)
+        notify_about_snapshot_usage.assert_any_call(
+            ctxt, snapshot1, 'create.start',
+            extra_usage_info=extra_info_snapshot_create)
+        notify_about_snapshot_usage.assert_any_call(
+            ctxt, snapshot1, 'create.end',
+            extra_usage_info=extra_info_snapshot_create)
+        notify_about_snapshot_usage.assert_any_call(
+            ctxt, snapshot1, 'delete.start',
+            extra_usage_info=extra_info_snapshot_delete)
+        notify_about_snapshot_usage.assert_any_call(
+            ctxt, snapshot1, 'delete.end',
+            extra_usage_info=extra_info_snapshot_delete)

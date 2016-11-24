@@ -14,7 +14,6 @@
 #    under the License.
 
 import ast
-import math
 import os.path
 
 from oslo_config import cfg
@@ -102,10 +101,7 @@ class EMCVMAXCommon(object):
 
     pool_info = {'backend_name': None,
                  'config_file': None,
-                 'arrays_info': {},
-                 'max_over_subscription_ratio': None,
-                 'reserved_percentage': None
-                 }
+                 'arrays_info': {}}
 
     def __init__(self, prtcl, version, configuration=None):
 
@@ -140,10 +136,6 @@ class EMCVMAXCommon(object):
 
         self.pool_info['backend_name'] = (
             self.configuration.safe_get('volume_backend_name'))
-        self.pool_info['max_over_subscription_ratio'] = (
-            self.configuration.safe_get('max_over_subscription_ratio'))
-        self.pool_info['reserved_percentage'] = (
-            self.configuration.safe_get('reserved_percentage'))
         LOG.debug(
             "Updating volume stats on file %(emcConfigFileName)s on "
             "backend %(backendName)s.",
@@ -353,16 +345,6 @@ class EMCVMAXCommon(object):
 
         self._remove_members(configservice, vol_instance, connector,
                              extraSpecs)
-        livemigrationrecord = self.utils.get_live_migration_record(volume,
-                                                                   False)
-        if livemigrationrecord:
-            live_maskingviewdict = livemigrationrecord[0]
-            live_connector = livemigrationrecord[1]
-            live_extraSpecs = livemigrationrecord[2]
-            self._attach_volume(
-                volume, live_connector, live_extraSpecs,
-                live_maskingviewdict, True)
-            self.utils.delete_live_migration_record(volume)
 
     def initialize_connection(self, volume, connector):
         """Initializes the connection and returns device and connection info.
@@ -374,19 +356,16 @@ class EMCVMAXCommon(object):
         maskingview.
 
         The naming convention is the following:
-
-        .. code-block:: none
-
-         initiatorGroupName = OS-<shortHostName>-<shortProtocol>-IG
-                              e.g OS-myShortHost-I-IG
-         storageGroupName = OS-<shortHostName>-<poolName>-<shortProtocol>-SG
-                            e.g OS-myShortHost-SATA_BRONZ1-I-SG
-         portGroupName = OS-<target>-PG  The portGroupName will come from
-                         the EMC configuration xml file.
-                         These are precreated. If the portGroup does not
-                         exist then an error will be returned to the user
-         maskingView  = OS-<shortHostName>-<poolName>-<shortProtocol>-MV
-                        e.g OS-myShortHost-SATA_BRONZ1-I-MV
+        initiatorGroupName = OS-<shortHostName>-<shortProtocol>-IG
+                             e.g OS-myShortHost-I-IG
+        storageGroupName = OS-<shortHostName>-<poolName>-<shortProtocol>-SG
+                           e.g OS-myShortHost-SATA_BRONZ1-I-SG
+        portGroupName = OS-<target>-PG  The portGroupName will come from
+                        the EMC configuration xml file.
+                        These are precreated. If the portGroup does not exist
+                        then an error will be returned to the user
+        maskingView  = OS-<shortHostName>-<poolName>-<shortProtocol>-MV
+                       e.g OS-myShortHost-SATA_BRONZ1-I-MV
 
         :param volume: volume Object
         :param connector: the connector Object
@@ -395,7 +374,6 @@ class EMCVMAXCommon(object):
         """
         portGroupName = None
         extraSpecs = self._initial_setup(volume)
-        is_multipath = connector.get('multipath', False)
 
         volumeName = volume['name']
         LOG.info(_LI("Initialize connection: %(volume)s."),
@@ -432,13 +410,11 @@ class EMCVMAXCommon(object):
                     volume, connector, extraSpecs, maskingViewDict))
 
         if self.protocol.lower() == 'iscsi':
-            deviceInfoDict['ip_and_iqn'] = (
-                self._find_ip_protocol_endpoints(
-                    self.conn, deviceInfoDict['storagesystem'],
-                    portGroupName))
-            deviceInfoDict['is_multipath'] = is_multipath
-
-        return deviceInfoDict
+            return self._find_ip_protocol_endpoints(
+                self.conn, deviceInfoDict['storagesystem'],
+                portGroupName)
+        else:
+            return deviceInfoDict
 
     def _attach_volume(self, volume, connector, extraSpecs,
                        maskingViewDict, isLiveMigration=False):
@@ -461,8 +437,6 @@ class EMCVMAXCommon(object):
             volume, connector, extraSpecs)
         if isLiveMigration:
             maskingViewDict['isLiveMigration'] = True
-            self.utils.insert_live_migration_record(volume, maskingViewDict,
-                                                    connector, extraSpecs)
         else:
             maskingViewDict['isLiveMigration'] = False
 
@@ -478,9 +452,9 @@ class EMCVMAXCommon(object):
                       {'vol': volumeName})
             if ((rollbackDict['fastPolicyName'] is not None) or
                     (rollbackDict['isV3'] is not None)):
-                (self.masking._check_if_rollback_action_for_masking_required(
-                    self.conn, rollbackDict))
-                self.utils.delete_live_migration_record(volume)
+                (self.masking
+                    ._check_if_rollback_action_for_masking_required(
+                        self.conn, rollbackDict))
             exception_message = (_("Error Attaching volume %(vol)s.")
                                  % {'vol': volumeName})
             raise exception.VolumeBackendAPIException(
@@ -576,7 +550,7 @@ class EMCVMAXCommon(object):
         Prequisites:
         1. The volume must be composite e.g StorageVolume.EMCIsComposite=True
         2. The volume can only be concatenated
-        e.g StorageExtent.IsConcatenated=True
+           e.g StorageExtent.IsConcatenated=True
 
         :params volume: the volume Object
         :params newSize: the new size to increase the volume to
@@ -594,23 +568,7 @@ class EMCVMAXCommon(object):
                                 % {'volumename': volumeName})
             LOG.error(exceptionMessage)
             raise exception.VolumeBackendAPIException(data=exceptionMessage)
-        return self._extend_volume(
-            volumeInstance, volumeName, newSize, originalVolumeSize,
-            extraSpecs)
 
-    def _extend_volume(
-            self, volumeInstance, volumeName, newSize, originalVolumeSize,
-            extraSpecs):
-        """Extends an existing volume.
-
-        :params volumeInstance: the volume Instance
-        :params volumeName: the volume name
-        :params newSize: the new size to increase the volume to
-        :params originalVolumeSize: the original size
-        :params extraSpecs: extra specifications
-        :returns: dict -- modifiedVolumeDict - the extended volume Object
-        :raises: VolumeBackendAPIException
-        """
         if int(originalVolumeSize) > int(newSize):
             exceptionMessage = (_(
                 "Your original size: %(originalVolumeSize)s GB is greater "
@@ -633,6 +591,7 @@ class EMCVMAXCommon(object):
             rc, modifiedVolumeDict = self._extend_composite_volume(
                 volumeInstance, volumeName, newSize, additionalVolumeSize,
                 extraSpecs)
+
         # Check the occupied space of the new extended volume.
         extendedVolumeInstance = self.utils.find_volume_instance(
             self.conn, modifiedVolumeDict, volumeName)
@@ -672,27 +631,20 @@ class EMCVMAXCommon(object):
         """Retrieve stats info."""
         pools = []
         backendName = self.pool_info['backend_name']
-        max_oversubscription_ratio = (
-            self.pool_info['max_over_subscription_ratio'])
-        reservedPercentage = self.pool_info['reserved_percentage']
-        array_max_over_subscription = None
-        array_reserve_percent = None
         for arrayInfo in self.pool_info['arrays_info']:
             self._set_ecom_credentials(arrayInfo)
             # Check what type of array it is
             isV3 = self.utils.isArrayV3(self.conn, arrayInfo['SerialNumber'])
             if isV3:
-                (location_info, total_capacity_gb, free_capacity_gb,
-                 provisioned_capacity_gb,
-                 array_reserve_percent) = self._update_srp_stats(arrayInfo)
+                location_info, total_capacity_gb, free_capacity_gb = (
+                    self._update_srp_stats(arrayInfo))
                 poolName = ("%(slo)s+%(poolName)s+%(array)s"
                             % {'slo': arrayInfo['SLO'],
                                'poolName': arrayInfo['PoolName'],
                                'array': arrayInfo['SerialNumber']})
             else:
                 # This is V2
-                (location_info, total_capacity_gb, free_capacity_gb,
-                 provisioned_capacity_gb, array_max_over_subscription) = (
+                location_info, total_capacity_gb, free_capacity_gb = (
                     self._update_pool_stats(backendName, arrayInfo))
                 poolName = ("%(poolName)s+%(array)s"
                             % {'poolName': arrayInfo['PoolName'],
@@ -701,25 +653,10 @@ class EMCVMAXCommon(object):
             pool = {'pool_name': poolName,
                     'total_capacity_gb': total_capacity_gb,
                     'free_capacity_gb': free_capacity_gb,
-                    'provisioned_capacity_gb': provisioned_capacity_gb,
+                    'reserved_percentage': 0,
                     'QoS_support': False,
                     'location_info': location_info,
-                    'consistencygroup_support': True,
-                    'thin_provisioning_support': True,
-                    'thick_provisioning_support': False,
-                    'max_over_subscription_ratio': max_oversubscription_ratio
-                    }
-            if array_max_over_subscription:
-                pool['max_over_subscription_ratio'] = (
-                    self.utils.override_ratio(
-                        max_oversubscription_ratio,
-                        array_max_over_subscription))
-
-            if array_reserve_percent and (
-                    array_reserve_percent > reservedPercentage):
-                pool['reserved_percentage'] = array_reserve_percent
-            else:
-                pool['reserved_percentage'] = reservedPercentage
+                    'consistencygroup_support': True}
             pools.append(pool)
 
         data = {'vendor_name': "EMC",
@@ -730,7 +667,6 @@ class EMCVMAXCommon(object):
                 # Use zero capacities here so we always use a pool.
                 'total_capacity_gb': 0,
                 'free_capacity_gb': 0,
-                'provisioned_capacity_gb': 0,
                 'reserved_percentage': 0,
                 'pools': pools}
 
@@ -743,24 +679,20 @@ class EMCVMAXCommon(object):
         :returns: location_info
         :returns: totalManagedSpaceGbs
         :returns: remainingManagedSpaceGbs
-        :returns: provisionedManagedSpaceGbs
-        :returns: array_reserve_percent
         """
 
-        (totalManagedSpaceGbs, remainingManagedSpaceGbs,
-         provisionedManagedSpaceGbs, array_reserve_percent) = (
-            self.provisionv3.get_srp_pool_stats(self.conn, arrayInfo))
+        totalManagedSpaceGbs, remainingManagedSpaceGbs = (
+            self.provisionv3.get_srp_pool_stats(self.conn,
+                                                arrayInfo))
 
         LOG.info(_LI(
             "Capacity stats for SRP pool %(poolName)s on array "
             "%(arrayName)s total_capacity_gb=%(total_capacity_gb)lu, "
-            "free_capacity_gb=%(free_capacity_gb)lu, "
-            "provisioned_capacity_gb=%(provisioned_capacity_gb)lu"),
+            "free_capacity_gb=%(free_capacity_gb)lu"),
             {'poolName': arrayInfo['PoolName'],
              'arrayName': arrayInfo['SerialNumber'],
              'total_capacity_gb': totalManagedSpaceGbs,
-             'free_capacity_gb': remainingManagedSpaceGbs,
-             'provisioned_capacity_gb': provisionedManagedSpaceGbs})
+             'free_capacity_gb': remainingManagedSpaceGbs})
 
         location_info = ("%(arrayName)s#%(poolName)s#%(slo)s#%(workload)s"
                          % {'arrayName': arrayInfo['SerialNumber'],
@@ -768,9 +700,7 @@ class EMCVMAXCommon(object):
                             'slo': arrayInfo['SLO'],
                             'workload': arrayInfo['Workload']})
 
-        return (location_info, totalManagedSpaceGbs,
-                remainingManagedSpaceGbs, provisionedManagedSpaceGbs,
-                array_reserve_percent)
+        return location_info, totalManagedSpaceGbs, remainingManagedSpaceGbs
 
     def retype(self, ctxt, volume, new_type, diff, host):
         """Migrate volume to another host using retype.
@@ -1345,7 +1275,6 @@ class EMCVMAXCommon(object):
         :returns: string -- configuration file
         """
         extraSpecs = self.utils.get_volumetype_extraspecs(volume, volumeTypeId)
-        qosSpecs = self.utils.get_volumetype_qosspecs(volume, volumeTypeId)
         configGroup = None
 
         # If there are no extra specs then the default case is assumed.
@@ -1353,7 +1282,8 @@ class EMCVMAXCommon(object):
             configGroup = self.configuration.config_group
         configurationFile = self._register_config_file_from_config_group(
             configGroup)
-        return extraSpecs, configurationFile, qosSpecs
+
+        return extraSpecs, configurationFile
 
     def _get_ecom_connection(self):
         """Get the ecom connection.
@@ -1606,16 +1536,16 @@ class EMCVMAXCommon(object):
             host = self.utils.get_host_short_name(host)
             hoststr = ("-%(host)s-"
                        % {'host': host})
+
             for maskedvol in maskedvols:
                 if hoststr.lower() in maskedvol['maskingview'].lower():
                     data = maskedvol
+                    break
             if not data:
-                if len(maskedvols) > 0:
-                    data = maskedvols[0]
-                    LOG.warning(_LW(
-                        "Volume is masked but not to host %(host)s as is "
-                        "expected. Assuming live migration."),
-                        {'host': hoststr})
+                LOG.warning(_LW(
+                    "Volume is masked but not to host %(host)s as "
+                    "expected. Returning empty dictionary."),
+                    {'host': hoststr})
 
         LOG.debug("Device info: %(data)s.", {'data': data})
         return data
@@ -1628,7 +1558,7 @@ class EMCVMAXCommon(object):
         :returns: list -- targetWwns, the target WWN list
         :raises: VolumeBackendAPIException
         """
-        targetWwns = set()
+        targetWwns = []
 
         storageHardwareService = self.utils.find_storage_hardwareid_service(
             self.conn, storageSystem)
@@ -1649,36 +1579,33 @@ class EMCVMAXCommon(object):
                 targetEndpoints = (
                     self.utils.get_target_endpoints(
                         self.conn, hardwareIdInstance))
-                if not targetEndpoints:
-                    LOG.warning(_LW(
-                        "Unable to get target endpoints for hardwareId "
-                        "%(instance)s."),
-                        {'instance': hardwareIdInstance})
-                    continue
             except Exception:
-                LOG.warning(_LW(
+                errorMessage = (_(
                     "Unable to get target endpoints for hardwareId "
-                    "%(instance)s."),
-                    {'instance': hardwareIdInstance}, exc_info=True)
-                continue
+                    "%(hardwareIdInstance)s.")
+                    % {'hardwareIdInstance': hardwareIdInstance})
+                LOG.exception(errorMessage)
+                raise exception.VolumeBackendAPIException(data=errorMessage)
 
-            LOG.debug("There are %(len)lu endpoints.",
-                      {'len': len(targetEndpoints)})
-            for targetendpoint in targetEndpoints:
-                wwn = targetendpoint['Name']
-                # Add target wwn to the list if it is not already there.
-                targetWwns.add(wwn)
-            break
+            if targetEndpoints:
 
-        if not targetWwns:
-            exception_message = (_(
-                "Unable to get target endpoints for any hardwareIds."))
-            raise exception.VolumeBackendAPIException(data=exception_message)
+                LOG.debug("There are %(len)lu endpoints.",
+                          {'len': len(targetEndpoints)})
+                for targetendpoint in targetEndpoints:
+                    wwn = targetendpoint['Name']
+                    # Add target wwn to the list if it is not already there.
+                    if not any(d == wwn for d in targetWwns):
+                        targetWwns.append(wwn)
+            else:
+                LOG.error(_LE(
+                    "Target end points do not exist for hardware Id: "
+                    "%(hardwareIdInstance)s."),
+                    {'hardwareIdInstance': hardwareIdInstance})
 
         LOG.debug("Target WWNs: %(targetWwns)s.",
                   {'targetWwns': targetWwns})
 
-        return list(targetWwns)
+        return targetWwns
 
     def _find_storage_hardwareids(
             self, connector, hardwareIdManagementService):
@@ -1793,7 +1720,7 @@ class EMCVMAXCommon(object):
         :raises: VolumeBackendAPIException
         """
         try:
-            extraSpecs, configurationFile, qosSpecs = (
+            extraSpecs, configurationFile = (
                 self._set_config_file_and_get_extra_specs(
                     volume, volumeTypeId))
 
@@ -1819,9 +1746,6 @@ class EMCVMAXCommon(object):
             else:
                 # V2 extra specs
                 extraSpecs = self._set_v2_extra_specs(extraSpecs, poolRecord)
-            if (qosSpecs.get('qos_spec')
-                    and qosSpecs['qos_specs']['consumer'] != "front-end"):
-                extraSpecs['qos'] = qosSpecs['qos_specs']['specs']
         except Exception:
             import sys
             exceptionMessage = (_(
@@ -1880,17 +1804,12 @@ class EMCVMAXCommon(object):
             maskingViewDict['slo'] = slo
             maskingViewDict['workload'] = workload
             maskingViewDict['pool'] = uniqueName
-            if slo:
-                prefix = (
-                    ("OS-%(shortHostName)s-%(poolName)s-%(slo)s-%(workload)s"
-                     % {'shortHostName': shortHostName,
-                        'poolName': uniqueName,
-                        'slo': slo,
-                        'workload': workload}))
-            else:
-                prefix = (
-                    ("OS-%(shortHostName)s-No_SLO"
-                     % {'shortHostName': shortHostName}))
+            prefix = (
+                ("OS-%(shortHostName)s-%(poolName)s-%(slo)s-%(workload)s"
+                 % {'shortHostName': shortHostName,
+                    'poolName': uniqueName,
+                    'slo': slo,
+                    'workload': workload}))
         else:
             maskingViewDict['fastPolicy'] = extraSpecs[FASTPOLICY]
             if maskingViewDict['fastPolicy']:
@@ -2154,7 +2073,7 @@ class EMCVMAXCommon(object):
             self.utils.find_replication_service_capabilities(self.conn,
                                                              storageSystem))
         is_clone_license = self.utils.is_clone_licensed(
-            self.conn, repServCapabilityInstanceName, extraSpecs[ISV3])
+            self.conn, repServCapabilityInstanceName)
 
         if is_clone_license is False:
             exceptionMessage = (_(
@@ -2192,23 +2111,6 @@ class EMCVMAXCommon(object):
                                                   sourceInstance,
                                                   isSnapshot,
                                                   extraSpecs)
-
-        if not isSnapshot:
-            old_size_gbs = self.utils.convert_bits_to_gbs(
-                self.utils.get_volume_size(
-                    self.conn, sourceInstance))
-
-            if cloneVolume['size'] != old_size_gbs:
-                LOG.info(_LI("Extending clone %(cloneName)s to "
-                             "%(newSize)d GBs"),
-                         {'cloneName': cloneName,
-                          'newSize': cloneVolume['size']})
-                cloneInstance = self.utils.find_volume_instance(
-                    self.conn, cloneDict, cloneName)
-                self._extend_volume(
-                    cloneInstance, cloneName, cloneVolume['size'],
-                    old_size_gbs, extraSpecs)
-
         LOG.debug("Leaving _create_cloned_volume: Volume: "
                   "%(cloneName)s Source Volume: %(sourceName)s "
                   "Return code: %(rc)lu.",
@@ -2781,8 +2683,7 @@ class EMCVMAXCommon(object):
 
         for snapshot in snapshots:
             snapshots_model_update.append(
-                {'id': snapshot['id'],
-                 'status': fields.SnapshotStatus.AVAILABLE})
+                {'id': snapshot['id'], 'status': 'available'})
         modelUpdate = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
 
         return modelUpdate, snapshots_model_update
@@ -2821,8 +2722,7 @@ class EMCVMAXCommon(object):
                 snapshots, extraSpecs)
             for snapshot in snapshots:
                 snapshots_model_update.append(
-                    {'id': snapshot['id'],
-                     'status': fields.SnapshotStatus.DELETED})
+                    {'id': snapshot['id'], 'status': 'deleted'})
         except Exception:
             exceptionMessage = (_("Failed to delete snapshot for cg: "
                                   "%(cgId)s.")
@@ -2960,10 +2860,6 @@ class EMCVMAXCommon(object):
                 LOG.error(exceptionMessage)
                 raise exception.VolumeBackendAPIException(
                     data=exceptionMessage)
-            # If qos exists, update storage group to reflect qos parameters
-            if 'qos' in extraSpecs:
-                self.utils.update_storagegroup_qos(
-                    self.conn, defaultStorageGroupInstanceName, extraSpecs)
 
             self._add_volume_to_default_storage_group_on_create(
                 volumeDict, volumeName, storageConfigService,
@@ -3001,27 +2897,15 @@ class EMCVMAXCommon(object):
         # Check to see if SLO and Workload are configured on the array.
         storagePoolCapability = self.provisionv3.get_storage_pool_capability(
             self.conn, poolInstanceName)
-        if extraSpecs[SLO]:
-            if storagePoolCapability:
-                storagePoolSetting = self.provisionv3.get_storage_pool_setting(
-                    self.conn, storagePoolCapability, extraSpecs[SLO],
-                    extraSpecs[WORKLOAD])
-                if not storagePoolSetting:
-                    exceptionMessage = (_(
-                        "The array does not support the storage pool setting "
-                        "for SLO %(slo)s or workload %(workload)s. Please "
-                        "check the array for valid SLOs and workloads.")
-                        % {'slo': extraSpecs[SLO],
-                           'workload': extraSpecs[WORKLOAD]})
-                    LOG.error(exceptionMessage)
-                    raise exception.VolumeBackendAPIException(
-                        data=exceptionMessage)
-            else:
-                exceptionMessage = (_(
-                    "Cannot determine storage pool settings."))
-                LOG.error(exceptionMessage)
-                raise exception.VolumeBackendAPIException(
-                    data=exceptionMessage)
+        if storagePoolCapability:
+            self.provisionv3.get_storage_pool_setting(
+                self.conn, storagePoolCapability, extraSpecs[SLO],
+                extraSpecs[WORKLOAD])
+        else:
+            exceptionMessage = (_(
+                "Cannot determine storage pool settings."))
+            LOG.error(exceptionMessage)
+            raise exception.VolumeBackendAPIException(data=exceptionMessage)
 
         LOG.debug("Create Volume: %(volume)s  Pool: %(pool)s "
                   "Storage System: %(storageSystem)s "
@@ -3064,10 +2948,6 @@ class EMCVMAXCommon(object):
             sgInstanceName = self.provisionv3.create_storage_group_v3(
                 self.conn, controllerConfigService, storageGroupName,
                 poolName, slo, workload, extraSpecs)
-        # If qos exists, update storage group to reflect qos parameters
-        if 'qos' in extraSpecs:
-            self.utils.update_storagegroup_qos(
-                self.conn, sgInstanceName, extraSpecs)
 
         return sgInstanceName
 
@@ -3316,8 +3196,7 @@ class EMCVMAXCommon(object):
 
         :param backendName: the backend name
         :param arrayInfo: the arrayInfo
-        :returns: location_info, total_capacity_gb, free_capacity_gb,
-        provisioned_capacity_gb
+        :returns: location_info, total_capacity_gb, free_capacity_gb
         """
 
         if arrayInfo['FastPolicy']:
@@ -3340,8 +3219,7 @@ class EMCVMAXCommon(object):
 
         if (arrayInfo['FastPolicy'] is not None and
                 isTieringPolicySupported is True):  # FAST enabled
-            (total_capacity_gb, free_capacity_gb, provisioned_capacity_gb,
-             array_max_over_subscription) = (
+            total_capacity_gb, free_capacity_gb = (
                 self.fast.get_capacities_associated_to_policy(
                     self.conn, arrayInfo['SerialNumber'],
                     arrayInfo['FastPolicy']))
@@ -3354,8 +3232,7 @@ class EMCVMAXCommon(object):
                  'total_capacity_gb': total_capacity_gb,
                  'free_capacity_gb': free_capacity_gb})
         else:  # NON-FAST
-            (total_capacity_gb, free_capacity_gb, provisioned_capacity_gb,
-             array_max_over_subscription) = (
+            total_capacity_gb, free_capacity_gb = (
                 self.utils.get_pool_capacities(self.conn,
                                                arrayInfo['PoolName'],
                                                arrayInfo['SerialNumber']))
@@ -3373,8 +3250,7 @@ class EMCVMAXCommon(object):
                             'poolName': arrayInfo['PoolName'],
                             'policyName': arrayInfo['FastPolicy']})
 
-        return (location_info, total_capacity_gb, free_capacity_gb,
-                provisioned_capacity_gb, array_max_over_subscription)
+        return location_info, total_capacity_gb, free_capacity_gb
 
     def _set_v2_extra_specs(self, extraSpecs, poolRecord):
         """Set the VMAX V2 extra specs.
@@ -4251,7 +4127,7 @@ class EMCVMAXCommon(object):
                                                          arrayName, deviceId))
         volumeInstance = self.conn.GetInstance(volumeInstanceName)
         byteSize = self.utils.get_volume_size(self.conn, volumeInstance)
-        gbSize = int(math.ceil(float(byteSize) / units.Gi))
+        gbSize = int(byteSize) / units.Gi
         LOG.debug(
             "Size of volume %(deviceID)s is %(volumeSize)s GB.",
             {'deviceID': deviceId,
@@ -4525,12 +4401,11 @@ class EMCVMAXCommon(object):
                 ipendpointinstancenames = (
                     self.utils.get_ip_protocol_endpoints(
                         conn, tcpendpointinstancename))
-                endpoint = {}
                 for ipendpointinstancename in ipendpointinstancenames:
-                    endpoint = self.get_ip_and_iqn(conn, endpoint,
-                                                   ipendpointinstancename)
-                if bool(endpoint):
-                    foundipaddresses.append(endpoint)
+                    ipaddress = (
+                        self.utils.get_iscsi_ip_address(
+                            conn, ipendpointinstancename))
+                    foundipaddresses.append(ipaddress)
         return foundipaddresses
 
     def _extend_v3_volume(self, volumeInstance, volumeName, newSize,
@@ -4579,26 +4454,3 @@ class EMCVMAXCommon(object):
                   {'sourceVol': sourceInstance.path,
                    'targetVol': targetInstance.path})
         return targetInstance
-
-    def get_ip_and_iqn(self, conn, endpoint, ipendpointinstancename):
-        """Get ip and iqn from the endpoint.
-
-        :param conn: ecom connection
-        :param endpoint: end point
-        :param ipendpointinstancename: ip endpoint
-        :returns: endpoint
-        """
-        if ('iSCSIProtocolEndpoint' in six.text_type(
-                ipendpointinstancename['CreationClassName'])):
-            iqn = self.utils.get_iqn(conn, ipendpointinstancename)
-            if iqn:
-                endpoint['iqn'] = iqn
-        elif ('IPProtocolEndpoint' in six.text_type(
-                ipendpointinstancename['CreationClassName'])):
-            ipaddress = (
-                self.utils.get_iscsi_ip_address(
-                    conn, ipendpointinstancename))
-            if ipaddress:
-                endpoint['ip'] = ipaddress
-
-        return endpoint

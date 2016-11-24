@@ -19,19 +19,19 @@ from cinder import objects
 from cinder.objects import base
 from oslo_versionedobjects import fields
 
+OPTIONAL_FIELDS = ['consistencygroup', 'snapshots']
+
 
 @base.CinderObjectRegistry.register
 class CGSnapshot(base.CinderPersistentObject, base.CinderObject,
                  base.CinderObjectDictCompat):
     VERSION = '1.0'
 
-    OPTIONAL_FIELDS = ['consistencygroup', 'snapshots']
-
     fields = {
         'id': fields.UUIDField(),
         'consistencygroup_id': fields.UUIDField(nullable=True),
-        'project_id': fields.StringField(),
-        'user_id': fields.StringField(),
+        'project_id': fields.UUIDField(),
+        'user_id': fields.UUIDField(),
         'name': fields.StringField(nullable=True),
         'description': fields.StringField(nullable=True),
         'status': fields.StringField(nullable=True),
@@ -40,16 +40,12 @@ class CGSnapshot(base.CinderPersistentObject, base.CinderObject,
         'snapshots': fields.ObjectField('SnapshotList', nullable=True),
     }
 
-    @property
-    def service_topic_queue(self):
-        return self.consistencygroup.service_topic_queue
-
-    @classmethod
-    def _from_db_object(cls, context, cgsnapshot, db_cgsnapshots,
+    @staticmethod
+    def _from_db_object(context, cgsnapshot, db_cgsnapshots,
                         expected_attrs=None):
         expected_attrs = expected_attrs or []
         for name, field in cgsnapshot.fields.items():
-            if name in cls.OPTIONAL_FIELDS:
+            if name in OPTIONAL_FIELDS:
                 continue
             value = db_cgsnapshots.get(name)
             setattr(cgsnapshot, name, value)
@@ -72,6 +68,7 @@ class CGSnapshot(base.CinderPersistentObject, base.CinderObject,
         cgsnapshot.obj_reset_changes()
         return cgsnapshot
 
+    @base.remotable
     def create(self):
         if self.obj_attr_is_set('id'):
             raise exception.ObjectActionError(action='create',
@@ -86,7 +83,7 @@ class CGSnapshot(base.CinderPersistentObject, base.CinderObject,
         self._from_db_object(self._context, self, db_cgsnapshots)
 
     def obj_load_attr(self, attrname):
-        if attrname not in self.OPTIONAL_FIELDS:
+        if attrname not in OPTIONAL_FIELDS:
             raise exception.ObjectActionError(
                 action='obj_load_attr',
                 reason=_('attribute %s not lazy-loadable') % attrname)
@@ -104,6 +101,7 @@ class CGSnapshot(base.CinderPersistentObject, base.CinderObject,
 
         self.obj_reset_changes(fields=[attrname])
 
+    @base.remotable
     def save(self):
         updates = self.cinder_obj_get_changes()
         if updates:
@@ -116,11 +114,10 @@ class CGSnapshot(base.CinderPersistentObject, base.CinderObject,
             db.cgsnapshot_update(self._context, self.id, updates)
             self.obj_reset_changes()
 
+    @base.remotable
     def destroy(self):
         with self.obj_as_admin():
-            updated_values = db.cgsnapshot_destroy(self._context, self.id)
-        self.update(updated_values)
-        self.obj_reset_changes(updated_values.keys())
+            db.cgsnapshot_destroy(self._context, self.id)
 
 
 @base.CinderObjectRegistry.register
@@ -131,20 +128,20 @@ class CGSnapshotList(base.ObjectListBase, base.CinderObject):
         'objects': fields.ListOfObjectsField('CGSnapshot')
     }
 
-    @classmethod
+    @base.remotable_classmethod
     def get_all(cls, context, filters=None):
         cgsnapshots = db.cgsnapshot_get_all(context, filters)
         return base.obj_make_list(context, cls(context), objects.CGSnapshot,
                                   cgsnapshots)
 
-    @classmethod
+    @base.remotable_classmethod
     def get_all_by_project(cls, context, project_id, filters=None):
         cgsnapshots = db.cgsnapshot_get_all_by_project(context, project_id,
                                                        filters)
         return base.obj_make_list(context, cls(context), objects.CGSnapshot,
                                   cgsnapshots)
 
-    @classmethod
+    @base.remotable_classmethod
     def get_all_by_group(cls, context, group_id, filters=None):
         cgsnapshots = db.cgsnapshot_get_all_by_group(context, group_id,
                                                      filters)

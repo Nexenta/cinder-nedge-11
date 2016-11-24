@@ -33,64 +33,88 @@ The :mod:`cinder.api` Module
     :undoc-members:
     :show-inheritance:
 
+OpenStack API
+-------------
+
+The :mod:`openstack` Module
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: cinder.api.openstack
+    :noindex:
+    :members:
+    :undoc-members:
+    :show-inheritance:
 
 Tests
 -----
 
-The :mod:`api` Module
-~~~~~~~~~~~~~~~~~~~~~
+The :mod:`api_unittest` Module
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: cinder.tests.unit.api
+.. automodule:: cinder.tests.api_unittest
     :noindex:
     :members:
     :undoc-members:
     :show-inheritance:
 
+The :mod:`api_integration` Module
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: cinder.tests.api_integration
+    :noindex:
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+The :mod:`cloud_unittest` Module
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: cinder.tests.cloud_unittest
+    :noindex:
+    :members:
+    :undoc-members:
+    :show-inheritance:
 
 The :mod:`api.fakes` Module
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: cinder.tests.unit.api.fakes
+.. automodule:: cinder.tests.api.fakes
     :noindex:
     :members:
     :undoc-members:
     :show-inheritance:
 
-
-The :mod:`api.openstack` Module
+The :mod:`api.test_wsgi` Module
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: cinder.tests.unit.api.openstack
+.. automodule:: cinder.tests.api.test_wsgi
     :noindex:
     :members:
     :undoc-members:
     :show-inheritance:
 
+The :mod:`test_api` Module
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The :mod:`api.openstack.test_wsgi` Module
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. automodule:: cinder.tests.unit.api.openstack.test_wsgi
+.. automodule:: cinder.tests.api.openstack.test_api
     :noindex:
     :members:
     :undoc-members:
     :show-inheritance:
-
 
 The :mod:`test_auth` Module
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: cinder.tests.unit.api.middleware.test_auth
+.. automodule:: cinder.tests.api.openstack.test_auth
     :noindex:
     :members:
     :undoc-members:
     :show-inheritance:
 
-
 The :mod:`test_faults` Module
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. automodule:: cinder.tests.unit.api.middleware.test_faults
+.. automodule:: cinder.tests.api.openstack.test_faults
     :noindex:
     :members:
     :undoc-members:

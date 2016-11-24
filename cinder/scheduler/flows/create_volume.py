@@ -18,9 +18,6 @@ from taskflow.patterns import linear_flow
 from cinder import exception
 from cinder import flow_utils
 from cinder.i18n import _LE
-from cinder.message import api as message_api
-from cinder.message import defined_messages
-from cinder.message import resource_types
 from cinder import rpc
 from cinder import utils
 from cinder.volume.flows import common
@@ -43,7 +40,7 @@ class ExtractSchedulerSpecTask(flow_utils.CinderTask):
                                                        **kwargs)
         self.db_api = db_api
 
-    def _populate_request_spec(self, volume, snapshot_id,
+    def _populate_request_spec(self, context, volume, snapshot_id,
                                image_id):
         # Create the full request spec using the volume object.
         #
@@ -69,7 +66,7 @@ class ExtractSchedulerSpecTask(flow_utils.CinderTask):
                 image_id):
         # For RPC version < 1.2 backward compatibility
         if request_spec is None:
-            request_spec = self._populate_request_spec(volume.id,
+            request_spec = self._populate_request_spec(context, volume.id,
                                                        snapshot_id, image_id)
         return {
             'request_spec': request_spec,
@@ -93,7 +90,6 @@ class ScheduleCreateVolumeTask(flow_utils.CinderTask):
                                                        **kwargs)
         self.db_api = db_api
         self.driver_api = driver_api
-        self.message_api = message_api.API()
 
     def _handle_failure(self, context, request_spec, cause):
         try:
@@ -120,7 +116,7 @@ class ScheduleCreateVolumeTask(flow_utils.CinderTask):
                               "payload %(payload)s"),
                           {'topic': self.FAILURE_TOPIC, 'payload': payload})
 
-    def execute(self, context, request_spec, filter_properties, volume):
+    def execute(self, context, request_spec, filter_properties):
         try:
             self.driver_api.schedule_create_volume(context, request_spec,
                                                    filter_properties)
@@ -131,17 +127,12 @@ class ScheduleCreateVolumeTask(flow_utils.CinderTask):
             # reraise (since what's the point?)
             with excutils.save_and_reraise_exception(
                     reraise=not isinstance(e, exception.NoValidHost)):
-                if isinstance(e, exception.NoValidHost):
-                    self.message_api.create(
-                        context,
-                        defined_messages.UNABLE_TO_ALLOCATE,
-                        context.project_id,
-                        resource_type=resource_types.VOLUME,
-                        resource_uuid=request_spec['volume_id'])
                 try:
                     self._handle_failure(context, request_spec, e)
                 finally:
-                    common.error_out(volume, reason=e)
+                    common.error_out_volume(context, self.db_api,
+                                            request_spec['volume_id'],
+                                            reason=e)
 
 
 def get_flow(context, db_api, driver_api, request_spec=None,

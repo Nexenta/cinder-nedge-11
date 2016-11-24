@@ -13,6 +13,7 @@
 #    under the License.
 
 from oslo_config import cfg
+from oslo_log import log as logging
 from oslo_serialization import base64
 from oslo_serialization import jsonutils
 from oslo_utils import versionutils
@@ -25,8 +26,8 @@ from cinder import objects
 from cinder.objects import base
 from cinder.objects import fields as c_fields
 
-
 CONF = cfg.CONF
+LOG = logging.getLogger(__name__)
 
 
 @base.CinderObjectRegistry.register
@@ -43,8 +44,8 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
     fields = {
         'id': fields.UUIDField(),
 
-        'user_id': fields.StringField(),
-        'project_id': fields.StringField(),
+        'user_id': fields.UUIDField(),
+        'project_id': fields.UUIDField(),
 
         'volume_id': fields.UUIDField(),
         'host': fields.StringField(nullable=True),
@@ -104,6 +105,7 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
         backup.obj_reset_changes()
         return backup
 
+    @base.remotable
     def create(self):
         if self.obj_attr_is_set('id'):
             raise exception.ObjectActionError(action='create',
@@ -113,6 +115,7 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
         db_backup = db.backup_create(self._context, updates)
         self._from_db_object(self._context, self, db_backup)
 
+    @base.remotable
     def save(self):
         updates = self.cinder_obj_get_changes()
         if updates:
@@ -120,11 +123,10 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
 
         self.obj_reset_changes()
 
+    @base.remotable
     def destroy(self):
         with self.obj_as_admin():
-            updated_values = db.backup_destroy(self._context, self.id)
-        self.update(updated_values)
-        self.obj_reset_changes(updated_values.keys())
+            db.backup_destroy(self._context, self.id)
 
     @staticmethod
     def decode_record(backup_url):
@@ -140,6 +142,7 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
             msg = _("Can't parse backup record.")
         raise exception.InvalidInput(reason=msg)
 
+    @base.remotable
     def encode_record(self, **kwargs):
         """Serialize backup object, with optional extra info, into a string."""
         # We don't want to export extra fields and we want to force lazy
@@ -161,7 +164,7 @@ class BackupList(base.ObjectListBase, base.CinderObject):
         'objects': fields.ListOfObjectsField('Backup'),
     }
 
-    @classmethod
+    @base.remotable_classmethod
     def get_all(cls, context, filters=None, marker=None, limit=None,
                 offset=None, sort_keys=None, sort_dirs=None):
         backups = db.backup_get_all(context, filters, marker, limit, offset,
@@ -169,13 +172,13 @@ class BackupList(base.ObjectListBase, base.CinderObject):
         return base.obj_make_list(context, cls(context), objects.Backup,
                                   backups)
 
-    @classmethod
+    @base.remotable_classmethod
     def get_all_by_host(cls, context, host):
         backups = db.backup_get_all_by_host(context, host)
         return base.obj_make_list(context, cls(context), objects.Backup,
                                   backups)
 
-    @classmethod
+    @base.remotable_classmethod
     def get_all_by_project(cls, context, project_id, filters=None,
                            marker=None, limit=None, offset=None,
                            sort_keys=None, sort_dirs=None):
@@ -185,7 +188,7 @@ class BackupList(base.ObjectListBase, base.CinderObject):
         return base.obj_make_list(context, cls(context), objects.Backup,
                                   backups)
 
-    @classmethod
+    @base.remotable_classmethod
     def get_all_by_volume(cls, context, volume_id, filters=None):
         backups = db.backup_get_all_by_volume(context, volume_id, filters)
         return base.obj_make_list(context, cls(context), objects.Backup,
@@ -206,6 +209,7 @@ class BackupImport(Backup):
     completed.
     """
 
+    @base.remotable
     def create(self):
         updates = self.cinder_obj_get_changes()
 

@@ -18,10 +18,8 @@ import mock
 
 from cinder.api.contrib import scheduler_stats
 from cinder import context
-from cinder import exception
 from cinder import test
 from cinder.tests.unit.api import fakes
-from cinder.tests.unit import fake_constants as fake
 
 
 def schedule_rpcapi_get_pools(self, context, filters=None):
@@ -51,11 +49,10 @@ class SchedulerStatsAPITest(test.TestCase):
         super(SchedulerStatsAPITest, self).setUp()
         self.flags(host='fake')
         self.controller = scheduler_stats.SchedulerStatsController()
-        self.ctxt = context.RequestContext(fake.USER_ID, fake.PROJECT_ID, True)
+        self.ctxt = context.RequestContext('admin', 'fake', True)
 
     def test_get_pools_summery(self):
-        req = fakes.HTTPRequest.blank('/v2/%s/scheduler_stats' %
-                                      fake.PROJECT_ID)
+        req = fakes.HTTPRequest.blank('/v2/fake/scheduler_stats')
         req.environ['cinder.context'] = self.ctxt
         res = self.controller.get_pools(req)
 
@@ -75,8 +72,7 @@ class SchedulerStatsAPITest(test.TestCase):
         self.assertDictMatch(expected, res)
 
     def test_get_pools_detail(self):
-        req = fakes.HTTPRequest.blank('/v2/%s/scheduler_stats?detail=True' %
-                                      fake.PROJECT_ID)
+        req = fakes.HTTPRequest.blank('/v2/fake/scheduler_stats?detail=True')
         req.environ['cinder.context'] = self.ctxt
         res = self.controller.get_pools(req)
 
@@ -112,12 +108,3 @@ class SchedulerStatsAPITest(test.TestCase):
         }
 
         self.assertDictMatch(expected, res)
-
-    def test_get_pools_detail_invalid_bool(self):
-        req = fakes.HTTPRequest.blank(
-            '/v2/%s/scheduler_stats?detail=InvalidBool' %
-            fake.PROJECT_ID)
-        req.environ['cinder.context'] = self.ctxt
-        self.assertRaises(exception.InvalidParameterValue,
-                          self.controller.get_pools,
-                          req)

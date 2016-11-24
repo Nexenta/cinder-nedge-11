@@ -22,7 +22,6 @@ from oslo_log import log as logging
 from cinder import context
 from cinder import db
 from cinder import exception
-from cinder import objects
 from cinder.i18n import _, _LE, _LW
 from cinder.volume import volume_types
 
@@ -30,6 +29,38 @@ from cinder.volume import volume_types
 LOG = logging.getLogger(__name__)
 
 CONTROL_LOCATION = ['front-end', 'back-end', 'both']
+
+
+def _verify_prepare_qos_specs(specs, create=True):
+    """Check if 'consumer' value in qos specs is valid.
+
+    Verify 'consumer' value in qos_specs is valid, raise
+    exception if not. Assign default value to 'consumer', which
+    is 'back-end' if input is empty.
+
+    :params create a flag indicate if specs being verified is
+    for create. If it's false, that means specs is for update,
+    so that there's no need to add 'consumer' if that wasn't in
+    specs.
+    """
+
+    # Check control location, if it's missing in input, assign default
+    # control location: 'front-end'
+    if not specs:
+        specs = {}
+    # remove 'name' since we will handle that elsewhere.
+    if specs.get('name', None):
+        del specs['name']
+    try:
+        if specs['consumer'] not in CONTROL_LOCATION:
+            msg = _("Valid consumer of QoS specs are: %s") % CONTROL_LOCATION
+            raise exception.InvalidQoSSpecs(reason=msg)
+    except KeyError:
+        # Default consumer is back-end, i.e Cinder volume service
+        if create:
+            specs['consumer'] = 'back-end'
+
+    return specs
 
 
 def create(context, name, specs=None):
@@ -40,53 +71,45 @@ def create(context, name, specs=None):
                 'total_iops_sec': 1000,
                 'total_bytes_sec': 1024000}
     """
-    consumer = specs.get('consumer')
-    if consumer:
-        # If we need to modify specs, copy so we don't cause unintended
-        # consequences for the caller
-        specs = specs.copy()
-        del specs['consumer']
+    _verify_prepare_qos_specs(specs)
 
-    values = dict(name=name, consumer=consumer, specs=specs)
+    values = dict(name=name, qos_specs=specs)
 
     LOG.debug("Dict for qos_specs: %s", values)
-    qos_spec = objects.QualityOfServiceSpecs(context, **values)
-    qos_spec.create()
-    return qos_spec
+
+    try:
+        qos_specs_ref = db.qos_specs_create(context, values)
+    except db_exc.DBDataError:
+        msg = _('Error writing field to database')
+        LOG.exception(msg)
+        raise exception.Invalid(msg)
+    except db_exc.DBError:
+        LOG.exception(_LE('DB error:'))
+        raise exception.QoSSpecsCreateFailed(name=name,
+                                             qos_specs=specs)
+    return qos_specs_ref
 
 
 def update(context, qos_specs_id, specs):
     """Update qos specs.
 
-    :param specs: dictionary that contains key/value pairs for updating
-                  existing specs.
-          e.g. {'consumer': 'front-end',
-                'total_iops_sec': 500,
-                'total_bytes_sec': 512000,}
+    :param specs dictionary that contains key/value pairs for updating
+    existing specs.
+        e.g. {'consumer': 'front-end',
+              'total_iops_sec': 500,
+              'total_bytes_sec': 512000,}
     """
+    # need to verify specs in case 'consumer' is passed
+    _verify_prepare_qos_specs(specs, create=False)
     LOG.debug('qos_specs.update(): specs %s' % specs)
-
     try:
-        qos_spec = objects.QualityOfServiceSpecs.get_by_id(context,
-                                                           qos_specs_id)
-
-        if 'consumer' in specs:
-            qos_spec.consumer = specs['consumer']
-            # If we need to modify specs, copy so we don't cause unintended
-            # consequences for the caller
-            specs = specs.copy()
-            del specs['consumer']
-
-        # Update any values in specs dict
-        qos_spec.specs.update(specs)
-
-        qos_spec.save()
+        res = db.qos_specs_update(context, qos_specs_id, specs)
     except db_exc.DBError:
         LOG.exception(_LE('DB error:'))
         raise exception.QoSSpecsUpdateFailed(specs_id=qos_specs_id,
                                              qos_specs=specs)
 
-    return qos_spec
+    return res
 
 
 def delete(context, qos_specs_id, force=False):
@@ -103,10 +126,15 @@ def delete(context, qos_specs_id, force=False):
         msg = _("id cannot be None")
         raise exception.InvalidQoSSpecs(reason=msg)
 
-    qos_spec = objects.QualityOfServiceSpecs.get_by_id(
-        context, qos_specs_id)
+    # check if there is any entity associated with this qos specs
+    res = db.qos_specs_associations_get(context, qos_specs_id)
+    if res and not force:
+        raise exception.QoSSpecsInUse(specs_id=qos_specs_id)
+    elif res and force:
+        # remove all association
+        db.qos_specs_disassociate_all(context, qos_specs_id)
 
-    qos_spec.destroy(force)
+    db.qos_specs_delete(context, qos_specs_id)
 
 
 def delete_keys(context, qos_specs_id, keys):
@@ -115,42 +143,30 @@ def delete_keys(context, qos_specs_id, keys):
         msg = _("id cannot be None")
         raise exception.InvalidQoSSpecs(reason=msg)
 
-    qos_spec = objects.QualityOfServiceSpecs.get_by_id(context, qos_specs_id)
-
-    # Previous behavior continued to delete keys until it hit first unset one,
-    # so for now will mimic that. In the future it would be useful to have all
-    # or nothing deletion of keys (or at least delete all set keys),
-    # especially since order of keys from CLI to API is not preserved currently
-    try:
-        for key in keys:
-            try:
-                del qos_spec.specs[key]
-            except KeyError:
-                raise exception.QoSSpecsKeyNotFound(
-                    specs_key=key, specs_id=qos_specs_id)
-    finally:
-        qos_spec.save()
+    # make sure qos_specs_id is valid
+    get_qos_specs(context, qos_specs_id)
+    for key in keys:
+        db.qos_specs_item_delete(context, qos_specs_id, key)
 
 
-def get_associations(context, qos_specs_id):
+def get_associations(context, specs_id):
     """Get all associations of given qos specs."""
     try:
-        types = objects.VolumeTypeList.get_all_types_for_qos(context,
-                                                             qos_specs_id)
+        # query returns a list of volume types associated with qos specs
+        associates = db.qos_specs_associations_get(context, specs_id)
     except db_exc.DBError:
         LOG.exception(_LE('DB error:'))
         msg = _('Failed to get all associations of '
-                'qos specs %s') % qos_specs_id
+                'qos specs %s') % specs_id
         LOG.warning(msg)
         raise exception.CinderException(message=msg)
 
     result = []
-    for vol_type in types:
-        result.append({
-            'association_type': 'volume_type',
-            'name': vol_type.name,
-            'id': vol_type.id
-        })
+    for vol_type in associates:
+        member = dict(association_type='volume_type')
+        member.update(dict(name=vol_type['name']))
+        member.update(dict(id=vol_type['id']))
+        result.append(member)
 
     return result
 
@@ -158,15 +174,15 @@ def get_associations(context, qos_specs_id):
 def associate_qos_with_type(context, specs_id, type_id):
     """Associate qos_specs with volume type.
 
-    Associate target qos specs with specific volume type.
-
+    Associate target qos specs with specific volume type. Would raise
+    following exceptions:
+        VolumeTypeNotFound  - if volume type doesn't exist;
+        QoSSpecsNotFound  - if qos specs doesn't exist;
+        InvalidVolumeType  - if volume type is already associated with
+                             qos specs other than given one.
+        QoSSpecsAssociateFailed -  if there was general DB error
     :param specs_id: qos specs ID to associate with
     :param type_id: volume type ID to associate with
-    :raises VolumeTypeNotFound: if volume type doesn't exist
-    :raises QoSSpecsNotFound: if qos specs doesn't exist
-    :raises InvalidVolumeType: if volume type is already associated
-                               with qos specs other than given one.
-    :raises QoSSpecsAssociateFailed: if there was general DB error
     """
     try:
         get_qos_specs(context, specs_id)
@@ -218,18 +234,28 @@ def disassociate_all(context, specs_id):
 def get_all_specs(context, filters=None, marker=None, limit=None, offset=None,
                   sort_keys=None, sort_dirs=None):
     """Get all non-deleted qos specs."""
-    return objects.QualityOfServiceSpecsList.get_all(
-        context, filters=filters, marker=marker, limit=limit, offset=offset,
-        sort_keys=sort_keys, sort_dirs=sort_dirs)
+    qos_specs = db.qos_specs_get_all(context, filters=filters, marker=marker,
+                                     limit=limit, offset=offset,
+                                     sort_keys=sort_keys, sort_dirs=sort_dirs)
+    return qos_specs
 
 
-def get_qos_specs(ctxt, spec_id):
+def get_qos_specs(ctxt, id):
     """Retrieves single qos specs by id."""
-    if spec_id is None:
+    if id is None:
         msg = _("id cannot be None")
         raise exception.InvalidQoSSpecs(reason=msg)
 
     if ctxt is None:
         ctxt = context.get_admin_context()
 
-    return objects.QualityOfServiceSpecs.get_by_id(ctxt, spec_id)
+    return db.qos_specs_get(ctxt, id)
+
+
+def get_qos_specs_by_name(context, name):
+    """Retrieves single qos specs by name."""
+    if name is None:
+        msg = _("name cannot be None")
+        raise exception.InvalidQoSSpecs(reason=msg)
+
+    return db.qos_specs_get_by_name(context, name)

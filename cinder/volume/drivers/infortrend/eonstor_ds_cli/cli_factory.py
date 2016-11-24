@@ -293,13 +293,11 @@ class SetPartition(CLIBaseCommand):
 
     """Set Partition.
 
-    .. code-block:: bash
-
-        set part [partition-ID] [name={partition-name}]
-                 [min={minimal-reserve-size}]
-        set part expand [partition-ID] [size={expand-size}]
-        set part purge [partition-ID] [number] [rule-type]
-        set part reclaim [partition-ID]
+    set part [partition-ID] [name={partition-name}]
+             [min={minimal-reserve-size}]
+    set part expand [partition-ID] [size={expand-size}]
+    set part purge [partition-ID] [number] [rule-type]
+    set part reclaim [partition-ID]
     """
 
     def __init__(self, *args, **kwargs):

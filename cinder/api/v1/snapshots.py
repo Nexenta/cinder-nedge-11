@@ -22,6 +22,7 @@ from webob import exc
 
 from cinder.api import common
 from cinder.api.openstack import wsgi
+from cinder.api import xmlutil
 from cinder import exception
 from cinder.i18n import _, _LI
 from cinder import utils
@@ -60,6 +61,33 @@ def _translate_snapshot_summary_view(snapshot):
     return d
 
 
+def make_snapshot(elem):
+    elem.set('id')
+    elem.set('status')
+    elem.set('size')
+    elem.set('created_at')
+    elem.set('display_name')
+    elem.set('display_description')
+    elem.set('volume_id')
+    elem.append(common.MetadataTemplate())
+
+
+class SnapshotTemplate(xmlutil.TemplateBuilder):
+    def construct(self):
+        root = xmlutil.TemplateElement('snapshot', selector='snapshot')
+        make_snapshot(root)
+        return xmlutil.MasterTemplate(root, 1)
+
+
+class SnapshotsTemplate(xmlutil.TemplateBuilder):
+    def construct(self):
+        root = xmlutil.TemplateElement('snapshots')
+        elem = xmlutil.SubTemplateElement(root, 'snapshot',
+                                          selector='snapshots')
+        make_snapshot(elem)
+        return xmlutil.MasterTemplate(root, 1)
+
+
 class SnapshotsController(wsgi.Controller):
     """The Snapshots API controller for the OpenStack API."""
 
@@ -68,13 +96,16 @@ class SnapshotsController(wsgi.Controller):
         self.ext_mgr = ext_mgr
         super(SnapshotsController, self).__init__()
 
+    @wsgi.serializers(xml=SnapshotTemplate)
     def show(self, req, id):
         """Return data about the given snapshot."""
         context = req.environ['cinder.context']
 
-        # Not found exception will be handled at the wsgi level
-        snapshot = self.volume_api.get_snapshot(context, id)
-        req.cache_db_snapshot(snapshot)
+        try:
+            snapshot = self.volume_api.get_snapshot(context, id)
+            req.cache_db_snapshot(snapshot)
+        except exception.NotFound:
+            raise exc.HTTPNotFound()
 
         return {'snapshot': _translate_snapshot_detail_view(snapshot)}
 
@@ -82,17 +113,21 @@ class SnapshotsController(wsgi.Controller):
         """Delete a snapshot."""
         context = req.environ['cinder.context']
 
-        LOG.info(_LI("Delete snapshot with id: %s"), id)
+        LOG.info(_LI("Delete snapshot with id: %s"), id, context=context)
 
-        # Not found exception will be handled at the wsgi level
-        snapshot = self.volume_api.get_snapshot(context, id)
-        self.volume_api.delete_snapshot(context, snapshot)
+        try:
+            snapshot = self.volume_api.get_snapshot(context, id)
+            self.volume_api.delete_snapshot(context, snapshot)
+        except exception.NotFound:
+            raise exc.HTTPNotFound()
         return webob.Response(status_int=202)
 
+    @wsgi.serializers(xml=SnapshotsTemplate)
     def index(self, req):
         """Returns a summary list of snapshots."""
         return self._items(req, entity_maker=_translate_snapshot_summary_view)
 
+    @wsgi.serializers(xml=SnapshotsTemplate)
     def detail(self, req):
         """Returns a detailed list of snapshots."""
         return self._items(req, entity_maker=_translate_snapshot_detail_view)
@@ -118,6 +153,7 @@ class SnapshotsController(wsgi.Controller):
         res = [entity_maker(snapshot) for snapshot in limited_list]
         return {'snapshots': res}
 
+    @wsgi.serializers(xml=SnapshotTemplate)
     def create(self, req, body):
         """Creates a new snapshot."""
         kwargs = {}
@@ -135,12 +171,14 @@ class SnapshotsController(wsgi.Controller):
             msg = _("'volume_id' must be specified")
             raise exc.HTTPBadRequest(explanation=msg)
 
-        # Not found exception will be handled at the wsgi level
-        volume = self.volume_api.get(context, volume_id)
+        try:
+            volume = self.volume_api.get(context, volume_id)
+        except exception.NotFound:
+            raise exc.HTTPNotFound()
 
         force = snapshot.get('force', False)
         msg = _LI("Create snapshot from volume %s")
-        LOG.info(msg, volume_id)
+        LOG.info(msg, volume_id, context=context)
 
         if not utils.is_valid_boolstr(force):
             msg = _("Invalid value '%s' for force. ") % force
@@ -166,6 +204,7 @@ class SnapshotsController(wsgi.Controller):
 
         return {'snapshot': retval}
 
+    @wsgi.serializers(xml=SnapshotTemplate)
     def update(self, req, id, body):
         """Update a snapshot."""
         context = req.environ['cinder.context']
@@ -188,9 +227,11 @@ class SnapshotsController(wsgi.Controller):
             if key in snapshot:
                 update_dict[key] = snapshot[key]
 
-        # Not found exception will be handled at the wsgi level
-        snapshot = self.volume_api.get_snapshot(context, id)
-        self.volume_api.update_snapshot(context, snapshot, update_dict)
+        try:
+            snapshot = self.volume_api.get_snapshot(context, id)
+            self.volume_api.update_snapshot(context, snapshot, update_dict)
+        except exception.NotFound:
+            raise exc.HTTPNotFound()
 
         snapshot.update(update_dict)
         req.cache_db_snapshot(snapshot)

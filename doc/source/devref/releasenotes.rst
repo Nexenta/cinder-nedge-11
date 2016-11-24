@@ -17,7 +17,8 @@
 Release notes
 =============
 
-The release notes for a patch should be included in the patch.
+The release notes for a patch should be included in the patch. If not, the
+release notes should be in a follow-on review.
 
 If the following applies to the patch, a release note is required:
 
@@ -41,6 +42,7 @@ If the following applies to the patch, a release note is required:
 
 * APIs
 
+  * The storage or backup driver interface changes
   * REST API changes
 
 Cinder uses `reno <http://docs.openstack.org/developer/reno/usage.html>`_ to
