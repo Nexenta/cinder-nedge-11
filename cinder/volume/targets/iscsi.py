@@ -67,6 +67,9 @@ class ISCSITarget(driver.Target):
             present meaning no authentication, or auth_method == `CHAP`
             meaning use CHAP with the specified credentials.
 
+        :access_mode:    the volume access mode allow client used
+                         ('rw' or 'ro' currently supported)
+
         :discard:    boolean indicating if discard is supported
 
         In some of drivers that support multiple connections (for multipath
@@ -109,8 +112,9 @@ class ISCSITarget(driver.Target):
             # code.  The trick here is that different targets use different
             # default lun numbers, the base driver with tgtadm uses 1
             # others like LIO use 0.
-            if (self.configuration.volume_driver ==
-                    'cinder.volume.drivers.lvm.ThinLVMVolumeDriver' and
+            if (self.configuration.volume_driver in
+                    ['cinder.volume.drivers.lvm.LVMISCSIDriver',
+                     'cinder.volume.drivers.lvm.ThinLVMVolumeDriver'] and
                     self.configuration.iscsi_helper == 'tgtadm'):
                 lun = 1
             else:
@@ -279,6 +283,7 @@ class ISCSITarget(driver.Target):
                     'target_iqn': 'iqn.2010-10.org.openstack:volume-00000001',
                     'target_portal': '127.0.0.0.1:3260',
                     'volume_id': '9a0d35d0-175a-11e4-8c21-0800200c9a66',
+                    'access_mode': 'rw',
                     'discard': False,
                 }
             }
@@ -321,21 +326,13 @@ class ISCSITarget(driver.Target):
         if tid is None:
             raise exception.NotFound()
 
-    def _get_target_chap_auth(self, context, iscsi_name):
-        """Get the current chap auth username and password."""
-        try:
-            # 'iscsi_name': 'iqn.2010-10.org.openstack:volume-00000001'
-            vol_id = iscsi_name.split(':volume-')[1]
-            volume_info = self.db.volume_get(context, vol_id)
-            # 'provider_auth': 'CHAP user_id password'
-            if volume_info['provider_auth']:
-                return tuple(volume_info['provider_auth'].split(' ', 3)[1:])
-        except exception.NotFound:
-            LOG.debug('Failed to get CHAP auth from DB for %s.', vol_id)
-
     @abc.abstractmethod
     def _get_target_and_lun(self, context, volume):
         """Get iscsi target and lun."""
+        pass
+
+    @abc.abstractmethod
+    def _get_target_chap_auth(self, context, iscsi_name):
         pass
 
     @abc.abstractmethod

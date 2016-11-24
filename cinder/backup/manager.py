@@ -47,11 +47,9 @@ from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
 from cinder import manager
 from cinder import objects
-from cinder.objects import fields
 from cinder import quota
 from cinder import rpc
 from cinder import utils
-from cinder.volume import rpcapi as volume_rpcapi
 from cinder.volume import utils as volume_utils
 
 LOG = logging.getLogger(__name__)
@@ -73,15 +71,13 @@ mapper = {'cinder.backup.services.swift': 'cinder.backup.drivers.swift',
 
 CONF = cfg.CONF
 CONF.register_opts(backup_manager_opts)
-CONF.import_opt('use_multipath_for_image_xfer', 'cinder.volume.driver')
-CONF.import_opt('num_volume_device_scan_tries', 'cinder.volume.driver')
 QUOTAS = quota.QUOTAS
 
 
 class BackupManager(manager.SchedulerDependentManager):
     """Manages backup of block storage devices."""
 
-    RPC_API_VERSION = '2.0'
+    RPC_API_VERSION = '1.2'
 
     target = messaging.Target(version=RPC_API_VERSION)
 
@@ -89,36 +85,27 @@ class BackupManager(manager.SchedulerDependentManager):
         self.service = importutils.import_module(self.driver_name)
         self.az = CONF.storage_availability_zone
         self.volume_managers = {}
-        # TODO(xyang): If backup_use_same_host is True, we'll find
-        # the volume backend on the backup node. This allows us
-        # to use a temp snapshot to backup an in-use volume if the
-        # driver supports it. This code should go away when we add
-        # support for backing up in-use volume using a temp snapshot
-        # on a remote node.
-        if CONF.backup_use_same_host:
-            self._setup_volume_drivers()
+        self._setup_volume_drivers()
         self.backup_rpcapi = backup_rpcapi.BackupAPI()
-        self.volume_rpcapi = volume_rpcapi.VolumeAPI()
         super(BackupManager, self).__init__(service_name='backup',
                                             *args, **kwargs)
-        self.additional_endpoints.append(_BackupV1Proxy(self))
 
-    def _init_volume_driver(self, ctxt, driver):
-        LOG.info(_LI("Starting volume driver %(driver_name)s (%(version)s)."),
-                 {'driver_name': driver.__class__.__name__,
-                  'version': driver.get_version()})
-        try:
-            driver.do_setup(ctxt)
-            driver.check_for_setup_error()
-        except Exception:
-            LOG.exception(_LE("Error encountered during initialization of "
-                              "driver: %(name)s."),
-                          {'name': driver.__class__.__name__})
-            # we don't want to continue since we failed
-            # to initialize the driver correctly.
-            return
+    @property
+    def driver_name(self):
+        """This function maps old backup services to backup drivers."""
 
-        driver.set_initialized()
+        return self._map_service_to_driver(CONF.backup_driver)
+
+    def _map_service_to_driver(self, service):
+        """Maps services to drivers."""
+
+        if service in mapper:
+            return mapper[service]
+        return service
+
+    @property
+    def driver(self):
+        return self._get_driver()
 
     def _get_volume_backend(self, host=None, allow_null_host=False):
         if host is None:
@@ -127,9 +114,6 @@ class BackupManager(manager.SchedulerDependentManager):
                 raise exception.BackupFailedToGetVolumeBackend(msg)
         else:
             LOG.debug("Checking hostname '%s' for backend info.", host)
-            # NOTE(xyang): If host='myhost@lvmdriver', backend='lvmdriver'
-            # by the logic below. This is different from extract_host.
-            # vol_utils.extract_host(host, 'backend')='myhost@lvmdriver'.
             part = host.partition('@')
             if (part[1] == '@') and (part[2] != ''):
                 backend = part[2]
@@ -186,21 +170,25 @@ class BackupManager(manager.SchedulerDependentManager):
             LOG.debug("Registering default backend %s.", default)
             self.volume_managers['default'] = default
 
-    @property
-    def driver_name(self):
-        """This function maps old backup services to backup drivers."""
+    def _init_volume_driver(self, ctxt, driver):
+        LOG.info(_LI("Starting volume driver %(driver_name)s (%(version)s)."),
+                 {'driver_name': driver.__class__.__name__,
+                  'version': driver.get_version()})
+        try:
+            driver.do_setup(ctxt)
+            driver.check_for_setup_error()
+        except Exception:
+            LOG.exception(_LE("Error encountered during initialization of "
+                              "driver: %(name)s."),
+                          {'name': driver.__class__.__name__})
+            # we don't want to continue since we failed
+            # to initialize the driver correctly.
+            return
 
-        return self._map_service_to_driver(CONF.backup_driver)
-
-    def _map_service_to_driver(self, service):
-        """Maps services to drivers."""
-
-        if service in mapper:
-            return mapper[service]
-        return service
+        driver.set_initialized()
 
     def _update_backup_error(self, backup, context, err):
-        backup.status = fields.BackupStatus.ERROR
+        backup.status = 'error'
         backup.fail_reason = err
         backup.save()
 
@@ -218,13 +206,16 @@ class BackupManager(manager.SchedulerDependentManager):
             LOG.exception(_LE("Problem cleaning incomplete backup "
                               "operations."))
 
-    def reset(self):
-        super(BackupManager, self).reset()
-        self.backup_rpcapi = backup_rpcapi.BackupAPI()
-        self.volume_rpcapi = volume_rpcapi.VolumeAPI()
-
     def _cleanup_incomplete_backup_operations(self, ctxt):
         LOG.info(_LI("Cleaning up incomplete backup operations."))
+        volumes = self.db.volume_get_all_by_host(ctxt, self.host)
+
+        for volume in volumes:
+            try:
+                self._cleanup_one_volume(ctxt, volume)
+            except Exception:
+                LOG.exception(_LE("Problem cleaning up volume %(vol)s."),
+                              {'vol': volume['id']})
 
         # TODO(smulcahy) implement full resume of backup and restore
         # operations on restart (rather than simply resetting)
@@ -244,8 +235,11 @@ class BackupManager(manager.SchedulerDependentManager):
                               {'bkup': backup['id']})
 
     def _cleanup_one_volume(self, ctxt, volume):
+        volume_host = volume_utils.extract_host(volume['host'], 'backend')
+        backend = self._get_volume_backend(host=volume_host)
+        mgr = self._get_manager(backend)
         if volume['status'] == 'backing-up':
-            self._detach_all_attachments(ctxt, volume)
+            self._detach_all_attachments(ctxt, mgr, volume)
             LOG.info(_LI('Resetting volume %(vol_id)s to previous '
                          'status %(status)s (was backing-up).'),
                      {'vol_id': volume['id'],
@@ -253,32 +247,25 @@ class BackupManager(manager.SchedulerDependentManager):
             self.db.volume_update(ctxt, volume['id'],
                                   {'status': volume['previous_status']})
         elif volume['status'] == 'restoring-backup':
-            self._detach_all_attachments(ctxt, volume)
+            self._detach_all_attachments(ctxt, mgr, volume)
             LOG.info(_LI('setting volume %s to error_restoring '
                          '(was restoring-backup).'), volume['id'])
             self.db.volume_update(ctxt, volume['id'],
                                   {'status': 'error_restoring'})
 
     def _cleanup_one_backup(self, ctxt, backup):
-        if backup['status'] == fields.BackupStatus.CREATING:
+        if backup['status'] == 'creating':
             LOG.info(_LI('Resetting backup %s to error (was creating).'),
                      backup['id'])
-
-            volume = objects.Volume.get_by_id(ctxt, backup.volume_id)
-            self._cleanup_one_volume(ctxt, volume)
-
             err = 'incomplete backup reset on manager restart'
             self._update_backup_error(backup, ctxt, err)
-        elif backup['status'] == fields.BackupStatus.RESTORING:
+        if backup['status'] == 'restoring':
             LOG.info(_LI('Resetting backup %s to '
                          'available (was restoring).'),
                      backup['id'])
-            volume = objects.Volume.get_by_id(ctxt, backup.restore_volume_id)
-            self._cleanup_one_volume(ctxt, volume)
-
-            backup.status = fields.BackupStatus.AVAILABLE
+            backup.status = 'available'
             backup.save()
-        elif backup['status'] == fields.BackupStatus.DELETING:
+        if backup['status'] == 'deleting':
             LOG.info(_LI('Resuming delete on backup: %s.'), backup['id'])
             if CONF.backup_service_inithost_offload:
                 # Offload all the pending backup delete operations to the
@@ -289,87 +276,86 @@ class BackupManager(manager.SchedulerDependentManager):
                 # By default, delete backups sequentially
                 self.delete_backup(ctxt, backup)
 
-    def _detach_all_attachments(self, ctxt, volume):
+    def _detach_all_attachments(self, ctxt, mgr, volume):
         attachments = volume['volume_attachment'] or []
         for attachment in attachments:
             if (attachment['attached_host'] == self.host and
                     attachment['instance_uuid'] is None):
-                try:
-                    rpcapi = self.volume_rpcapi
-                    rpcapi.detach_volume(ctxt, volume, attachment['id'])
-                except Exception:
-                    LOG.exception(_LE("Detach attachment %(attach_id)s"
-                                      " failed."),
-                                  {'attach_id': attachment['id']},
-                                  resource=volume)
-
-    def _delete_temp_volume(self, ctxt, backup):
-        try:
-            temp_volume = objects.Volume.get_by_id(
-                ctxt, backup.temp_volume_id)
-            self.volume_rpcapi.delete_volume(ctxt, temp_volume)
-        except exception.VolumeNotFound:
-            LOG.debug("Could not find temp volume %(vol)s to clean up "
-                      "for backup %(backup)s.",
-                      {'vol': backup.temp_volume_id,
-                       'backup': backup.id})
-        backup.temp_volume_id = None
-        backup.save()
-
-    def _delete_temp_snapshot(self, ctxt, backup):
-        try:
-            temp_snapshot = objects.Snapshot.get_by_id(
-                ctxt, backup.temp_snapshot_id)
-            volume = objects.Volume.get_by_id(
-                ctxt, backup.volume_id)
-            # The temp snapshot should be deleted directly thru the
-            # volume driver, not thru the volume manager.
-            self.volume_rpcapi.delete_snapshot(ctxt, temp_snapshot,
-                                               volume.host)
-        except exception.SnapshotNotFound:
-            LOG.debug("Could not find temp snapshot %(snap)s to clean "
-                      "up for backup %(backup)s.",
-                      {'snap': backup.temp_snapshot_id,
-                       'backup': backup.id})
-        backup.temp_snapshot_id = None
-        backup.save()
+                        try:
+                            mgr.detach_volume(ctxt, volume['id'],
+                                              attachment['id'])
+                        except Exception:
+                            LOG.exception(_LE("Detach attachment %(attach_id)s"
+                                              " failed."),
+                                          {'attach_id': attachment['id']},
+                                          resource=volume)
 
     def _cleanup_temp_volumes_snapshots_for_one_backup(self, ctxt, backup):
         # NOTE(xyang): If the service crashes or gets restarted during the
         # backup operation, there could be temporary volumes or snapshots
         # that are not deleted. Make sure any temporary volumes or snapshots
         # create by the backup job are deleted when service is started.
-        if (backup.temp_volume_id
-                and backup.status == fields.BackupStatus.ERROR):
-            self._delete_temp_volume(ctxt, backup)
+        try:
+            volume = self.db.volume_get(ctxt, backup.volume_id)
+            volume_host = volume_utils.extract_host(volume['host'],
+                                                    'backend')
+            backend = self._get_volume_backend(host=volume_host)
+            mgr = self._get_manager(backend)
+        except (KeyError, exception.VolumeNotFound):
+            LOG.debug("Could not find a volume to clean up for "
+                      "backup %s.", backup.id)
+            return
 
-        if (backup.temp_snapshot_id
-                and backup.status == fields.BackupStatus.ERROR):
-            self._delete_temp_snapshot(ctxt, backup)
+        if backup.temp_volume_id and backup.status == 'error':
+            try:
+                temp_volume = self.db.volume_get(ctxt,
+                                                 backup.temp_volume_id)
+                # The temp volume should be deleted directly thru the
+                # the volume driver, not thru the volume manager.
+                mgr.driver.delete_volume(temp_volume)
+                self.db.volume_destroy(ctxt, temp_volume['id'])
+            except exception.VolumeNotFound:
+                LOG.debug("Could not find temp volume %(vol)s to clean up "
+                          "for backup %(backup)s.",
+                          {'vol': backup.temp_volume_id,
+                           'backup': backup.id})
+            backup.temp_volume_id = None
+            backup.save()
 
-    def _cleanup_temp_volumes_snapshots_when_backup_created(
-            self, ctxt, backup):
-        # Delete temp volumes or snapshots when backup creation is completed.
-        if backup.temp_volume_id:
-            self._delete_temp_volume(ctxt, backup)
-
-        if backup.temp_snapshot_id:
-            self._delete_temp_snapshot(ctxt, backup)
+        if backup.temp_snapshot_id and backup.status == 'error':
+            try:
+                temp_snapshot = objects.Snapshot.get_by_id(
+                    ctxt, backup.temp_snapshot_id)
+                # The temp snapshot should be deleted directly thru the
+                # volume driver, not thru the volume manager.
+                mgr.driver.delete_snapshot(temp_snapshot)
+                with temp_snapshot.obj_as_admin():
+                    self.db.volume_glance_metadata_delete_by_snapshot(
+                        ctxt, temp_snapshot.id)
+                    temp_snapshot.destroy()
+            except exception.SnapshotNotFound:
+                LOG.debug("Could not find temp snapshot %(snap)s to clean "
+                          "up for backup %(backup)s.",
+                          {'snap': backup.temp_snapshot_id,
+                           'backup': backup.id})
+            backup.temp_snapshot_id = None
+            backup.save()
 
     def create_backup(self, context, backup):
         """Create volume backups using configured backup service."""
         volume_id = backup.volume_id
-        volume = objects.Volume.get_by_id(context, volume_id)
+        volume = self.db.volume_get(context, volume_id)
         previous_status = volume.get('previous_status', None)
         LOG.info(_LI('Create backup started, backup: %(backup_id)s '
                      'volume: %(volume_id)s.'),
                  {'backup_id': backup.id, 'volume_id': volume_id})
 
         self._notify_about_backup_usage(context, backup, "create.start")
+        volume_host = volume_utils.extract_host(volume['host'], 'backend')
+        backend = self._get_volume_backend(host=volume_host)
 
         backup.host = self.host
         backup.service = self.driver_name
-        backup.availability_zone = self.az
         backup.save()
 
         expected_status = 'backing-up'
@@ -383,7 +369,7 @@ class BackupManager(manager.SchedulerDependentManager):
             self._update_backup_error(backup, context, err)
             raise exception.InvalidVolume(reason=err)
 
-        expected_status = fields.BackupStatus.CREATING
+        expected_status = 'creating'
         actual_status = backup.status
         if actual_status != expected_status:
             err = _('Create backup aborted, expected backup status '
@@ -396,7 +382,15 @@ class BackupManager(manager.SchedulerDependentManager):
             raise exception.InvalidBackup(reason=err)
 
         try:
-            self._run_backup(context, backup, volume)
+            # NOTE(flaper87): Verify the driver is enabled
+            # before going forward. The exception will be caught,
+            # the volume status will be set back to available and
+            # the backup status to 'error'
+            utils.require_driver_initialized(self.driver)
+
+            backup_service = self.service.get_backup_driver(context)
+            self._get_driver(backend).backup_volume(context, backup,
+                                                    backup_service)
         except Exception as err:
             with excutils.save_and_reraise_exception():
                 self.db.volume_update(context, volume_id,
@@ -408,10 +402,10 @@ class BackupManager(manager.SchedulerDependentManager):
         self.db.volume_update(context, volume_id,
                               {'status': previous_status,
                                'previous_status': 'backing-up'})
-        backup.status = fields.BackupStatus.AVAILABLE
+        backup.status = 'available'
         backup.size = volume['size']
+        backup.availability_zone = self.az
         backup.save()
-
         # Handle the num_dependent_backups of parent backup when child backup
         # has created successfully.
         if backup.parent_id:
@@ -422,46 +416,15 @@ class BackupManager(manager.SchedulerDependentManager):
         LOG.info(_LI('Create backup finished. backup: %s.'), backup.id)
         self._notify_about_backup_usage(context, backup, "create.end")
 
-    def _run_backup(self, context, backup, volume):
-        backup_service = self.service.get_backup_driver(context)
-
-        properties = utils.brick_get_connector_properties()
-        backup_dic = self.volume_rpcapi.get_backup_device(context,
-                                                          backup, volume)
-        try:
-            backup_device = backup_dic.get('backup_device')
-            is_snapshot = backup_dic.get('is_snapshot')
-            attach_info = self._attach_device(context, backup_device,
-                                              properties, is_snapshot)
-            try:
-                device_path = attach_info['device']['path']
-                if isinstance(device_path, six.string_types):
-                    if backup_dic.get('secure_enabled', False):
-                        with open(device_path) as device_file:
-                            backup_service.backup(backup, device_file)
-                    else:
-                        with utils.temporary_chown(device_path):
-                            with open(device_path) as device_file:
-                                backup_service.backup(backup, device_file)
-                else:
-                    backup_service.backup(backup, device_path)
-
-            finally:
-                self._detach_device(context, attach_info,
-                                    backup_device, properties,
-                                    is_snapshot)
-        finally:
-            backup = objects.Backup.get_by_id(context, backup.id)
-            self._cleanup_temp_volumes_snapshots_when_backup_created(
-                context, backup)
-
     def restore_backup(self, context, backup, volume_id):
         """Restore volume backups from configured backup service."""
         LOG.info(_LI('Restore backup started, backup: %(backup_id)s '
                      'volume: %(volume_id)s.'),
                  {'backup_id': backup.id, 'volume_id': volume_id})
 
-        volume = objects.Volume.get_by_id(context, volume_id)
+        volume = self.db.volume_get(context, volume_id)
+        volume_host = volume_utils.extract_host(volume['host'], 'backend')
+        backend = self._get_volume_backend(host=volume_host)
         self._notify_about_backup_usage(context, backup, "restore.start")
 
         backup.host = self.host
@@ -474,11 +437,11 @@ class BackupManager(manager.SchedulerDependentManager):
                      '%(expected_status)s but got %(actual_status)s.') %
                    {'expected_status': expected_status,
                     'actual_status': actual_status})
-            backup.status = fields.BackupStatus.AVAILABLE
+            backup.status = 'available'
             backup.save()
             raise exception.InvalidVolume(reason=err)
 
-        expected_status = fields.BackupStatus.RESTORING
+        expected_status = 'restoring'
         actual_status = backup['status']
         if actual_status != expected_status:
             err = (_('Restore backup aborted: expected backup status '
@@ -508,61 +471,56 @@ class BackupManager(manager.SchedulerDependentManager):
                 'configured_service': configured_service,
                 'backup_service': backup_service,
             }
-            backup.status = fields.BackupStatus.AVAILABLE
+            backup.status = 'available'
             backup.save()
             self.db.volume_update(context, volume_id, {'status': 'error'})
             raise exception.InvalidBackup(reason=err)
 
         try:
-            self._run_restore(context, backup, volume)
+            # NOTE(flaper87): Verify the driver is enabled
+            # before going forward. The exception will be caught,
+            # the volume status will be set back to available and
+            # the backup status to 'error'
+            utils.require_driver_initialized(self.driver)
+
+            backup_service = self.service.get_backup_driver(context)
+            self._get_driver(backend).restore_backup(context, backup,
+                                                     volume,
+                                                     backup_service)
         except Exception:
             with excutils.save_and_reraise_exception():
                 self.db.volume_update(context, volume_id,
                                       {'status': 'error_restoring'})
-                backup.status = fields.BackupStatus.AVAILABLE
+                backup.status = 'available'
                 backup.save()
 
         self.db.volume_update(context, volume_id, {'status': 'available'})
-        backup.status = fields.BackupStatus.AVAILABLE
+        backup.status = 'available'
         backup.save()
         LOG.info(_LI('Restore backup finished, backup %(backup_id)s restored'
                      ' to volume %(volume_id)s.'),
                  {'backup_id': backup.id, 'volume_id': volume_id})
         self._notify_about_backup_usage(context, backup, "restore.end")
 
-    def _run_restore(self, context, backup, volume):
-        backup_service = self.service.get_backup_driver(context)
-
-        properties = utils.brick_get_connector_properties()
-        secure_enabled = (
-            self.volume_rpcapi.secure_file_operations_enabled(context,
-                                                              volume))
-        attach_info = self._attach_device(context, volume, properties)
-        try:
-            device_path = attach_info['device']['path']
-            if isinstance(device_path, six.string_types):
-                if secure_enabled:
-                    with open(device_path, 'wb') as device_file:
-                        backup_service.restore(backup, volume.id, device_file)
-                else:
-                    with utils.temporary_chown(device_path):
-                        with open(device_path, 'wb') as device_file:
-                            backup_service.restore(backup, volume.id,
-                                                   device_file)
-            else:
-                backup_service.restore(backup, volume.id, device_path)
-        finally:
-            self._detach_device(context, attach_info, volume, properties)
-
     def delete_backup(self, context, backup):
         """Delete volume backup from configured backup service."""
         LOG.info(_LI('Delete backup started, backup: %s.'), backup.id)
+
+        try:
+            # NOTE(flaper87): Verify the driver is enabled
+            # before going forward. The exception will be caught
+            # and the backup status updated. Fail early since there
+            # are no other status to change but backup's
+            utils.require_driver_initialized(self.driver)
+        except exception.DriverNotInitialized as err:
+            with excutils.save_and_reraise_exception():
+                self._update_backup_error(backup, context, six.text_type(err))
 
         self._notify_about_backup_usage(context, backup, "delete.start")
         backup.host = self.host
         backup.save()
 
-        expected_status = fields.BackupStatus.DELETING
+        expected_status = 'deleting'
         actual_status = backup.status
         if actual_status != expected_status:
             err = _('Delete_backup aborted, expected backup status '
@@ -648,7 +606,7 @@ class BackupManager(manager.SchedulerDependentManager):
         """
         LOG.info(_LI('Export record started, backup: %s.'), backup.id)
 
-        expected_status = fields.BackupStatus.AVAILABLE
+        expected_status = 'available'
         actual_status = backup.status
         if actual_status != expected_status:
             err = (_('Export backup aborted, expected backup status '
@@ -672,6 +630,7 @@ class BackupManager(manager.SchedulerDependentManager):
 
         # Call driver to create backup description string
         try:
+            utils.require_driver_initialized(self.driver)
             backup_service = self.service.get_backup_driver(context)
             driver_info = backup_service.export_record(backup)
             backup_url = backup.encode_record(driver_info=driver_info)
@@ -728,6 +687,7 @@ class BackupManager(manager.SchedulerDependentManager):
 
                 # Extract driver specific info and pass it to the driver
                 driver_options = backup_options.pop('driver_info', {})
+                utils.require_driver_initialized(self.driver)
                 backup_service = self.service.get_backup_driver(context)
                 backup_service.import_record(backup, driver_options)
             except Exception as err:
@@ -765,7 +725,7 @@ class BackupManager(manager.SchedulerDependentManager):
                 raise exception.InvalidBackup(reason=msg)
 
             # Overwrite some fields
-            backup_options['status'] = fields.BackupStatus.AVAILABLE
+            backup_options['status'] = 'available'
             backup_options['service'] = self.driver_name
             backup_options['availability_zone'] = self.az
             backup_options['host'] = self.host
@@ -811,6 +771,15 @@ class BackupManager(manager.SchedulerDependentManager):
                      '%(backup_id)s, status: %(status)s.'),
                  {'backup_id': backup.id,
                   'status': status})
+        try:
+            # NOTE(flaper87): Verify the driver is enabled
+            # before going forward. The exception will be caught
+            # and the backup status updated. Fail early since there
+            # are no other status to change but backup's
+            utils.require_driver_initialized(self.driver)
+        except exception.DriverNotInitialized:
+            with excutils.save_and_reraise_exception():
+                LOG.exception(_LE("Backup driver has not been initialized"))
 
         backup_service = self._map_service_to_driver(backup.service)
         LOG.info(_LI('Backup service: %s.'), backup_service)
@@ -827,8 +796,7 @@ class BackupManager(manager.SchedulerDependentManager):
             # Verify backup
             try:
                 # check whether the backup is ok or not
-                if (status == fields.BackupStatus.AVAILABLE
-                        and backup['status'] != fields.BackupStatus.RESTORING):
+                if status == 'available' and backup['status'] != 'restoring':
                     # check whether we could verify the backup is ok or not
                     if isinstance(backup_service,
                                   driver.BackupDriverWithVerify):
@@ -847,9 +815,9 @@ class BackupManager(manager.SchedulerDependentManager):
                             reason=msg)
                 # reset status to error or from restoring to available
                 else:
-                    if (status == fields.BackupStatus.ERROR or
-                        (status == fields.BackupStatus.AVAILABLE and
-                            backup.status == fields.BackupStatus.RESTORING)):
+                    if (status == 'error' or
+                        (status == 'available' and
+                            backup.status == 'restoring')):
                         backup.status = status
                         backup.save()
             except exception.InvalidBackup:
@@ -874,15 +842,6 @@ class BackupManager(manager.SchedulerDependentManager):
                 raise exception.BackupVerifyUnsupportedDriver(
                     reason=msg)
 
-            # Needs to clean temporary volumes and snapshots.
-            try:
-                self._cleanup_temp_volumes_snapshots_for_one_backup(
-                    context, backup)
-            except Exception:
-                LOG.exception(_LE("Problem cleaning temp volumes and "
-                                  "snapshots for backup %(bkup)s."),
-                              {'bkup': backup.id})
-
             # send notification to ceilometer
             notifier_info = {'id': backup.id, 'update': {'status': status}}
             notifier = rpc.get_notifier('backupStatusUpdate')
@@ -896,102 +855,3 @@ class BackupManager(manager.SchedulerDependentManager):
         """
         backup_service = self.service.get_backup_driver(context)
         return backup_service.support_force_delete
-
-    def _attach_device(self, context, backup_device,
-                       properties, is_snapshot=False):
-        """Attach backup device."""
-        if not is_snapshot:
-            return self._attach_volume(context, backup_device, properties)
-        else:
-            volume = self.db.volume_get(context, backup_device.volume_id)
-            host = volume_utils.extract_host(volume['host'], 'backend')
-            backend = self._get_volume_backend(host=host)
-            rc = self._get_driver(backend)._attach_snapshot(
-                context, backup_device, properties)
-            return rc
-
-    def _attach_volume(self, context, volume, properties):
-        """Attach a volume."""
-
-        try:
-            conn = self.volume_rpcapi.initialize_connection(context,
-                                                            volume,
-                                                            properties)
-            return self._connect_device(conn)
-        except Exception:
-            with excutils.save_and_reraise_exception():
-                try:
-                    self.volume_rpcapi.terminate_connection(context, volume,
-                                                            properties,
-                                                            force=True)
-                except Exception:
-                    LOG.warning(_LW("Failed to terminate the connection "
-                                    "of volume %(volume_id)s, but it is "
-                                    "acceptable."),
-                                {'volume_id', volume.id})
-
-    def _connect_device(self, conn):
-        """Establish connection to device."""
-        use_multipath = CONF.use_multipath_for_image_xfer
-        device_scan_attempts = CONF.num_volume_device_scan_tries
-        protocol = conn['driver_volume_type']
-        connector = utils.brick_get_connector(
-            protocol,
-            use_multipath=use_multipath,
-            device_scan_attempts=device_scan_attempts,
-            conn=conn)
-        vol_handle = connector.connect_volume(conn['data'])
-
-        return {'conn': conn, 'device': vol_handle, 'connector': connector}
-
-    def _detach_device(self, context, attach_info, device,
-                       properties, is_snapshot=False, force=False):
-        """Disconnect the volume or snapshot from the host. """
-        connector = attach_info['connector']
-        connector.disconnect_volume(attach_info['conn']['data'],
-                                    attach_info['device'])
-
-        rpcapi = self.volume_rpcapi
-        if not is_snapshot:
-            rpcapi.terminate_connection(context, device, properties,
-                                        force=force)
-            rpcapi.remove_export(context, device)
-        else:
-            volume = self.db.volume_get(context, device.volume_id)
-            host = volume_utils.extract_host(volume['host'], 'backend')
-            backend = self._get_volume_backend(host=host)
-            self._get_driver(backend)._detach_snapshot(
-                context, attach_info, device, properties, force)
-
-
-# TODO(dulek): This goes away immediately in Newton and is just present in
-# Mitaka so that we can receive v1.x and v2.0 messages.
-class _BackupV1Proxy(object):
-
-    target = messaging.Target(version='1.3')
-
-    def __init__(self, manager):
-        self.manager = manager
-
-    def create_backup(self, context, backup):
-        return self.manager.create_backup(context, backup)
-
-    def restore_backup(self, context, backup, volume_id):
-        return self.manager.restore_backup(context, backup, volume_id)
-
-    def delete_backup(self, context, backup):
-        return self.manager.delete_backup(context, backup)
-
-    def export_record(self, context, backup):
-        return self.manager.export_record(context, backup)
-
-    def import_record(self, context, backup, backup_service, backup_url,
-                      backup_hosts):
-        return self.manager.import_record(context, backup, backup_service,
-                                          backup_url, backup_hosts)
-
-    def reset_status(self, context, backup, status):
-        return self.manager.reset_status(context, backup, status)
-
-    def check_support_to_force_delete(self, context):
-        return self.manager.check_support_to_force_delete(context)

@@ -20,7 +20,6 @@ from cinder import context
 from cinder import exception
 from cinder import test
 from cinder.tests.unit.api import fakes
-from cinder.tests.unit import fake_volume
 
 
 def app():
@@ -83,20 +82,21 @@ def api_manage(*args, **kwargs):
     Note that we don't try to replicate any passed-in information (e.g. name,
     volume type) in the returned structure.
     """
-    ctx = context.RequestContext('admin', 'fake', True)
     vol = {
         'status': 'creating',
         'display_name': 'fake_name',
         'availability_zone': 'nova',
         'tenant_id': 'fake',
+        'created_at': 'DONTCARE',
         'id': 'ffffffff-0000-ffff-0000-ffffffffffff',
         'volume_type': None,
         'snapshot_id': None,
         'user_id': 'fake',
+        'launched_at': 'DONTCARE',
         'size': 0,
         'attach_status': 'detached',
         'volume_type_id': None}
-    return fake_volume.fake_volume_obj(ctx, **vol)
+    return vol
 
 
 @mock.patch('cinder.db.service_get_by_host_and_topic',
@@ -130,7 +130,7 @@ class VolumeManageTest(test.TestCase):
         req.environ['cinder.context'] = context.RequestContext('admin',
                                                                'fake',
                                                                True)
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         res = req.get_response(app())
         return res
 

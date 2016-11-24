@@ -7,7 +7,6 @@
 # Copyright (c) 2014 Jeff Applewhite.  All rights reserved.
 # Copyright (c) 2015 Tom Barron.  All rights reserved.
 # Copyright (c) 2015 Goutham Pacha Ravi. All rights reserved.
-# Copyright (c) 2016 Mike Rooney. All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -36,7 +35,6 @@ from cinder.i18n import _
 from cinder import utils
 from cinder.volume.drivers.netapp.dataontap import block_base
 from cinder.volume.drivers.netapp.dataontap.client import client_cmode
-from cinder.volume.drivers.netapp.dataontap.performance import perf_cmode
 from cinder.volume.drivers.netapp.dataontap import ssc_cmode
 from cinder.volume.drivers.netapp import options as na_opts
 from cinder.volume.drivers.netapp import utils as na_utils
@@ -75,8 +73,6 @@ class NetAppBlockStorageCmodeLibrary(block_base.NetAppBlockStorageLibrary):
 
         self.ssc_vols = {}
         self.stale_vols = set()
-        self.perf_library = perf_cmode.PerformanceCmodeLibrary(
-            self.zapi_client)
 
     def check_for_setup_error(self):
         """Check that the driver is working and can communicate."""
@@ -129,19 +125,16 @@ class NetAppBlockStorageCmodeLibrary(block_base.NetAppBlockStorageLibrary):
 
     def _clone_lun(self, name, new_name, space_reserved=None,
                    qos_policy_group_name=None, src_block=0, dest_block=0,
-                   block_count=0, source_snapshot=None):
+                   block_count=0):
         """Clone LUN with the given handle to the new name."""
         if not space_reserved:
             space_reserved = self.lun_space_reservation
         metadata = self._get_lun_attr(name, 'metadata')
         volume = metadata['Volume']
-
         self.zapi_client.clone_lun(volume, name, new_name, space_reserved,
                                    qos_policy_group_name=qos_policy_group_name,
                                    src_block=src_block, dest_block=dest_block,
-                                   block_count=block_count,
-                                   source_snapshot=source_snapshot)
-
+                                   block_count=block_count)
         LOG.debug("Cloned LUN with new name %s", new_name)
         lun = self.zapi_client.get_lun_by_args(vserver=self.vserver,
                                                path='/vol/%s/%s'
@@ -183,8 +176,7 @@ class NetAppBlockStorageCmodeLibrary(block_base.NetAppBlockStorageLibrary):
         else:
             self.zapi_client.set_vserver(None)
 
-    def _update_volume_stats(self, filter_function=None,
-                             goodness_function=None):
+    def _update_volume_stats(self):
         """Retrieve stats info from vserver."""
 
         sync = True if self.ssc_vols is None else False
@@ -198,15 +190,12 @@ class NetAppBlockStorageCmodeLibrary(block_base.NetAppBlockStorageLibrary):
         data['vendor_name'] = 'NetApp'
         data['driver_version'] = self.VERSION
         data['storage_protocol'] = self.driver_protocol
-        data['pools'] = self._get_pool_stats(
-            filter_function=filter_function,
-            goodness_function=goodness_function)
-        data['sparse_copy_volume'] = True
+        data['pools'] = self._get_pool_stats()
 
         self.zapi_client.provide_ems(self, self.driver_name, self.app_version)
         self._stats = data
 
-    def _get_pool_stats(self, filter_function=None, goodness_function=None):
+    def _get_pool_stats(self):
         """Retrieve pool (Data ONTAP volume) stats info from SSC volumes."""
 
         pools = []
@@ -214,14 +203,9 @@ class NetAppBlockStorageCmodeLibrary(block_base.NetAppBlockStorageLibrary):
         if not self.ssc_vols:
             return pools
 
-        filtered_pools = self._get_filtered_pools()
-        self.perf_library.update_performance_cache(filtered_pools)
-
-        for vol in filtered_pools:
-            pool_name = vol.id['name']
-
+        for vol in self._get_filtered_pools():
             pool = dict()
-            pool['pool_name'] = pool_name
+            pool['pool_name'] = vol.id['name']
             pool['QoS_support'] = True
             pool['reserved_percentage'] = (
                 self.reserved_percentage)
@@ -262,16 +246,8 @@ class NetAppBlockStorageCmodeLibrary(block_base.NetAppBlockStorageLibrary):
             thick = (not thin and
                      self.configuration.netapp_lun_space_reservation
                      == 'enabled')
-            pool['thick_provisioning_support'] = thick
-            pool['thin_provisioning_support'] = not thick
-
-            utilization = self.perf_library.get_node_utilization_for_pool(
-                pool_name)
-            pool['utilization'] = na_utils.round_down(utilization, '0.01')
-            pool['filter_function'] = filter_function
-            pool['goodness_function'] = goodness_function
-
-            pool['consistencygroup_support'] = True
+            pool['thick_provisioned_support'] = thick
+            pool['thin_provisioned_support'] = not thick
 
             pools.append(pool)
 
@@ -333,17 +309,6 @@ class NetAppBlockStorageCmodeLibrary(block_base.NetAppBlockStorageLibrary):
                 volume=ssc_cmode.NetAppVolume(netapp_vol, self.vserver))
         msg = 'Deleted LUN with name %(name)s and QoS info %(qos)s'
         LOG.debug(msg, {'name': volume['name'], 'qos': qos_policy_group_info})
-
-    def delete_snapshot(self, snapshot):
-        """Driver entry point for deleting a snapshot."""
-        lun = self.lun_table.get(snapshot['name'])
-        netapp_vol = lun.get_metadata_property('Volume') if lun else None
-
-        super(NetAppBlockStorageCmodeLibrary, self).delete_snapshot(snapshot)
-
-        if netapp_vol:
-            self._update_stale_vols(
-                volume=ssc_cmode.NetAppVolume(netapp_vol, self.vserver))
 
     def _check_volume_type_for_lun(self, volume, lun, existing_ref,
                                    extra_specs):

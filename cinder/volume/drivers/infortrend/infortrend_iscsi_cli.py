@@ -150,6 +150,7 @@ class InfortrendCLIISCSIDriver(driver.ISCSIDriver):
                     'target_iqn': 'iqn.2010-10.org.openstack:volume-00000001',
                     'target_portal': '127.0.0.0.1:3260',
                     'volume_id': 1,
+                    'access_mode': 'rw'
                 }
             }
         """
@@ -242,7 +243,7 @@ class InfortrendCLIISCSIDriver(driver.ISCSIDriver):
         :param new_volume: The migration volume object that was created on
                            this backend as part of the migration process
         :param original_volume_status: The status of the original volume
-        :returns: model_update to update DB with any needed changes
+        :return model_update to update DB with any needed changes
         """
         LOG.debug(
             'update migrated volume original volume id= %(volume_id)s '

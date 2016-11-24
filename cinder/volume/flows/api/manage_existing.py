@@ -83,7 +83,7 @@ class EntryCreateTask(flow_utils.CinderTask):
             'volume': volume,
         }
 
-    def revert(self, context, result, optional_args=None, **kwargs):
+    def revert(self, context, result, optional_args, **kwargs):
         # We never produced a result and therefore can't destroy anything.
         if isinstance(result, ft.Failure):
             return
@@ -112,7 +112,6 @@ class ManageCastTask(flow_utils.CinderTask):
     def execute(self, context, **kwargs):
         volume = kwargs.pop('volume')
         request_spec = kwargs.copy()
-        request_spec['volume_id'] = volume.id
 
         # Call the scheduler to ensure that the host exists and that it can
         # accept the volume

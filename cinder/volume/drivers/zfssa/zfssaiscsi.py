@@ -1,4 +1,4 @@
-# Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -15,19 +15,17 @@
 ZFS Storage Appliance Cinder Volume Driver
 """
 import ast
+import base64
 import math
 
 from oslo_config import cfg
 from oslo_log import log
-from oslo_serialization import base64
-from oslo_utils import excutils
 from oslo_utils import units
 import six
 
 from cinder import exception
 from cinder import utils
 from cinder.i18n import _, _LE, _LI, _LW
-from cinder.image import image_utils
 from cinder.volume import driver
 from cinder.volume.drivers.san import san
 from cinder.volume.drivers.zfssa import zfssarest
@@ -85,10 +83,8 @@ ZFSSA_OPTS = [
     cfg.BoolOpt('zfssa_enable_local_cache', default=True,
                 help='Flag to enable local caching: True, False.'),
     cfg.StrOpt('zfssa_cache_project', default='os-cinder-cache',
-               help='Name of ZFSSA project where cache volumes are stored.'),
-    cfg.StrOpt('zfssa_manage_policy', default='loose',
-               choices=['loose', 'strict'],
-               help='Driver policy for volume manage.')
+               help='Name of ZFSSA project where cache volumes are stored.')
+
 ]
 
 CONF.register_opts(ZFSSA_OPTS)
@@ -112,10 +108,8 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
     1.0.1:
         Backend enabled volume migration.
         Local cache feature.
-    1.0.2:
-        Volume manage/unmanage support.
     """
-    VERSION = '1.0.2'
+    VERSION = '1.0.1'
     protocol = 'iSCSI'
 
     def __init__(self, *args, **kwargs):
@@ -141,33 +135,28 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
         self.zfssa = factory_zfssa()
         self.tgt_zfssa = factory_zfssa()
         self.zfssa.set_host(lcfg.san_ip, timeout=lcfg.zfssa_rest_timeout)
-        auth_str = '%s:%s' % (lcfg.san_login, lcfg.san_password)
-        auth_str = base64.encode_as_text(auth_str)
+        auth_str = base64.encodestring('%s:%s' %
+                                       (lcfg.san_login,
+                                        lcfg.san_password))[:-1]
         self.zfssa.login(auth_str)
 
         self.zfssa.create_project(lcfg.zfssa_pool, lcfg.zfssa_project,
                                   compression=lcfg.zfssa_lun_compression,
                                   logbias=lcfg.zfssa_lun_logbias)
 
-        schemas = [
-            {'property': 'cinder_managed',
-             'description': 'Managed by Cinder',
-             'type': 'Boolean'}]
-
         if lcfg.zfssa_enable_local_cache:
             self.zfssa.create_project(lcfg.zfssa_pool,
                                       lcfg.zfssa_cache_project,
                                       compression=lcfg.zfssa_lun_compression,
                                       logbias=lcfg.zfssa_lun_logbias)
-            schemas.extend([
+            schemas = [
                 {'property': 'image_id',
                  'description': 'OpenStack image ID',
                  'type': 'String'},
                 {'property': 'updated_at',
                  'description': 'Most recent updated time of image',
-                 'type': 'String'}])
-
-        self.zfssa.create_schemas(schemas)
+                 'type': 'String'}]
+            self.zfssa.create_schemas(schemas)
 
         if (lcfg.zfssa_initiator_config != ''):
             initiator_config = ast.literal_eval(lcfg.zfssa_initiator_config)
@@ -188,15 +177,6 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
         else:
             LOG.warning(_LW('zfssa_initiator_config not found. '
                             'Using deprecated configuration options.'))
-            if (not lcfg.zfssa_initiator and
-                (not lcfg.zfssa_initiator_group and
-                 lcfg.zfssa_initiator_group != 'default')):
-                LOG.error(_LE('zfssa_initiator cannot be empty when '
-                              'creating a zfssa_initiator_group.'))
-                raise exception.InvalidConfigurationValue(
-                    value='',
-                    option='zfssa_initiator')
-
             if (lcfg.zfssa_initiator != '' and
                 (lcfg.zfssa_initiator_group == '' or
                  lcfg.zfssa_initiator_group == 'default')):
@@ -211,7 +191,6 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
                lcfg.zfssa_initiator_group != '' and
                lcfg.zfssa_initiator_group != 'default'):
                 for initiator in lcfg.zfssa_initiator.split(','):
-                    initiator = initiator.strip()
                     self.zfssa.create_initiator(
                         initiator, lcfg.zfssa_initiator_group + '-' +
                         initiator, chapuser=lcfg.zfssa_initiator_user,
@@ -234,13 +213,6 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
             tchapsecret=lcfg.zfssa_target_password)
 
         self.zfssa.add_to_targetgroup(iqn, lcfg.zfssa_target_group)
-
-        if lcfg.zfssa_manage_policy not in ("loose", "strict"):
-            err_msg = (_("zfssa_manage_policy property needs to be set to"
-                         " 'strict' or 'loose'. Current value is: %s.") %
-                       lcfg.zfssa_manage_policy)
-            LOG.error(err_msg)
-            raise exception.InvalidInput(reason=err_msg)
 
     def check_for_setup_error(self):
         """Check that driver can login.
@@ -304,7 +276,6 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
         lcfg = self.configuration
         volsize = str(volume['size']) + 'g'
         specs = self._get_voltype_specs(volume)
-        specs.update({'custom:cinder_managed': True})
         self.zfssa.create_lun(lcfg.zfssa_pool,
                               lcfg.zfssa_project,
                               volume['name'],
@@ -353,7 +324,7 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
 
         if ('origin' in lun2del and
                 lun2del['origin']['project'] == lcfg.zfssa_cache_project):
-            self._check_origin(lun2del, volume['name'])
+                self._check_origin(lun2del, volume['name'])
 
     def create_snapshot(self, snapshot):
         """Creates a snapshot of a volume.
@@ -430,8 +401,9 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
         host = lcfg.san_ip
         pool = lcfg.zfssa_pool
         project = lcfg.zfssa_project
-        auth_str = '%s:%s' % (lcfg.san_login, lcfg.san_password)
-        auth_str = base64.encode_as_text(auth_str)
+        auth_str = base64.encodestring('%s:%s' %
+                                       (lcfg.san_login,
+                                        lcfg.san_password))[:-1]
         zfssa_tgt_group = lcfg.zfssa_target_group
         repl_ip = lcfg.zfssa_replication_ip
 
@@ -444,14 +416,6 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
         data['free_capacity_gb'] = int(avail) / units.Gi
         data['reserved_percentage'] = 0
         data['QoS_support'] = False
-
-        pool_details = self.zfssa.get_pool_details(lcfg.zfssa_pool)
-        data['zfssa_poolprofile'] = pool_details['profile']
-        data['zfssa_volblocksize'] = lcfg.zfssa_lun_volblocksize
-        data['zfssa_sparse'] = six.text_type(lcfg.zfssa_lun_sparse)
-        data['zfssa_compression'] = lcfg.zfssa_lun_compression
-        data['zfssa_logbias'] = lcfg.zfssa_lun_logbias
-
         self._stats = data
 
     def get_volume_stats(self, refresh=False):
@@ -497,7 +461,6 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
             # Cleanup snapshot
             self.delete_snapshot(zfssa_snapshot)
 
-    @utils.synchronized('zfssaiscsi', external=True)
     def clone_image(self, context, volume,
                     image_location, image_meta,
                     image_service):
@@ -513,28 +476,21 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
         Create a new cache volume as in (1).
 
         Clone a volume from the cache volume and returns it to Cinder.
-
-        A file lock is placed on this method to prevent:
-
-        (a) a race condition when a cache volume has been verified, but then
-        gets deleted before it is cloned.
-
-        (b) failure of subsequent clone_image requests if the first request is
-        still pending.
         """
         LOG.debug('Cloning image %(image)s to volume %(volume)s',
                   {'image': image_meta['id'], 'volume': volume['name']})
         lcfg = self.configuration
-        cachevol_size = 0
         if not lcfg.zfssa_enable_local_cache:
             return None, False
 
-        with image_utils.TemporaryImages.fetch(image_service,
-                                               context,
-                                               image_meta['id']) as tmp_image:
-            info = image_utils.qemu_img_info(tmp_image)
-            cachevol_size = int(math.ceil(float(info.virtual_size) / units.Gi))
-
+        # virtual_size is the image's actual size when stored in a volume
+        # virtual_size is expected to be updated manually through glance
+        try:
+            virtual_size = int(image_meta['properties'].get('virtual_size'))
+        except Exception:
+            LOG.error(_LE('virtual_size property is not set for the image.'))
+            return None, False
+        cachevol_size = int(math.ceil(float(virtual_size) / units.Gi))
         if cachevol_size > volume['size']:
             exception_msg = (_LE('Image size %(img_size)dGB is larger '
                                  'than volume size %(vol_size)dGB.'),
@@ -573,6 +529,7 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
 
         return None, True
 
+    @utils.synchronized('zfssaiscsi', external=True)
     def _verify_cache_volume(self, context, img_meta,
                              img_service, specs, cachevol_props):
         """Verify if we have a cache volume that we want.
@@ -585,6 +542,9 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
         If it's out of date, delete it and create a new one.
         After the function returns, there should be a cache volume available,
         ready for cloning.
+
+        There needs to be a file lock here, otherwise subsequent clone_image
+        requests will fail if the first request is still pending.
         """
         lcfg = self.configuration
         cachevol_name = 'os-cache-vol-%s' % img_meta['id']
@@ -602,13 +562,6 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
             cache_vol = self.zfssa.get_lun(lcfg.zfssa_pool,
                                            lcfg.zfssa_cache_project,
                                            cachevol_name)
-            if (not cache_vol.get('updated_at', None) or
-                    not cache_vol.get('image_id', None)):
-                exc_msg = (_('Cache volume %s does not have required '
-                             'properties') % cachevol_name)
-                LOG.error(exc_msg)
-                raise exception.VolumeBackendAPIException(data=exc_msg)
-
             cache_snap = self.zfssa.get_lun_snapshot(lcfg.zfssa_pool,
                                                      lcfg.zfssa_cache_project,
                                                      cachevol_name,
@@ -732,15 +685,6 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
         lcfg = self.configuration
         init_groups = self.zfssa.get_initiator_initiatorgroup(
             connector['initiator'])
-        if not init_groups:
-            if lcfg.zfssa_initiator_group == 'default':
-                init_groups.append('default')
-            else:
-                exception_msg = (_('Failed to find iSCSI initiator group '
-                                   'containing %(initiator)s.')
-                                 % {'initiator': connector['initiator']})
-                LOG.error(exception_msg)
-                raise exception.VolumeBackendAPIException(data=exception_msg)
         if ((lcfg.zfssa_enable_local_cache is True) and
                 (volume['name'].startswith('os-cache-vol-'))):
             project = lcfg.zfssa_cache_project
@@ -950,7 +894,7 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
         :param new_volume: The migration volume object that was created on
                            this backend as part of the migration process
         :param original_volume_status: The status of the original volume
-        :returns: model_update to update DB with any needed changes
+        :return model_update to update DB with any needed changes
         """
 
         lcfg = self.configuration
@@ -1006,110 +950,9 @@ class ZFSSAISCSIDriver(driver.ISCSIDriver):
                 numclones = 0
 
         if numclones == 0:
-            try:
-                self.zfssa.delete_lun(lcfg.zfssa_pool,
-                                      lcfg.zfssa_cache_project,
-                                      cache['share'])
-            except exception.VolumeBackendAPIException:
-                LOG.warning(_LW("Volume %s exists but can't be deleted"),
-                            cache['share'])
-
-    def manage_existing(self, volume, existing_ref):
-        """Manage an existing volume in the ZFSSA backend.
-
-        :param volume: Reference to the new volume.
-        :param existing_ref: Reference to the existing volume to be managed.
-        """
-        lcfg = self.configuration
-
-        existing_vol = self._get_existing_vol(existing_ref)
-        self._verify_volume_to_manage(existing_vol)
-
-        new_vol_name = volume['name']
-
-        try:
-            self.zfssa.set_lun_props(lcfg.zfssa_pool,
-                                     lcfg.zfssa_project,
-                                     existing_vol['name'],
-                                     name=new_vol_name,
-                                     schema={"custom:cinder_managed": True})
-        except exception.VolumeBackendAPIException:
-            with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Failed to rename volume %(existing)s to "
-                              "%(new)s. Volume manage failed."),
-                          {'existing': existing_vol['name'],
-                           'new': new_vol_name})
-        return None
-
-    def manage_existing_get_size(self, volume, existing_ref):
-        """Return size of the volume to be managed by manage_existing."""
-        existing_vol = self._get_existing_vol(existing_ref)
-
-        size = existing_vol['size']
-        return int(math.ceil(float(size) / units.Gi))
-
-    def unmanage(self, volume):
-        """Remove an existing volume from cinder management.
-
-        :param volume: Reference to the volume to be unmanaged.
-        """
-        lcfg = self.configuration
-        new_name = 'unmanaged-' + volume['name']
-        try:
-            self.zfssa.set_lun_props(lcfg.zfssa_pool,
-                                     lcfg.zfssa_project,
-                                     volume['name'],
-                                     name=new_name,
-                                     schema={"custom:cinder_managed": False})
-        except exception.VolumeBackendAPIException:
-            with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Failed to rename volume %(existing)s to"
-                              " %(new)s. Volume unmanage failed."),
-                          {'existing': volume['name'],
-                           'new': new_name})
-        return None
-
-    def _verify_volume_to_manage(self, volume):
-        lcfg = self.configuration
-        if lcfg.zfssa_manage_policy == 'loose':
-            return
-
-        vol_name = volume['name']
-
-        if 'cinder_managed' not in volume:
-            err_msg = (_("Unknown if the volume: %s to be managed is "
-                         "already being managed by Cinder. Aborting manage "
-                         "volume. Please add 'cinder_managed' custom schema "
-                         "property to the volume and set its value to False."
-                         " Alternatively, set the value of cinder config "
-                         "policy 'zfssa_manage_policy' to 'loose' to "
-                         "remove this restriction.") % vol_name)
-            LOG.error(err_msg)
-            raise exception.InvalidInput(reason=err_msg)
-
-        if volume['cinder_managed'] is True:
-            msg = (_("Volume: %s is already being managed by Cinder.")
-                   % vol_name)
-            LOG.error(msg)
-            raise exception.ManageExistingAlreadyManaged(volume_ref=vol_name)
-
-    def _get_existing_vol(self, existing_ref):
-        lcfg = self.configuration
-        if 'source-name' not in existing_ref:
-            msg = (_("Reference to volume: %s to be managed must contain "
-                   "source-name.") % existing_ref)
-            raise exception.ManageExistingInvalidReference(
-                existing_ref=existing_ref, reason=msg)
-        try:
-            existing_vol = self.zfssa.get_lun(lcfg.zfssa_pool,
-                                              lcfg.zfssa_project,
-                                              existing_ref['source-name'])
-        except exception.VolumeNotFound:
-            err_msg = (_("Volume %s doesn't exist on the ZFSSA "
-                         "backend.") % existing_vol['name'])
-            LOG.error(err_msg)
-            raise exception.InvalidInput(reason=err_msg)
-        return existing_vol
+            self.zfssa.delete_lun(lcfg.zfssa_pool,
+                                  lcfg.zfssa_cache_project,
+                                  cache['share'])
 
 
 class MigrateVolumeInit(task.Task):

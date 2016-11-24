@@ -14,7 +14,6 @@ import datetime
 import six
 import sys
 
-from cinder import rpc
 try:
     from unittest import mock
 except ImportError:
@@ -36,11 +35,7 @@ from cinder.cmd import scheduler as cinder_scheduler
 from cinder.cmd import volume as cinder_volume
 from cinder.cmd import volume_usage_audit
 from cinder import context
-from cinder import exception
-from cinder.objects import fields
 from cinder import test
-from cinder.tests.unit import fake_constants
-from cinder.tests.unit import fake_volume
 from cinder import version
 
 CONF = cfg.CONF
@@ -374,6 +369,24 @@ class TestCinderManageCmd(test.TestCase):
     def tearDown(self):
         super(TestCinderManageCmd, self).tearDown()
 
+    @mock.patch('oslo_utils.uuidutils.is_uuid_like')
+    def test_param2id(self, is_uuid_like):
+        mock_object_id = mock.MagicMock()
+        is_uuid_like.return_value = True
+
+        object_id = cinder_manage.param2id(mock_object_id)
+        self.assertEqual(mock_object_id, object_id)
+        is_uuid_like.assert_called_once_with(mock_object_id)
+
+    @mock.patch('oslo_utils.uuidutils.is_uuid_like')
+    def test_param2id_int_string(self, is_uuid_like):
+        object_id_str = '10'
+        is_uuid_like.return_value = False
+
+        object_id = cinder_manage.param2id(object_id_str)
+        self.assertEqual(10, object_id)
+        is_uuid_like.assert_called_once_with(object_id_str)
+
     @mock.patch('cinder.db.migration.db_sync')
     def test_db_commands_sync(self, db_sync):
         version = mock.MagicMock()
@@ -387,13 +400,6 @@ class TestCinderManageCmd(test.TestCase):
         with mock.patch('sys.stdout', new=six.StringIO()):
             db_cmds.version()
             self.assertEqual(1, db_version.call_count)
-
-    @mock.patch('oslo_db.sqlalchemy.migration.db_version')
-    def test_db_commands_downgrade_fails(self, db_version):
-        db_version.return_value = 2
-        db_cmds = cinder_manage.DbCommands()
-        with mock.patch('sys.stdout', new=six.StringIO()):
-            self.assertRaises(exception.InvalidInput, db_cmds.sync, 1)
 
     @mock.patch('cinder.version.version_string')
     def test_versions_commands_list(self, version_string):
@@ -473,46 +479,45 @@ class TestCinderManageCmd(test.TestCase):
                                            serializer=object_serializer())
         self.assertEqual(mock_rpc_client, rpc_client)
 
-    @mock.patch('cinder.db.sqlalchemy.api.volume_get')
+    @mock.patch('cinder.db.volume_get')
     @mock.patch('cinder.context.get_admin_context')
     @mock.patch('cinder.rpc.get_client')
     @mock.patch('cinder.rpc.init')
     def test_volume_commands_delete(self, rpc_init, get_client,
                                     get_admin_context, volume_get):
-        ctxt = context.RequestContext('admin', 'fake', True)
+        ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
         mock_client = mock.MagicMock()
         cctxt = mock.MagicMock()
         mock_client.prepare.return_value = cctxt
         get_client.return_value = mock_client
+        volume_id = '123'
         host = 'fake@host'
-        db_volume = {'host': host + '#pool1'}
-        volume = fake_volume.fake_db_volume(**db_volume)
-        volume_obj = fake_volume.fake_volume_obj(ctxt, **volume)
-        volume_id = volume['id']
+        volume = {'id': volume_id,
+                  'host': host + '#pool1',
+                  'status': 'available'}
         volume_get.return_value = volume
 
         volume_cmds = cinder_manage.VolumeCommands()
         volume_cmds._client = mock_client
         volume_cmds.delete(volume_id)
 
-        volume_get.assert_called_once_with(ctxt, volume_id)
+        volume_get.assert_called_once_with(ctxt, 123)
+        # NOTE prepare called w/o pool part in host
         mock_client.prepare.assert_called_once_with(server=host)
         cctxt.cast.assert_called_once_with(ctxt, 'delete_volume',
-                                           volume_id=volume['id'],
-                                           volume=volume_obj)
+                                           volume_id=volume['id'])
 
     @mock.patch('cinder.db.volume_destroy')
-    @mock.patch('cinder.db.sqlalchemy.api.volume_get')
+    @mock.patch('cinder.db.volume_get')
     @mock.patch('cinder.context.get_admin_context')
     @mock.patch('cinder.rpc.init')
     def test_volume_commands_delete_no_host(self, rpc_init, get_admin_context,
                                             volume_get, volume_destroy):
-        ctxt = context.RequestContext('fake-user', 'fake-project',
-                                      is_admin=True)
+        ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
-        volume = fake_volume.fake_db_volume()
-        volume_id = volume['id']
+        volume_id = '123'
+        volume = {'id': volume_id, 'host': None, 'status': 'available'}
         volume_get.return_value = volume
 
         with mock.patch('sys.stdout', new=six.StringIO()) as fake_out:
@@ -523,14 +528,12 @@ class TestCinderManageCmd(test.TestCase):
             volume_cmds.delete(volume_id)
 
             get_admin_context.assert_called_once_with()
-            volume_get.assert_called_once_with(ctxt, volume_id)
-            self.assertTrue(volume_destroy.called)
-            admin_context = volume_destroy.call_args[0][0]
-            self.assertTrue(admin_context.is_admin)
+            volume_get.assert_called_once_with(ctxt, 123)
+            volume_destroy.assert_called_once_with(ctxt, 123)
             self.assertEqual(expected_out, fake_out.getvalue())
 
     @mock.patch('cinder.db.volume_destroy')
-    @mock.patch('cinder.db.sqlalchemy.api.volume_get')
+    @mock.patch('cinder.db.volume_get')
     @mock.patch('cinder.context.get_admin_context')
     @mock.patch('cinder.rpc.init')
     def test_volume_commands_delete_volume_in_use(self, rpc_init,
@@ -538,9 +541,8 @@ class TestCinderManageCmd(test.TestCase):
                                                   volume_get, volume_destroy):
         ctxt = context.RequestContext('fake-user', 'fake-project')
         get_admin_context.return_value = ctxt
-        db_volume = {'status': 'in-use', 'host': 'fake-host'}
-        volume = fake_volume.fake_db_volume(**db_volume)
-        volume_id = volume['id']
+        volume_id = '123'
+        volume = {'id': volume_id, 'host': 'fake-host', 'status': 'in-use'}
         volume_get.return_value = volume
 
         with mock.patch('sys.stdout', new=six.StringIO()) as fake_out:
@@ -550,7 +552,7 @@ class TestCinderManageCmd(test.TestCase):
             volume_cmds = cinder_manage.VolumeCommands()
             volume_cmds.delete(volume_id)
 
-            volume_get.assert_called_once_with(ctxt, volume_id)
+            volume_get.assert_called_once_with(ctxt, 123)
             self.assertEqual(expected_out, fake_out.getvalue())
 
     def test_config_commands_list(self):
@@ -627,7 +629,7 @@ class TestCinderManageCmd(test.TestCase):
                   'host': 'fake-host',
                   'display_name': 'fake-display-name',
                   'container': 'fake-container',
-                  'status': fields.BackupStatus.AVAILABLE,
+                  'status': 'fake-status',
                   'size': 123,
                   'object_count': 1,
                   'volume_id': 'fake-volume-id',
@@ -666,34 +668,6 @@ class TestCinderManageCmd(test.TestCase):
                                                    None, None, None)
             self.assertEqual(expected_out, fake_out.getvalue())
 
-    @mock.patch('cinder.db.backup_update')
-    @mock.patch('cinder.db.backup_get_all_by_host')
-    @mock.patch('cinder.context.get_admin_context')
-    def test_update_backup_host(self, get_admin_context,
-                                backup_get_by_host,
-                                backup_update):
-        ctxt = context.RequestContext('fake-user', 'fake-project')
-        get_admin_context.return_value = ctxt
-        backup = {'id': fake_constants.backup_id,
-                  'user_id': 'fake-user-id',
-                  'project_id': 'fake-project-id',
-                  'host': 'fake-host',
-                  'display_name': 'fake-display-name',
-                  'container': 'fake-container',
-                  'status': fields.BackupStatus.AVAILABLE,
-                  'size': 123,
-                  'object_count': 1,
-                  'volume_id': 'fake-volume-id',
-                  }
-        backup_get_by_host.return_value = [backup]
-        backup_cmds = cinder_manage.BackupCommands()
-        backup_cmds.update_backup_host('fake_host', 'fake_host2')
-
-        get_admin_context.assert_called_once_with()
-        backup_get_by_host.assert_called_once_with(ctxt, 'fake_host')
-        backup_update.assert_called_once_with(ctxt, fake_constants.backup_id,
-                                              {'host': 'fake_host2'})
-
     @mock.patch('cinder.utils.service_is_up')
     @mock.patch('cinder.db.service_get_all')
     @mock.patch('cinder.context.get_admin_context')
@@ -704,29 +678,19 @@ class TestCinderManageCmd(test.TestCase):
         service_get_all.return_value = [service]
         service_is_up.return_value = True
         with mock.patch('sys.stdout', new=six.StringIO()) as fake_out:
-            format = "%-16s %-36s %-16s %-10s %-5s %-20s %-12s %-15s"
+            format = "%-16s %-36s %-16s %-10s %-5s %-10s"
             print_format = format % ('Binary',
                                      'Host',
                                      'Zone',
                                      'Status',
                                      'State',
-                                     'Updated At',
-                                     'RPC Version',
-                                     'Object Version')
-            rpc_version = service['rpc_current_version']
-            if not rpc_version:
-                rpc_version = rpc.LIBERTY_RPC_VERSIONS[service['binary']]
-            object_version = service['object_current_version']
-            if not object_version:
-                object_version = 'liberty'
+                                     'Updated At')
             service_format = format % (service['binary'],
                                        service['host'].partition('.')[0],
                                        service['availability_zone'],
                                        'enabled',
                                        ':-)',
-                                       service['updated_at'],
-                                       rpc_version,
-                                       object_version)
+                                       service['updated_at'])
             expected_out = print_format + '\n' + service_format + '\n'
 
             service_cmds = cinder_manage.ServiceCommands()
@@ -741,24 +705,16 @@ class TestCinderManageCmd(test.TestCase):
                    'host': 'fake-host.fake-domain',
                    'availability_zone': 'fake-zone',
                    'updated_at': '2014-06-30 11:22:33',
-                   'disabled': False,
-                   'rpc_current_version': '1.1',
-                   'object_current_version': '1.1'}
-        for binary in ('volume', 'scheduler', 'backup'):
-            service['binary'] = 'cinder-%s' % binary
-            self._test_service_commands_list(service)
+                   'disabled': False}
+        self._test_service_commands_list(service)
 
     def test_service_commands_list_no_updated_at(self):
         service = {'binary': 'cinder-binary',
                    'host': 'fake-host.fake-domain',
                    'availability_zone': 'fake-zone',
                    'updated_at': None,
-                   'disabled': False,
-                   'rpc_current_version': None,
-                   'object_current_version': None}
-        for binary in ('volume', 'scheduler', 'backup'):
-            service['binary'] = 'cinder-%s' % binary
-            self._test_service_commands_list(service)
+                   'disabled': False}
+        self._test_service_commands_list(service)
 
     def test_get_arg_string(self):
         args1 = "foobar"
@@ -846,7 +802,7 @@ class TestCinderManageCmd(test.TestCase):
 
     @mock.patch('cinder.db.service_destroy')
     @mock.patch('cinder.db.service_get_by_args',
-                return_value = {'id': '12'})
+                return_value = {'id': 'volID'})
     def test_remove_service_success(self, mock_get_by_args,
                                     mock_service_destroy):
         service_commands = cinder_manage.ServiceCommands()
@@ -925,11 +881,11 @@ class TestCinderRtstoolCmd(test.TestCase):
             lun.assert_called_once_with(tpg_new,
                                         storage_object=mock.sentinel.so_new)
             self.assertEqual(1, tpg_new.enable)
+            network_portal.assert_any_call(tpg_new, ip, 3260,
+                                           mode='any')
 
             if ip == '::0':
-                ip = '[::0]'
-
-            network_portal.assert_any_call(tpg_new, ip, 3260, mode='any')
+                network_portal.assert_any_call(tpg_new, ip, 3260, mode='any')
 
     def test_create_rtslib_error_network_portal_ipv4(self):
         with mock.patch('sys.stdout', new=six.StringIO()):
@@ -956,6 +912,12 @@ class TestCinderRtstoolCmd(test.TestCase):
             tpg_new = tpg.return_value
             lun.return_value = mock.sentinel.lun_new
 
+            def network_portal_exception(*args, **kwargs):
+                if set([tpg_new, '::0', 3260]).issubset(list(args)):
+                    raise rtslib_fb.utils.RTSLibError()
+                else:
+                    pass
+
             cinder_rtstool.create(mock.sentinel.backing_device,
                                   mock.sentinel.name,
                                   mock.sentinel.userid,
@@ -975,11 +937,11 @@ class TestCinderRtstoolCmd(test.TestCase):
             lun.assert_called_once_with(tpg_new,
                                         storage_object=mock.sentinel.so_new)
             self.assertEqual(1, tpg_new.enable)
+            network_portal.assert_any_call(tpg_new, ip, 3260,
+                                           mode='any')
 
             if ip == '::0':
-                ip = '[::0]'
-
-            network_portal.assert_any_call(tpg_new, ip, 3260, mode='any')
+                network_portal.assert_any_call(tpg_new, ip, 3260, mode='any')
 
     def test_create_ipv4(self):
         self._test_create('0.0.0.0')
@@ -987,7 +949,11 @@ class TestCinderRtstoolCmd(test.TestCase):
     def test_create_ipv6(self):
         self._test_create('::0')
 
-    def _test_create_ips_and_port(self, mock_rtslib, port, ips, expected_ips):
+    @mock.patch.object(cinder_rtstool, 'rtslib_fb', autospec=True)
+    def test_create_ips_and_port(self, mock_rtslib):
+        port = 3261
+        ips = ['ip1', 'ip2', 'ip3']
+
         mock_rtslib.BlockStorageObject.return_value = mock.sentinel.bso
         mock_rtslib.Target.return_value = mock.sentinel.target_new
         mock_rtslib.FabricModule.return_value = mock.sentinel.iscsi_fabric
@@ -1011,23 +977,9 @@ class TestCinderRtstoolCmd(test.TestCase):
             storage_object=mock.sentinel.bso)
 
         mock_rtslib.NetworkPortal.assert_has_calls(
-            map(lambda ip: mock.call(tpg_new, ip, port, mode='any'),
-                expected_ips), any_order=True
+            map(lambda ip: mock.call(tpg_new, ip, port, mode='any'), ips),
+            any_order=True
         )
-
-    @mock.patch.object(cinder_rtstool, 'rtslib_fb', autospec=True)
-    def test_create_ips_and_port_ipv4(self, mock_rtslib):
-        ips = ['10.0.0.2', '10.0.0.3', '10.0.0.4']
-        port = 3261
-        self._test_create_ips_and_port(mock_rtslib, port, ips, ips)
-
-    @mock.patch.object(cinder_rtstool, 'rtslib_fb', autospec=True)
-    def test_create_ips_and_port_ipv6(self, mock_rtslib):
-        ips = ['fe80::fc16:3eff:fecb:ad2f']
-        expected_ips = ['[fe80::fc16:3eff:fecb:ad2f]']
-        port = 3261
-        self._test_create_ips_and_port(mock_rtslib, port, ips,
-                                       expected_ips)
 
     @mock.patch.object(rtslib_fb.root, 'RTSRoot')
     def test_add_initiator_rtslib_error(self, rtsroot):
@@ -1248,27 +1200,6 @@ class TestCinderRtstoolCmd(test.TestCase):
         mock_os.path.dirname.assert_called_once_with(mock.sentinel.filename)
         mock_os.path.exists.assert_called_once_with(mock.sentinel.dirname)
         mock_os.makedirs.assert_called_once_with(mock.sentinel.dirname, 0o755)
-
-    @mock.patch.object(cinder_rtstool, 'os', autospec=True)
-    @mock.patch.object(cinder_rtstool, 'rtslib_fb', autospec=True)
-    def test_save_error_creating_dir(self, mock_rtslib, mock_os):
-        mock_os.path.dirname.return_value = 'dirname'
-        mock_os.path.exists.return_value = False
-        mock_os.makedirs.side_effect = OSError('error')
-
-        regexp = (u'targetcli not installed and could not create default '
-                  'directory \(dirname\): error$')
-        self.assertRaisesRegexp(cinder_rtstool.RtstoolError, regexp,
-                                cinder_rtstool.save_to_file, None)
-
-    @mock.patch.object(cinder_rtstool, 'os', autospec=True)
-    @mock.patch.object(cinder_rtstool, 'rtslib_fb', autospec=True)
-    def test_save_error_saving(self, mock_rtslib, mock_os):
-        save = mock_rtslib.root.RTSRoot.return_value.save_to_file
-        save.side_effect = OSError('error')
-        regexp = u'Could not save configuration to myfile: error'
-        self.assertRaisesRegexp(cinder_rtstool.RtstoolError, regexp,
-                                cinder_rtstool.save_to_file, 'myfile')
 
     @mock.patch.object(cinder_rtstool, 'rtslib_fb',
                        **{'root.default_save_file': mock.sentinel.filename})

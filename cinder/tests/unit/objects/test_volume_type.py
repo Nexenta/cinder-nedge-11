@@ -13,22 +13,32 @@
 #    under the License.
 
 import mock
-import six
 
+from cinder import context
 from cinder import objects
-from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit import objects as test_objects
 
 
 class TestVolumeType(test_objects.BaseObjectsTestCase):
+    def setUp(self):
+        super(TestVolumeType, self).setUp()
+        # NOTE (e0ne): base tests contains original RequestContext from
+        # oslo_context. We change it to our RequestContext implementation
+        # to have 'elevated' method
+        self.context = context.RequestContext(self.user_id, self.project_id,
+                                              is_admin=False)
 
-    @mock.patch('cinder.db.sqlalchemy.api._volume_type_get_full')
+    @staticmethod
+    def _compare(test, db, obj):
+        for field, value in db.items():
+            test.assertEqual(db[field], obj[field])
+
+    @mock.patch('cinder.db.volume_type_get')
     def test_get_by_id(self, volume_type_get):
         db_volume_type = fake_volume.fake_db_volume_type()
         volume_type_get.return_value = db_volume_type
-        volume_type = objects.VolumeType.get_by_id(self.context,
-                                                   fake.volume_type_id)
+        volume_type = objects.VolumeType.get_by_id(self.context, '1')
         self._compare(self, db_volume_type, volume_type)
 
     @mock.patch('cinder.volume.volume_types.create')
@@ -73,55 +83,13 @@ class TestVolumeType(test_objects.BaseObjectsTestCase):
         admin_context = volume_type_destroy.call_args[0][0]
         self.assertTrue(admin_context.is_admin)
 
-    @mock.patch('cinder.db.sqlalchemy.api._volume_type_get_full')
-    def test_refresh(self, volume_type_get):
-        db_type1 = fake_volume.fake_db_volume_type()
-        db_type2 = db_type1.copy()
-        db_type2['description'] = 'foobar'
-
-        # updated description
-        volume_type_get.side_effect = [db_type1, db_type2]
-        volume_type = objects.VolumeType.get_by_id(self.context,
-                                                   fake.volume_type_id)
-        self._compare(self, db_type1, volume_type)
-
-        # description was updated, so a volume type refresh should have a new
-        # value for that field
-        volume_type.refresh()
-        self._compare(self, db_type2, volume_type)
-        if six.PY3:
-            call_bool = mock.call.__bool__()
-        else:
-            call_bool = mock.call.__nonzero__()
-        volume_type_get.assert_has_calls([mock.call(self.context,
-                                                    fake.volume_type_id),
-                                          call_bool,
-                                          mock.call(self.context,
-                                                    fake.volume_type_id)])
-
 
 class TestVolumeTypeList(test_objects.BaseObjectsTestCase):
     @mock.patch('cinder.volume.volume_types.get_all_types')
     def test_get_all(self, get_all_types):
         db_volume_type = fake_volume.fake_db_volume_type()
-        get_all_types.return_value = {db_volume_type['name']: db_volume_type}
+        get_all_types.return_value = [db_volume_type]
 
         volume_types = objects.VolumeTypeList.get_all(self.context)
-        self.assertEqual(1, len(volume_types))
-        TestVolumeType._compare(self, db_volume_type, volume_types[0])
-
-    @mock.patch('cinder.volume.volume_types.get_all_types')
-    def test_get_all_with_pagination(self, get_all_types):
-        db_volume_type = fake_volume.fake_db_volume_type()
-        get_all_types.return_value = {db_volume_type['name']: db_volume_type}
-
-        volume_types = objects.VolumeTypeList.get_all(self.context,
-                                                      filters={'is_public':
-                                                               True},
-                                                      marker=None,
-                                                      limit=1,
-                                                      sort_keys='id',
-                                                      sort_dirs='desc',
-                                                      offset=None)
         self.assertEqual(1, len(volume_types))
         TestVolumeType._compare(self, db_volume_type, volume_types[0])

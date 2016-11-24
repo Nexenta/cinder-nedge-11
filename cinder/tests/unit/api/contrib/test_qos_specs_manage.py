@@ -22,8 +22,6 @@ import webob
 
 from cinder.api.contrib import qos_specs_manage
 from cinder.api import xmlutil
-from cinder import context
-from cinder import db
 from cinder import exception
 from cinder import test
 from cinder.tests.unit.api import fakes
@@ -50,8 +48,7 @@ def stub_qos_associates(id):
             'id': 'FakeVolTypeID'}]
 
 
-def return_qos_specs_get_all(context, filters=None, marker=None, limit=None,
-                             offset=None, sort_keys=None, sort_dirs=None):
+def return_qos_specs_get_all(context):
     return [
         stub_qos_specs(1),
         stub_qos_specs(2),
@@ -145,30 +142,10 @@ def return_disassociate_all(context, id):
 
 
 class QoSSpecManageApiTest(test.TestCase):
-
-    def _create_qos_specs(self, name, values=None):
-        """Create a transfer object."""
-        if values:
-            specs = dict(name=name, qos_specs=values)
-        else:
-            specs = {'name': name,
-                     'qos_specs': {
-                         'consumer': 'back-end',
-                         'key1': 'value1',
-                         'key2': 'value2'}}
-        return db.qos_specs_create(self.ctxt, specs)['id']
-
     def setUp(self):
         super(QoSSpecManageApiTest, self).setUp()
         self.flags(host='fake')
         self.controller = qos_specs_manage.QoSSpecsController()
-        self.ctxt = context.RequestContext(user_id='user_id',
-                                           project_id='project_id',
-                                           is_admin=True)
-        self.qos_id1 = self._create_qos_specs("Qos_test_1")
-        self.qos_id2 = self._create_qos_specs("Qos_test_2")
-        self.qos_id3 = self._create_qos_specs("Qos_test_3")
-        self.qos_id4 = self._create_qos_specs("Qos_test_4")
 
     @mock.patch('cinder.volume.qos_specs.get_all_specs',
                 side_effect=return_qos_specs_get_all)
@@ -206,84 +183,6 @@ class QoSSpecManageApiTest(test.TestCase):
 
         expected_names = ['qos_specs_1', 'qos_specs_2', 'qos_specs_3']
         self.assertEqual(set(expected_names), names)
-
-    def test_index_with_limit(self):
-        url = '/v2/fake/qos-specs?limit=2'
-        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
-        res = self.controller.index(req)
-
-        self.assertEqual(2, len(res['qos_specs']))
-        self.assertEqual(self.qos_id4, res['qos_specs'][0]['id'])
-        self.assertEqual(self.qos_id3, res['qos_specs'][1]['id'])
-
-        expect_next_link = ('http://localhost/v2/fakeproject/qos-specs?limit'
-                            '=2&marker=%s') % res['qos_specs'][1]['id']
-        self.assertEqual(expect_next_link, res['qos_specs_links'][0]['href'])
-
-    def test_index_with_offset(self):
-        url = '/v2/fake/qos-specs?offset=1'
-        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
-        res = self.controller.index(req)
-
-        self.assertEqual(3, len(res['qos_specs']))
-
-    def test_index_with_offset_out_of_range(self):
-        url = '/v2/fake/qos-specs?offset=356576877698707'
-        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
-        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.index,
-                          req)
-
-    def test_index_with_limit_and_offset(self):
-        url = '/v2/fake/qos-specs?limit=2&offset=1'
-        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
-        res = self.controller.index(req)
-
-        self.assertEqual(2, len(res['qos_specs']))
-        self.assertEqual(self.qos_id3, res['qos_specs'][0]['id'])
-        self.assertEqual(self.qos_id2, res['qos_specs'][1]['id'])
-
-    def test_index_with_marker(self):
-        url = '/v2/fake/qos-specs?marker=%s' % self.qos_id4
-        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
-        res = self.controller.index(req)
-
-        self.assertEqual(3, len(res['qos_specs']))
-
-    def test_index_with_filter(self):
-        url = '/v2/fake/qos-specs?id=%s' % self.qos_id4
-        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
-        res = self.controller.index(req)
-
-        self.assertEqual(1, len(res['qos_specs']))
-        self.assertEqual(self.qos_id4, res['qos_specs'][0]['id'])
-
-    def test_index_with_sort_keys(self):
-        url = '/v2/fake/qos-specs?sort=id'
-        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
-        res = self.controller.index(req)
-        self.assertEqual(4, len(res['qos_specs']))
-        expect_result = [self.qos_id1, self.qos_id2,
-                         self.qos_id3, self.qos_id4]
-        expect_result.sort(reverse=True)
-
-        self.assertEqual(expect_result[0], res['qos_specs'][0]['id'])
-        self.assertEqual(expect_result[1], res['qos_specs'][1]['id'])
-        self.assertEqual(expect_result[2], res['qos_specs'][2]['id'])
-        self.assertEqual(expect_result[3], res['qos_specs'][3]['id'])
-
-    def test_index_with_sort_keys_and_sort_dirs(self):
-        url = '/v2/fake/qos-specs?sort=id:asc'
-        req = fakes.HTTPRequest.blank(url, use_admin_context=True)
-        res = self.controller.index(req)
-        self.assertEqual(4, len(res['qos_specs']))
-        expect_result = [self.qos_id1, self.qos_id2,
-                         self.qos_id3, self.qos_id4]
-        expect_result.sort()
-
-        self.assertEqual(expect_result[0], res['qos_specs'][0]['id'])
-        self.assertEqual(expect_result[1], res['qos_specs'][1]['id'])
-        self.assertEqual(expect_result[2], res['qos_specs'][2]['id'])
-        self.assertEqual(expect_result[3], res['qos_specs'][3]['id'])
 
     @mock.patch('cinder.volume.qos_specs.get_qos_specs',
                 side_effect=return_qos_specs_get_qos_specs)
@@ -480,7 +379,7 @@ class QoSSpecManageApiTest(test.TestCase):
             body = {'qos_specs': {'key1': 'value1',
                                   'key2': 'value2'}}
             res = self.controller.update(req, '555', body)
-            self.assertDictMatch(body, res)
+            self.assertDictMatch(res, body)
             self.assertEqual(1, notifier.get_notification_count())
 
     @mock.patch('cinder.volume.qos_specs.update',
@@ -778,7 +677,7 @@ class TestQoSSpecsTemplate(test.TestCase):
                     continue
                 new_dict.update({element.tag: element.text})
 
-            self.assertDictMatch(qos_dict['specs'], new_dict)
+            self.assertDictMatch(new_dict, qos_dict['specs'])
 
 
 class TestAssociationsTemplate(test.TestCase):

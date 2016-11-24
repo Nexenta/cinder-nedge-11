@@ -53,7 +53,8 @@ class TestVolumeDriver(test.TestCase):
                     as mock_safe_get:
                 mock_safe_get.return_value = 'fabric'
                 conn_info = self.driver.initialize_connection(None, None)
-                add_zone_mock.assert_called_once_with(conn_info)
+                init_target_map = conn_info['data']['initiator_target_map']
+                add_zone_mock.assert_called_once_with(init_target_map)
 
     @mock.patch.object(utils, 'require_driver_initialized')
     def test_initialize_connection_no_decorator(self, utils_mock):
@@ -76,7 +77,8 @@ class TestVolumeDriver(test.TestCase):
                     as mock_safe_get:
                 mock_safe_get.return_value = 'fabric'
                 conn_info = self.driver.terminate_connection(None, None)
-                remove_zone_mock.assert_called_once_with(conn_info)
+                init_target_map = conn_info['data']['initiator_target_map']
+                remove_zone_mock.assert_called_once_with(init_target_map)
 
     @mock.patch.object(utils, 'require_driver_initialized')
     def test_terminate_connection_no_decorator(self, utils_mock):

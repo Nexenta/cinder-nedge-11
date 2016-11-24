@@ -25,3 +25,13 @@ def upgrade(migrate_engine):
 
     volumes.create_column(previous_status)
     volumes.update().values(previous_status=None).execute()
+
+
+def downgrade(migrate_engine):
+    meta = MetaData()
+    meta.bind = migrate_engine
+
+    volumes = Table('volumes', meta, autoload=True)
+    previous_status = volumes.columns.previous_status
+
+    volumes.drop_column(previous_status)

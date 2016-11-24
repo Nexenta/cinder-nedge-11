@@ -18,9 +18,7 @@
 import copy
 
 import ddt
-import json
 import mock
-from simplejson import scanner
 
 from cinder import exception
 from cinder import test
@@ -88,18 +86,6 @@ class NetAppEseriesClientDriverTestCase(test.TestCase):
             self.my_client._eval_response(fake_resp)
             self.assertEqual(status_code, exc.status_code)
 
-    def test_eval_response_424(self):
-        status_code = 424
-        fake_resp = mock.Mock()
-        fake_resp.status_code = status_code
-        fake_resp.text = "Fake Error Message"
-
-        with self.assertRaisesRegex(es_exception.WebServiceException,
-                                    "The storage-system is offline") as exc:
-            self.my_client._eval_response(fake_resp)
-
-            self.assertEqual(status_code, exc.status_code)
-
     def test_register_storage_system_does_not_log_password(self):
         self.my_client._eval_response = mock.Mock()
         self.my_client.register_storage_system([], password=self.fake_password)
@@ -160,43 +146,6 @@ class NetAppEseriesClientDriverTestCase(test.TestCase):
         actual_wwpns = self.my_client.list_target_wwpns()
 
         self.assertEqual(expected_wwpns, actual_wwpns)
-
-    def test_get_host_group_by_name(self):
-        groups = copy.deepcopy(eseries_fake.HOST_GROUPS)
-        group = groups[0]
-        self.mock_object(self.my_client, 'list_host_groups',
-                         new_attr=mock.Mock(return_value=groups))
-
-        result = self.my_client.get_host_group_by_name(group['label'])
-
-        self.assertEqual(group, result)
-
-    def test_move_volume_mapping_via_symbol(self):
-        invoke = self.mock_object(self.my_client, '_invoke',
-                                  mock.Mock(return_value='ok'))
-        host_ref = 'host'
-        cluster_ref = 'cluster'
-        lun_id = 10
-        expected_data = {'lunMappingRef': host_ref, 'lun': lun_id,
-                         'mapRef': cluster_ref}
-
-        result = self.my_client.move_volume_mapping_via_symbol(host_ref,
-                                                               cluster_ref,
-                                                               lun_id)
-
-        invoke.assert_called_once_with('POST', '/storage-systems/{system-id}/'
-                                               'symbol/moveLUNMapping',
-                                       expected_data)
-
-        self.assertEqual({'lun': lun_id}, result)
-
-    def test_move_volume_mapping_via_symbol_fail(self):
-        self.mock_object(self.my_client, '_invoke',
-                         mock.Mock(return_value='failure'))
-
-        self.assertRaises(
-            exception.NetAppDriverException,
-            self.my_client.move_volume_mapping_via_symbol, '1', '2', 10)
 
     def test_create_host_from_ports_fc(self):
         label = 'fake_host'
@@ -684,19 +633,6 @@ class NetAppEseriesClientDriverTestCase(test.TestCase):
                                                        )
         self.assertDictMatch(expected_volume, updated_volume)
 
-    def test_get_pool_operation_progress(self):
-        fake_pool = copy.deepcopy(eseries_fake.STORAGE_POOL)
-        fake_response = copy.deepcopy(eseries_fake.FAKE_POOL_ACTION_PROGRESS)
-        self.my_client._invoke = mock.Mock(return_value=fake_response)
-
-        response = self.my_client.get_pool_operation_progress(fake_pool['id'])
-
-        url = self.my_client.RESOURCE_PATHS.get('pool_operation_progress')
-        self.my_client._invoke.assert_called_once_with('GET', url,
-                                                       **{'object-id':
-                                                          fake_pool['id']})
-        self.assertEqual(fake_response, response)
-
     def test_extend_volume(self):
         new_capacity = 10
         fake_volume = copy.deepcopy(eseries_fake.VOLUME)
@@ -706,33 +642,27 @@ class NetAppEseriesClientDriverTestCase(test.TestCase):
         self.my_client._invoke = mock.Mock(return_value=fake_volume)
 
         expanded_volume = self.my_client.expand_volume(fake_volume['id'],
-                                                       new_capacity, False)
+                                                       new_capacity)
 
-        url = self.my_client.RESOURCE_PATHS.get('volume_expand')
-        body = {'expansionSize': new_capacity, 'sizeUnit': 'gb'}
+        url = self.my_client.RESOURCE_PATHS.get('ssc_volume')
+        body = {'newSize': new_capacity, 'sizeUnit': 'gb'}
         self.my_client._invoke.assert_called_once_with('POST', url, body,
                                                        **{'object-id':
                                                           fake_volume['id']})
         self.assertEqual(fake_volume, expanded_volume)
 
-    def test_extend_volume_thin(self):
+    def test_extend_volume_unsupported(self):
         new_capacity = 10
+        min_version = 1
         fake_volume = copy.deepcopy(eseries_fake.VOLUME)
         self.my_client.features = mock.Mock()
         self.my_client.features.SSC_API_V2 = na_utils.FeatureState(
-            supported=True)
+            supported=False, minimum_version=min_version)
         self.my_client._invoke = mock.Mock(return_value=fake_volume)
 
-        expanded_volume = self.my_client.expand_volume(fake_volume['id'],
-                                                       new_capacity, True)
-
-        url = self.my_client.RESOURCE_PATHS.get('thin_volume_expand')
-        body = {'newVirtualSize': new_capacity, 'sizeUnit': 'gb',
-                'newRepositorySize': new_capacity}
-        self.my_client._invoke.assert_called_once_with('POST', url, body,
-                                                       **{'object-id':
-                                                          fake_volume['id']})
-        self.assertEqual(fake_volume, expanded_volume)
+        self.assertRaises(exception.NetAppDriverException,
+                          self.my_client.expand_volume, fake_volume['id'],
+                          new_capacity)
 
     @ddt.data(True, False)
     def test_delete_volume(self, ssc_api_enabled):
@@ -752,315 +682,6 @@ class NetAppEseriesClientDriverTestCase(test.TestCase):
         self.my_client._invoke.assert_called_once_with('DELETE', url,
                                                        **{'object-id':
                                                           fake_volume['id']})
-
-    def test_list_snapshot_group(self):
-        grp = copy.deepcopy(eseries_fake.SNAPSHOT_GROUP)
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=grp))
-        fake_ref = 'fake'
-
-        result = self.my_client.list_snapshot_group(fake_ref)
-
-        self.assertEqual(grp, result)
-        invoke.assert_called_once_with(
-            'GET', self.my_client.RESOURCE_PATHS['snapshot_group'],
-            **{'object-id': fake_ref})
-
-    def test_list_snapshot_groups(self):
-        grps = [copy.deepcopy(eseries_fake.SNAPSHOT_GROUP)]
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=grps))
-
-        result = self.my_client.list_snapshot_groups()
-
-        self.assertEqual(grps, result)
-        invoke.assert_called_once_with(
-            'GET', self.my_client.RESOURCE_PATHS['snapshot_groups'])
-
-    def test_delete_snapshot_group(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        fake_ref = 'fake'
-
-        self.my_client.delete_snapshot_group(fake_ref)
-
-        invoke.assert_called_once_with(
-            'DELETE', self.my_client.RESOURCE_PATHS['snapshot_group'],
-            **{'object-id': fake_ref})
-
-    @ddt.data((None, None, None, None, None), ('1', 50, 75, 32, 'purgepit'))
-    @ddt.unpack
-    def test_create_snapshot_group(self, pool_id, repo, warn, limit, policy):
-        vol = copy.deepcopy(eseries_fake.SNAPSHOT_VOLUME)
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=vol))
-        snap_grp = copy.deepcopy(eseries_fake.SNAPSHOT_GROUP)
-
-        result = self.my_client.create_snapshot_group(
-            snap_grp['label'], snap_grp['id'], pool_id, repo, warn, limit,
-            policy)
-
-        self.assertEqual(vol, result)
-        invoke.assert_called_once_with(
-            'POST', self.my_client.RESOURCE_PATHS['snapshot_groups'],
-            {'baseMappableObjectId': snap_grp['id'], 'name': snap_grp['label'],
-                'storagePoolId': pool_id, 'repositoryPercentage': repo,
-                'warningThreshold': warn, 'autoDeleteLimit': limit,
-             'fullPolicy': policy})
-
-    def test_list_snapshot_volumes(self):
-        vols = [copy.deepcopy(eseries_fake.SNAPSHOT_VOLUME)]
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=vols))
-
-        result = self.my_client.list_snapshot_volumes()
-
-        self.assertEqual(vols, result)
-        invoke.assert_called_once_with(
-            'GET', self.my_client.RESOURCE_PATHS['snapshot_volumes'])
-
-    def test_delete_snapshot_volume(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        fake_ref = 'fake'
-
-        self.my_client.delete_snapshot_volume(fake_ref)
-
-        invoke.assert_called_once_with(
-            'DELETE', self.my_client.RESOURCE_PATHS['snapshot_volume'],
-            **{'object-id': fake_ref})
-
-    @ddt.data((None, None, None, None), ('1', 50, 75, 'readWrite'))
-    @ddt.unpack
-    def test_create_snapshot_volume(self, pool_id, repo, warn, mode):
-        vol = copy.deepcopy(eseries_fake.SNAPSHOT_VOLUME)
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=vol))
-
-        result = self.my_client.create_snapshot_volume(
-            vol['basePIT'], vol['label'], vol['id'], pool_id,
-            repo, warn, mode)
-
-        self.assertEqual(vol, result)
-        invoke.assert_called_once_with(
-            'POST', self.my_client.RESOURCE_PATHS['snapshot_volumes'],
-            mock.ANY)
-
-    def test_update_snapshot_volume(self):
-        snap_id = '1'
-        label = 'name'
-        pct = 99
-        vol = copy.deepcopy(eseries_fake.SNAPSHOT_VOLUME)
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=vol))
-
-        result = self.my_client.update_snapshot_volume(snap_id, label, pct)
-
-        self.assertEqual(vol, result)
-        invoke.assert_called_once_with(
-            'POST', self.my_client.RESOURCE_PATHS['snapshot_volume'],
-            {'name': label, 'fullThreshold': pct}, **{'object-id': snap_id})
-
-    def test_create_snapshot_image(self):
-        img = copy.deepcopy(eseries_fake.SNAPSHOT_IMAGE)
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=img))
-        grp_id = '1'
-
-        result = self.my_client.create_snapshot_image(grp_id)
-
-        self.assertEqual(img, result)
-        invoke.assert_called_once_with(
-            'POST', self.my_client.RESOURCE_PATHS['snapshot_images'],
-            {'groupId': grp_id})
-
-    def test_list_snapshot_image(self):
-        img = copy.deepcopy(eseries_fake.SNAPSHOT_IMAGE)
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=img))
-        fake_ref = 'fake'
-
-        result = self.my_client.list_snapshot_image(fake_ref)
-
-        self.assertEqual(img, result)
-        invoke.assert_called_once_with(
-            'GET', self.my_client.RESOURCE_PATHS['snapshot_image'],
-            **{'object-id': fake_ref})
-
-    def test_list_snapshot_images(self):
-        imgs = [copy.deepcopy(eseries_fake.SNAPSHOT_IMAGE)]
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=imgs))
-
-        result = self.my_client.list_snapshot_images()
-
-        self.assertEqual(imgs, result)
-        invoke.assert_called_once_with(
-            'GET', self.my_client.RESOURCE_PATHS['snapshot_images'])
-
-    def test_delete_snapshot_image(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        fake_ref = 'fake'
-
-        self.my_client.delete_snapshot_image(fake_ref)
-
-        invoke.assert_called_once_with(
-            'DELETE', self.my_client.RESOURCE_PATHS['snapshot_image'],
-            **{'object-id': fake_ref})
-
-    def test_create_consistency_group(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        name = 'fake'
-
-        self.my_client.create_consistency_group(name)
-
-        invoke.assert_called_once_with(
-            'POST', self.my_client.RESOURCE_PATHS['cgroups'], mock.ANY)
-
-    def test_list_consistency_group(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        ref = 'fake'
-
-        self.my_client.get_consistency_group(ref)
-
-        invoke.assert_called_once_with(
-            'GET', self.my_client.RESOURCE_PATHS['cgroup'],
-            **{'object-id': ref})
-
-    def test_list_consistency_groups(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-
-        self.my_client.list_consistency_groups()
-
-        invoke.assert_called_once_with(
-            'GET', self.my_client.RESOURCE_PATHS['cgroups'])
-
-    def test_delete_consistency_group(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        ref = 'fake'
-
-        self.my_client.delete_consistency_group(ref)
-
-        invoke.assert_called_once_with(
-            'DELETE', self.my_client.RESOURCE_PATHS['cgroup'],
-            **{'object-id': ref})
-
-    def test_add_consistency_group_member(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        vol_id = eseries_fake.VOLUME['id']
-        cg_id = eseries_fake.FAKE_CONSISTENCY_GROUP['id']
-
-        self.my_client.add_consistency_group_member(vol_id, cg_id)
-
-        invoke.assert_called_once_with(
-            'POST', self.my_client.RESOURCE_PATHS['cgroup_members'],
-            mock.ANY, **{'object-id': cg_id})
-
-    def test_remove_consistency_group_member(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        vol_id = eseries_fake.VOLUME['id']
-        cg_id = eseries_fake.FAKE_CONSISTENCY_GROUP['id']
-
-        self.my_client.remove_consistency_group_member(vol_id, cg_id)
-
-        invoke.assert_called_once_with(
-            'DELETE', self.my_client.RESOURCE_PATHS['cgroup_member'],
-            **{'object-id': cg_id, 'vol-id': vol_id})
-
-    def test_create_consistency_group_snapshot(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        path = self.my_client.RESOURCE_PATHS.get('cgroup_snapshots')
-        cg_id = eseries_fake.FAKE_CONSISTENCY_GROUP['id']
-
-        self.my_client.create_consistency_group_snapshot(cg_id)
-
-        invoke.assert_called_once_with('POST', path, **{'object-id': cg_id})
-
-    @ddt.data(0, 32)
-    def test_delete_consistency_group_snapshot(self, seq_num):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        path = self.my_client.RESOURCE_PATHS.get('cgroup_snapshot')
-        cg_id = eseries_fake.FAKE_CONSISTENCY_GROUP['id']
-
-        self.my_client.delete_consistency_group_snapshot(cg_id, seq_num)
-
-        invoke.assert_called_once_with(
-            'DELETE', path, **{'object-id': cg_id, 'seq-num': seq_num})
-
-    def test_get_consistency_group_snapshots(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        path = self.my_client.RESOURCE_PATHS.get('cgroup_snapshots')
-        cg_id = eseries_fake.FAKE_CONSISTENCY_GROUP['id']
-
-        self.my_client.get_consistency_group_snapshots(cg_id)
-
-        invoke.assert_called_once_with(
-            'GET', path, **{'object-id': cg_id})
-
-    def test_create_cg_snapshot_view(self):
-        cg_snap_view = copy.deepcopy(
-            eseries_fake.FAKE_CONSISTENCY_GROUP_SNAPSHOT_VOLUME)
-        view = copy.deepcopy(eseries_fake.SNAPSHOT_VOLUME)
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=cg_snap_view))
-        list_views = self.mock_object(
-            self.my_client, 'list_cg_snapshot_views',
-            mock.Mock(return_value=[view]))
-        name = view['name']
-        snap_id = view['basePIT']
-        path = self.my_client.RESOURCE_PATHS.get('cgroup_cgsnap_views')
-        cg_id = eseries_fake.FAKE_CONSISTENCY_GROUP['id']
-
-        self.my_client.create_cg_snapshot_view(cg_id, name, snap_id)
-
-        invoke.assert_called_once_with(
-            'POST', path, mock.ANY, **{'object-id': cg_id})
-        list_views.assert_called_once_with(cg_id, cg_snap_view['cgViewRef'])
-
-    def test_create_cg_snapshot_view_not_found(self):
-        cg_snap_view = copy.deepcopy(
-            eseries_fake.FAKE_CONSISTENCY_GROUP_SNAPSHOT_VOLUME)
-        view = copy.deepcopy(eseries_fake.SNAPSHOT_VOLUME)
-        invoke = self.mock_object(self.my_client, '_invoke', mock.Mock(
-            return_value=cg_snap_view))
-        list_views = self.mock_object(
-            self.my_client, 'list_cg_snapshot_views',
-            mock.Mock(return_value=[view]))
-        del_view = self.mock_object(self.my_client, 'delete_cg_snapshot_view')
-        name = view['name']
-        # Ensure we don't get a match on the retrieved views
-        snap_id = None
-        path = self.my_client.RESOURCE_PATHS.get('cgroup_cgsnap_views')
-        cg_id = eseries_fake.FAKE_CONSISTENCY_GROUP['id']
-
-        self.assertRaises(
-            exception.NetAppDriverException,
-            self.my_client.create_cg_snapshot_view, cg_id, name, snap_id)
-
-        invoke.assert_called_once_with(
-            'POST', path, mock.ANY, **{'object-id': cg_id})
-        list_views.assert_called_once_with(cg_id, cg_snap_view['cgViewRef'])
-        del_view.assert_called_once_with(cg_id, cg_snap_view['id'])
-
-    def test_list_cg_snapshot_views(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        path = self.my_client.RESOURCE_PATHS.get('cgroup_snapshot_views')
-        cg_id = eseries_fake.FAKE_CONSISTENCY_GROUP['id']
-        view_id = 'id'
-
-        self.my_client.list_cg_snapshot_views(cg_id, view_id)
-
-        invoke.assert_called_once_with(
-            'GET', path, **{'object-id': cg_id, 'view-id': view_id})
-
-    def test_delete_cg_snapshot_view(self):
-        invoke = self.mock_object(self.my_client, '_invoke')
-        path = self.my_client.RESOURCE_PATHS.get('cgroup_snap_view')
-        cg_id = eseries_fake.FAKE_CONSISTENCY_GROUP['id']
-        view_id = 'id'
-
-        self.my_client.delete_cg_snapshot_view(cg_id, view_id)
-
-        invoke.assert_called_once_with(
-            'DELETE', path, **{'object-id': cg_id, 'view-id': view_id})
 
     @ddt.data('00.00.00.00', '01.52.9000.2', '01.52.9001.2', '01.51.9000.3',
               '01.51.9001.3', '01.51.9010.5', '0.53.9000.3', '0.53.9001.4')
@@ -1111,70 +732,6 @@ class NetAppEseriesClientDriverTestCase(test.TestCase):
         client.RestClient._init_features(self.my_client)
 
         self.assertTrue(self.my_client.features.SSC_API_V2.supported)
-
-    @ddt.data('00.00.00.00', '01.52.9000.5', '01.52.9001.2', '00.53.9001.3',
-              '01.52.9090.1', '1.52.9010.7', '0.53.9011.7')
-    def test_api_version_not_support_1_3(self, api_version):
-
-        self.mock_object(client.RestClient,
-                         'get_eseries_api_info',
-                         mock.Mock(return_value=('proxy', api_version)))
-
-        client.RestClient._init_features(self.my_client)
-
-        self.assertFalse(self.my_client.features.REST_1_3_RELEASE.supported)
-
-    @ddt.data('01.53.9000.1', '01.53.9000.5', '01.53.8999.1',
-              '01.54.9010.20', '01.54.9000.1', '02.51.9000.3',
-              '02.52.8999.3', '02.51.8999.2')
-    def test_api_version_1_3(self, api_version):
-
-        self.mock_object(client.RestClient,
-                         'get_eseries_api_info',
-                         mock.Mock(return_value=('proxy', api_version)))
-
-        client.RestClient._init_features(self.my_client)
-
-        self.assertTrue(self.my_client.features.REST_1_3_RELEASE.supported)
-
-    def test_invoke_bad_content_type(self):
-        """Tests the invoke behavior with a non-JSON response"""
-        fake_response = mock.Mock()
-        fake_response.json = mock.Mock(side_effect=scanner.JSONDecodeError(
-            '', '{}', 1))
-        fake_response.status_code = 424
-        fake_response.text = "Fake Response"
-        self.mock_object(self.my_client, 'invoke_service',
-                         mock.Mock(return_value=fake_response))
-
-        self.assertRaises(es_exception.WebServiceException,
-                          self.my_client._invoke, 'GET',
-                          eseries_fake.FAKE_ENDPOINT_HTTP)
-
-    def test_list_backend_store(self):
-        path = self.my_client.RESOURCE_PATHS.get('persistent-store')
-        fake_store = copy.deepcopy(eseries_fake.FAKE_BACKEND_STORE)
-        invoke = self.mock_object(
-            self.my_client, '_invoke', mock.Mock(
-                return_value=fake_store))
-        expected = json.loads(fake_store.get('value'))
-
-        result = self.my_client.list_backend_store('key')
-
-        self.assertEqual(expected, result)
-        invoke.assert_called_once_with('GET', path, key='key')
-
-    def test_save_backend_store(self):
-        path = self.my_client.RESOURCE_PATHS.get('persistent-stores')
-        fake_store = copy.deepcopy(eseries_fake.FAKE_BACKEND_STORE)
-        key = 'key'
-        invoke = self.mock_object(
-            self.my_client, '_invoke',
-            mock.Mock())
-
-        self.my_client.save_backend_store(key, fake_store)
-
-        invoke.assert_called_once_with('POST', path, mock.ANY)
 
 
 @ddt.ddt

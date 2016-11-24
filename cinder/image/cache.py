@@ -20,7 +20,6 @@ from oslo_log import log as logging
 from oslo_utils import timeutils
 
 from cinder.i18n import _LW
-from cinder import objects
 from cinder import rpc
 
 CONF = cfg.CONF
@@ -88,7 +87,7 @@ class ImageVolumeCache(object):
         # we just need to parse it into one. If it is an actual datetime
         # we want to just grab it as a UTC naive datetime.
         image_updated_at = image_meta['updated_at']
-        if isinstance(image_updated_at, six.string_types):
+        if type(image_updated_at) in [unicode, str]:
             image_updated_at = timeutils.parse_strtime(image_updated_at)
         else:
             image_updated_at = image_updated_at.astimezone(timezone('UTC'))
@@ -192,10 +191,10 @@ class ImageVolumeCache(object):
 
     def _delete_image_volume(self, context, cache_entry):
         """Delete a volume and remove cache entry."""
-        volume = objects.Volume.get_by_id(context, cache_entry['volume_id'])
+        volume_ref = self.db.volume_get(context, cache_entry['volume_id'])
 
         # Delete will evict the cache entry.
-        self.volume_api.delete(context, volume)
+        self.volume_api.delete(context, volume_ref)
 
     def _get_image_volume_name(self, image_id):
         return 'image-volume-' + image_id

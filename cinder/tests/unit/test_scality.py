@@ -20,11 +20,11 @@ import errno
 import os
 
 import mock
-from oslo_utils import imageutils
 from six.moves import urllib
 
 from cinder import context
 from cinder import exception
+from cinder.openstack.common import imageutils
 from cinder import test
 from cinder.volume import configuration as conf
 import cinder.volume.drivers.scality as driver
@@ -148,21 +148,6 @@ class ScalityDriverTestCase(test.TestCase):
         expected_args = ('mount', '-t', 'sofs', _FAKE_SOFS_CONFIG,
                          _FAKE_MNT_POINT)
         self.assertEqual(expected_args, mock_execute.call_args[0])
-
-    @mock.patch("cinder.volume.utils.read_proc_mounts")
-    @mock.patch("oslo_concurrency.processutils.execute")
-    @mock.patch("oslo_utils.fileutils.ensure_tree", mock.Mock())
-    @mock.patch("os.symlink", mock.Mock())
-    def test_ensure_shares_mounted_when_sofs_mounted(self, mock_execute,
-                                                     mock_read_proc_mounts):
-        mock_read_proc_mounts.return_value = _FAKE_MOUNTS_TABLE[1]
-
-        self.drv._ensure_shares_mounted()
-
-        # Because SOFS is mounted from the beginning, we shouldn't read
-        # /proc/mounts more than once.
-        mock_read_proc_mounts.assert_called_once_with()
-        self.assertFalse(mock_execute.called)
 
     def test_find_share_when_no_shares_mounted(self):
         self.assertRaises(exception.RemoteFSNoSharesMounted,

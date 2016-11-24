@@ -723,6 +723,7 @@ class FlashSystemDriverTestCase(test.TestCase):
                            'san_login': 'username',
                            'san_password': 'password',
                            'flashsystem_connection_protocol': 'FC',
+                           'flashsystem_multipath_enabled': False,
                            'flashsystem_multihostmap_enabled': True}
 
         self.connector = {
@@ -1199,15 +1200,9 @@ class FlashSystemDriverTestCase(test.TestCase):
         self.assertEqual(
             host2,
             self.driver._find_host_exhaustive(conn2, [host1, host2]))
-        self.assertIsNone(self.driver._find_host_exhaustive(conn3,
-                                                            [host1, host2]))
-
-        # case 2: hosts contains non-existent host info
-        with mock.patch.object(FlashSystemFakeDriver,
-                               '_ssh') as mock_ssh:
-            mock_ssh.return_value = ("pass", "")
-            self.driver._find_host_exhaustive(conn1, [host2])
-            self.assertFalse(mock_ssh.called)
+        self.assertEqual(
+            None,
+            self.driver._find_host_exhaustive(conn3, [host1, host2]))
 
         # clear environment
         self.driver._delete_host(host1)
@@ -1267,4 +1262,6 @@ class FlashSystemDriverTestCase(test.TestCase):
         self.driver.delete_volume(vol2)
 
         # case 4: If there is no vdisk mapped to host, host should be removed
-        self.assertIsNone(self.driver._get_host_from_connector(self.connector))
+        self.assertEqual(
+            None,
+            self.driver._get_host_from_connector(self.connector))

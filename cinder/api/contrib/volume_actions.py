@@ -15,7 +15,6 @@
 
 from oslo_log import log as logging
 import oslo_messaging as messaging
-from oslo_utils import encodeutils
 from oslo_utils import strutils
 import six
 import webob
@@ -25,7 +24,6 @@ from cinder.api.openstack import wsgi
 from cinder.api import xmlutil
 from cinder import exception
 from cinder.i18n import _
-from cinder.image import image_utils
 from cinder import utils
 from cinder import volume
 
@@ -100,7 +98,15 @@ class VolumeActionsController(wsgi.Controller):
         else:
             mode = 'rw'
 
-        if instance_uuid is None and host_name is None:
+        if instance_uuid and host_name:
+            msg = _("Invalid request to attach volume to an "
+                    "instance %(instance_uuid)s and a "
+                    "host %(host_name)s simultaneously") % {
+                'instance_uuid': instance_uuid,
+                'host_name': host_name,
+            }
+            raise webob.exc.HTTPBadRequest(explanation=msg)
+        elif instance_uuid is None and host_name is None:
             msg = _("Invalid request to attach volume to an invalid target")
             raise webob.exc.HTTPBadRequest(explanation=msg)
 
@@ -263,8 +269,7 @@ class VolumeActionsController(wsgi.Controller):
         try:
             force = strutils.bool_from_string(force, strict=True)
         except ValueError as error:
-            err_msg = encodeutils.exception_to_unicode(error)
-            msg = _("Invalid value for 'force': '%s'") % err_msg
+            msg = _("Invalid value for 'force': '%s'") % error.message
             raise webob.exc.HTTPBadRequest(explanation=msg)
 
         try:
@@ -273,22 +278,10 @@ class VolumeActionsController(wsgi.Controller):
             raise webob.exc.HTTPNotFound(explanation=error.msg)
 
         authorize(context, "upload_image")
-        # check for valid disk-format
-        disk_format = params.get("disk_format", "raw")
-        if not image_utils.validate_disk_format(disk_format):
-            msg = _("Invalid disk-format '%(disk_format)s' is specified. "
-                    "Allowed disk-formats are %(allowed_disk_formats)s.") % {
-                "disk_format": disk_format,
-                "allowed_disk_formats": ", ".join(
-                    image_utils.VALID_DISK_FORMATS)
-            }
-            raise webob.exc.HTTPBadRequest(explanation=msg)
-
-        image_metadata = {"container_format": params.get(
-            "container_format", "bare"),
-            "disk_format": disk_format,
-            "name": params["image_name"]}
-
+        image_metadata = {"container_format": params.get("container_format",
+                                                         "bare"),
+                          "disk_format": params.get("disk_format", "raw"),
+                          "name": params["image_name"]}
         try:
             response = self.volume_api.copy_volume_to_image(context,
                                                             volume,
@@ -322,11 +315,7 @@ class VolumeActionsController(wsgi.Controller):
             raise webob.exc.HTTPBadRequest(explanation=msg)
 
         size = int(body['os-extend']['new_size'])
-        try:
-            self.volume_api.extend(context, volume, size)
-        except exception.InvalidVolume as error:
-            raise webob.exc.HTTPBadRequest(explanation=error.msg)
-
+        self.volume_api.extend(context, volume, size)
         return webob.Response(status_int=202)
 
     @wsgi.action('os-update_readonly_flag')
@@ -348,8 +337,7 @@ class VolumeActionsController(wsgi.Controller):
             readonly_flag = strutils.bool_from_string(readonly_flag,
                                                       strict=True)
         except ValueError as error:
-            err_msg = encodeutils.exception_to_unicode(error)
-            msg = _("Invalid value for 'readonly': '%s'") % err_msg
+            msg = _("Invalid value for 'readonly': '%s'") % error.message
             raise webob.exc.HTTPBadRequest(explanation=msg)
 
         self.volume_api.update_readonly_flag(context, volume, readonly_flag)
@@ -389,8 +377,7 @@ class VolumeActionsController(wsgi.Controller):
             bootable = strutils.bool_from_string(bootable,
                                                  strict=True)
         except ValueError as error:
-            err_msg = encodeutils.exception_to_unicode(error)
-            msg = _("Invalid value for 'bootable': '%s'") % err_msg
+            msg = _("Invalid value for 'bootable': '%s'") % error.message
             raise webob.exc.HTTPBadRequest(explanation=msg)
 
         update_dict = {'bootable': bootable}

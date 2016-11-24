@@ -45,9 +45,10 @@ ignore_messages = ["An attribute affected in cinder.tests",
                    "Module 'hashlib' has no 'sha256' member",
                    "Module 'hashlib' has no 'sha224' member",
                    "Instance of 'Table' has no 'rename' member"]
-# Note(maoy):  We ignore cinder.tests for now due to high false
+# Note(maoy): we ignore all errors in openstack.common because it should be
+# checked elsewhere. We also ignore cinder.tests for now due to high false
 # positive rate.
-ignore_modules = ["cinder/tests/"]
+ignore_modules = ["cinder/openstack/common/", "cinder/tests/"]
 
 # Note(thangp): E0213, E1101, and E1102 should be ignored for only
 # cinder.object modules. E0213 and E1102 are error codes related to
@@ -64,19 +65,15 @@ objects_ignore_codes = ["E0213", "E1101", "E1102"]
 # member is created dynamically.
 objects_ignore_messages = [
     "No value passed for parameter 'id' in function call",
-    "Module 'cinder.objects' has no 'Backup' member",
-    "Module 'cinder.objects' has no 'BackupImport' member",
-    "Module 'cinder.objects' has no 'BackupList' member",
-    "Module 'cinder.objects' has no 'CGSnapshot' member",
-    "Module 'cinder.objects' has no 'CGSnapshotList' member",
-    "Module 'cinder.objects' has no 'ConsistencyGroup' member",
-    "Module 'cinder.objects' has no 'ConsistencyGroupList' member",
-    "Module 'cinder.objects' has no 'Service' member",
-    "Module 'cinder.objects' has no 'ServiceList' member",
     "Module 'cinder.objects' has no 'Snapshot' member",
     "Module 'cinder.objects' has no 'SnapshotList' member",
-    "Module 'cinder.objects' has no 'Volume' member",
-    "Module 'cinder.objects' has no 'VolumeList' member",
+    "Module 'cinder.objects' has no 'Backup' member",
+    "Module 'cinder.objects' has no 'BackupList' member",
+    "Module 'cinder.objects' has no 'Service' member",
+    "Module 'cinder.objects' has no 'ServiceList' member",
+    "Module 'cinder.objects' has no 'BackupImport' member",
+    "Module 'cinder.objects' has no 'ConsistencyGroup' member",
+    "Module 'cinder.objects' has no 'ConsistencyGroupList' member",
 ]
 objects_ignore_modules = ["cinder/objects/"]
 

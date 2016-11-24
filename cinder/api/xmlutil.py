@@ -400,7 +400,7 @@ class TemplateElement(object):
                 tmpInsertPos = parent.find(tagnameList[i])
                 if tmpInsertPos is None:
                     break
-                elif parent.attrib != tmpattrib:
+                elif not cmp(parent.attrib, tmpattrib) == 0:
                     break
                 parent = tmpInsertPos
                 insertIndex = i + 1

@@ -14,7 +14,6 @@
 #    under the License.
 
 from oslo_log import log as logging
-import six
 
 from cinder.api import common
 
@@ -43,7 +42,7 @@ class ViewBuilder(common.ViewBuilder):
                                self._collection_name + '/detail')
 
     def summary(self, request, volume):
-        """Generic, non-detailed view of a volume."""
+        """Generic, non-detailed view of an volume."""
         return {
             'volume': {
                 'id': volume['id'],
@@ -62,7 +61,6 @@ class ViewBuilder(common.ViewBuilder):
                 'size': volume.get('size'),
                 'availability_zone': volume.get('availability_zone'),
                 'created_at': volume.get('created_at'),
-                'updated_at': volume.get('updated_at'),
                 'attachments': self._get_attachments(volume),
                 'name': volume.get('display_name'),
                 'description': volume.get('display_description'),
@@ -72,7 +70,7 @@ class ViewBuilder(common.ViewBuilder):
                 'metadata': self._get_volume_metadata(volume),
                 'links': self._get_links(request, volume['id']),
                 'user_id': volume.get('user_id'),
-                'bootable': six.text_type(volume.get('bootable')).lower(),
+                'bootable': str(volume.get('bootable')).lower(),
                 'encrypted': self._is_volume_encrypted(volume),
                 'replication_status': volume.get('replication_status'),
                 'consistencygroup_id': volume.get('consistencygroup_id'),
@@ -93,7 +91,7 @@ class ViewBuilder(common.ViewBuilder):
         attachments = []
 
         if volume['attach_status'] == 'attached':
-            attaches = volume.volume_attachment
+            attaches = volume.get('volume_attachment', [])
             for attachment in attaches:
                 if attachment.get('attach_status') == 'attached':
                     a = {'id': attachment.get('volume_id'),
@@ -102,7 +100,6 @@ class ViewBuilder(common.ViewBuilder):
                          'server_id': attachment.get('instance_uuid'),
                          'host_name': attachment.get('attached_host'),
                          'device': attachment.get('mountpoint'),
-                         'attached_at': attachment.get('attach_time'),
                          }
                     attachments.append(a)
 
@@ -110,7 +107,14 @@ class ViewBuilder(common.ViewBuilder):
 
     def _get_volume_metadata(self, volume):
         """Retrieve the metadata of the volume object."""
-        return volume.metadata
+        if volume.get('volume_metadata'):
+            metadata = volume.get('volume_metadata')
+            return {item['key']: item['value'] for item in metadata}
+        # avoid circular ref when vol is a Volume instance
+        elif volume.get('metadata') and isinstance(volume.get('metadata'),
+                                                   dict):
+            return volume['metadata']
+        return {}
 
     def _get_volume_type(self, volume):
         """Retrieve the type the volume object."""

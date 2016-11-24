@@ -34,12 +34,12 @@ from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import fileutils
-from oslo_utils import imageutils
 from oslo_utils import timeutils
 from oslo_utils import units
 
 from cinder import exception
 from cinder.i18n import _, _LI, _LW
+from cinder.openstack.common import imageutils
 from cinder import utils
 from cinder.volume import throttling
 from cinder.volume import utils as volume_utils
@@ -58,19 +58,9 @@ QEMU_IMG_LIMITS = processutils.ProcessLimits(
     cpu_time=2,
     address_space=1 * units.Gi)
 
-# NOTE(abhishekk): qemu-img convert command supports raw, qcow2, qed,
-# vdi, vmdk, vhd and vhdx disk-formats but glance doesn't support qed
-# and vhdx disk-formats.
-# Ref: http://docs.openstack.org/image-guide/convert-images.html
-VALID_DISK_FORMATS = ('raw', 'vmdk', 'vdi', 'qcow2', 'vhd')
-
-
-def validate_disk_format(disk_format):
-    return disk_format in VALID_DISK_FORMATS
-
 
 def qemu_img_info(path, run_as_root=True):
-    """Return an object containing the parsed output from qemu-img info."""
+    """Return a object containing the parsed output from qemu-img info."""
     cmd = ('env', 'LC_ALL=C', 'qemu-img', 'info', path)
     if os.name == 'nt':
         cmd = cmd[2:]
@@ -95,8 +85,7 @@ def _get_version_from_string(version_string):
 
 def check_qemu_img_version(minimum_version):
     qemu_version = get_qemu_img_version()
-    if (qemu_version is None
-       or qemu_version < _get_version_from_string(minimum_version)):
+    if qemu_version < _get_version_from_string(minimum_version):
         if qemu_version:
             current_version = '.'.join((str(element)
                                        for element in qemu_version))
@@ -141,17 +130,7 @@ def _convert_image(prefix, source, dest, out_format, run_as_root=True):
     # some incredible event this is 0 (cirros image?) don't barf
     if duration < 1:
         duration = 1
-    try:
-        image_size = qemu_img_info(source, run_as_root=True).virtual_size
-    except ValueError as e:
-        msg = _LI("The image was successfully converted, but image size "
-                  "is unavailable. src %(src)s, dest %(dest)s. %(error)s")
-        LOG.info(msg, {"src": source,
-                       "dest": dest,
-                       "error": e})
-        return
-
-    fsz_mb = image_size / units.Mi
+    fsz_mb = os.stat(source).st_size / units.Mi
     mbps = (fsz_mb / duration)
     msg = ("Image conversion details: src %(src)s, size %(sz).2f MB, "
            "duration %(duration).2f sec, destination %(dest)s")
@@ -399,20 +378,15 @@ def upload_volume(context, image_service, image_meta, volume_path,
                 reason=_("fmt=%(fmt)s backed by:%(backing_file)s")
                 % {'fmt': fmt, 'backing_file': backing_file})
 
-        out_format = image_meta['disk_format']
-        # qemu-img accepts 'vpc' as argument for vhd format
-        if out_format == 'vhd':
-            out_format = 'vpc'
-
-        convert_image(volume_path, tmp, out_format,
+        convert_image(volume_path, tmp, image_meta['disk_format'],
                       run_as_root=run_as_root)
 
         data = qemu_img_info(tmp, run_as_root=run_as_root)
-        if data.file_format != out_format:
+        if data.file_format != image_meta['disk_format']:
             raise exception.ImageUnacceptable(
                 image_id=image_id,
                 reason=_("Converted to %(f1)s, but format is now %(f2)s") %
-                {'f1': out_format, 'f2': data.file_format})
+                {'f1': image_meta['disk_format'], 'f2': data.file_format})
 
         with open(tmp, 'rb') as image_file:
             image_service.update(context, image_id, {}, image_file)

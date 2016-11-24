@@ -70,7 +70,6 @@ class ViewBuilder(common.ViewBuilder):
                 'availability_zone': backup.get('availability_zone'),
                 'container': backup.get('container'),
                 'created_at': backup.get('created_at'),
-                'updated_at': backup.get('updated_at'),
                 'name': backup.get('display_name'),
                 'description': backup.get('display_description'),
                 'fail_reason': backup.get('fail_reason'),
@@ -78,8 +77,6 @@ class ViewBuilder(common.ViewBuilder):
                 'links': self._get_links(request, backup['id']),
                 'is_incremental': backup.is_incremental,
                 'has_dependent_backups': backup.has_dependent_backups,
-                'snapshot_id': backup.snapshot_id,
-                'data_timestamp': backup.data_timestamp,
             }
         }
 

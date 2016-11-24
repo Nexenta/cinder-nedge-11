@@ -30,9 +30,11 @@ from cinder import policy
 
 context_opts = [
     cfg.StrOpt('cinder_internal_tenant_project_id',
+               default=None,
                help='ID of the project which will be used as the Cinder '
                     'internal tenant.'),
     cfg.StrOpt('cinder_internal_tenant_user_id',
+               default=None,
                help='ID of the user to be used in volume operations as the '
                     'Cinder internal tenant.'),
 ]
@@ -75,8 +77,7 @@ class RequestContext(context.RequestContext):
                                              user_domain=user_domain,
                                              project_domain=project_domain,
                                              is_admin=is_admin,
-                                             request_id=request_id,
-                                             overwrite=overwrite)
+                                             request_id=request_id)
         self.roles = roles or []
         self.project_name = project_name
         self.read_deleted = read_deleted

@@ -1,4 +1,4 @@
-# Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -14,14 +14,13 @@
 """
 ZFS Storage Appliance NFS Cinder Volume Driver
 """
+import base64
 import datetime as dt
 import errno
 import math
-import os
 
 from oslo_config import cfg
 from oslo_log import log
-from oslo_serialization import base64
 from oslo_utils import excutils
 from oslo_utils import units
 import six
@@ -29,7 +28,6 @@ import six
 from cinder import exception
 from cinder import utils
 from cinder.i18n import _, _LE, _LI
-from cinder.image import image_utils
 from cinder.volume.drivers import nfs
 from cinder.volume.drivers.san import san
 from cinder.volume.drivers.zfssa import zfssarest
@@ -60,10 +58,7 @@ ZFSSA_OPTS = [
                 help='Flag to enable local caching: True, False.'),
     cfg.StrOpt('zfssa_cache_directory', default='os-cinder-cache',
                help='Name of directory inside zfssa_nfs_share where cache '
-                    'volumes are stored.'),
-    cfg.StrOpt('zfssa_manage_policy', default='loose',
-               choices=['loose', 'strict'],
-               help='Driver policy for volume manage.')
+                    'volumes are stored.')
 ]
 
 LOG = log.getLogger(__name__)
@@ -83,10 +78,8 @@ class ZFSSANFSDriver(nfs.NfsDriver):
     1.0.1:
         Backend enabled volume migration.
         Local cache feature.
-    1.0.2:
-        Volume manage/unmanage support.
     """
-    VERSION = '1.0.2'
+    VERSION = '1.0.1'
     volume_backend_name = 'ZFSSA_NFS'
     protocol = driver_prefix = driver_volume_type = 'nfs'
 
@@ -98,9 +91,16 @@ class ZFSSANFSDriver(nfs.NfsDriver):
         self._stats = None
 
     def do_setup(self, context):
-        if not self.configuration.max_over_subscription_ratio > 0:
-            msg = _("Config 'max_over_subscription_ratio' invalid. Must be > "
-                    "0: %s") % self.configuration.max_over_subscription_ratio
+        if not self.configuration.nfs_oversub_ratio > 0:
+            msg = _("NFS config 'nfs_oversub_ratio' invalid. Must be > 0: "
+                    "%s") % self.configuration.nfs_oversub_ratio
+            LOG.error(msg)
+            raise exception.NfsException(msg)
+
+        if ((not self.configuration.nfs_used_ratio > 0) and
+                (self.configuration.nfs_used_ratio <= 1)):
+            msg = _("NFS config 'nfs_used_ratio' invalid. Must be > 0 "
+                    "and <= 1.0: %s") % self.configuration.nfs_used_ratio
             LOG.error(msg)
             raise exception.NfsException(msg)
 
@@ -133,7 +133,7 @@ class ZFSSANFSDriver(nfs.NfsDriver):
         self.zfssa = factory_zfssa()
         self.zfssa.set_host(host, timeout=lcfg.zfssa_rest_timeout)
 
-        auth_str = base64.encode_as_text('%s:%s' % (user, password))
+        auth_str = base64.encodestring('%s:%s' % (user, password))[:-1]
         self.zfssa.login(auth_str)
 
         self.zfssa.create_project(lcfg.zfssa_nfs_pool, lcfg.zfssa_nfs_project,
@@ -206,10 +206,6 @@ class ZFSSANFSDriver(nfs.NfsDriver):
                                 lcfg.zfssa_nfs_share)
         self.zfssa.verify_service('http')
         self.zfssa.verify_service('nfs')
-
-    def create_volume(self, volume):
-        super(ZFSSANFSDriver, self).create_volume(volume)
-        self.zfssa.set_file_props(volume['name'], {'cinder_managed': 'True'})
 
     def create_snapshot(self, snapshot):
         """Creates a snapshot of a volume."""
@@ -301,7 +297,6 @@ class ZFSSANFSDriver(nfs.NfsDriver):
                       'volume': volume['name']})
             self._check_origin(vol_props['origin'])
 
-    @utils.synchronized('zfssanfs', external=True)
     def clone_image(self, context, volume,
                     image_location, image_meta,
                     image_service):
@@ -317,26 +312,21 @@ class ZFSSANFSDriver(nfs.NfsDriver):
         Create a new cache volume as in (1).
 
         Clone a volume from the cache volume and returns it to Cinder.
-
-        A file lock is placed on this method to prevent:
-        (a) a race condition when a cache volume has been verified, but then
-        gets deleted before it is cloned.
-
-        (b) failure of subsequent clone_image requests if the first request is
-        still pending.
         """
         LOG.debug('Cloning image %(image)s to volume %(volume)s',
                   {'image': image_meta['id'], 'volume': volume['name']})
         lcfg = self.configuration
-        cachevol_size = 0
         if not lcfg.zfssa_enable_local_cache:
             return None, False
 
-        with image_utils.TemporaryImages.fetch(
-                image_service, context, image_meta['id']) as tmp_image:
-            info = image_utils.qemu_img_info(tmp_image)
-            cachevol_size = int(math.ceil(float(info.virtual_size) / units.Gi))
-
+        # virtual_size is the image's actual size when stored in a volume
+        # virtual_size is expected to be updated manually through glance
+        try:
+            virtual_size = int(image_meta['properties'].get('virtual_size'))
+        except Exception:
+            LOG.error(_LE('virtual_size property is not set for the image.'))
+            return None, False
+        cachevol_size = int(math.ceil(float(virtual_size) / units.Gi))
         if cachevol_size > volume['size']:
             exception_msg = (_LE('Image size %(img_size)dGB is larger '
                                  'than volume size %(vol_size)dGB.'),
@@ -380,6 +370,7 @@ class ZFSSANFSDriver(nfs.NfsDriver):
 
         return clone_vol, True
 
+    @utils.synchronized('zfssanfs', external=True)
     def _verify_cache_volume(self, context, img_meta,
                              img_service, cachevol_props):
         """Verify if we have a cache volume that we want.
@@ -499,12 +490,7 @@ class ZFSSANFSDriver(nfs.NfsDriver):
 
         If the cache no longer has clone, it will be deleted.
         """
-        try:
-            cachevol_props = self.zfssa.get_volume(origin)
-        except exception.VolumeNotFound:
-            LOG.debug('Origin %s does not exist', origin)
-            return
-
+        cachevol_props = self.zfssa.get_volume(origin)
         numclones = cachevol_props['numclones']
         LOG.debug('Number of clones: %d', numclones)
         if numclones <= 1:
@@ -514,6 +500,7 @@ class ZFSSANFSDriver(nfs.NfsDriver):
             cachevol_props = {'numclones': six.text_type(numclones - 1)}
             self.zfssa.set_file_props(origin, cachevol_props)
 
+    @utils.synchronized('zfssanfs', external=True)
     def _update_origin(self, vol_name, cachevol_name):
         """Update WebDAV property of a volume.
 
@@ -554,25 +541,12 @@ class ZFSSANFSDriver(nfs.NfsDriver):
         data['QoS_support'] = False
         data['reserved_percentage'] = 0
 
-        used_percentage_limit = 100 - self.configuration.reserved_percentage
-        used_ratio_limit = used_percentage_limit / 100.0
-        if (ratio_used > used_ratio_limit or
-                ratio_used >= self.configuration.max_over_subscription_ratio):
+        if ratio_used > self.configuration.nfs_used_ratio or \
+           ratio_used >= self.configuration.nfs_oversub_ratio:
             data['reserved_percentage'] = 100
 
         data['total_capacity_gb'] = float(capacity) / units.Gi
         data['free_capacity_gb'] = float(free) / units.Gi
-
-        share_details = self.zfssa.get_share(lcfg.zfssa_nfs_pool,
-                                             lcfg.zfssa_nfs_project,
-                                             lcfg.zfssa_nfs_share)
-        pool_details = self.zfssa.get_pool_details(lcfg.zfssa_nfs_pool)
-
-        data['zfssa_compression'] = share_details['compression']
-        data['zfssa_encryption'] = share_details['encryption']
-        data['zfssa_logbias'] = share_details['logbias']
-        data['zfssa_poolprofile'] = pool_details['profile']
-        data['zfssa_sparse'] = six.text_type(lcfg.nfs_sparsed_volumes)
 
         self._stats = data
 
@@ -631,7 +605,7 @@ class ZFSSANFSDriver(nfs.NfsDriver):
         :param new_volume: The migration volume object that was created on
                            this backend as part of the migration process
         :param original_volume_status: The status of the original volume
-        :returns: model_update to update DB with any needed changes
+        :return model_update to update DB with any needed changes
         """
 
         original_name = CONF.volume_name_template % volume['id']
@@ -645,119 +619,3 @@ class ZFSSANFSDriver(nfs.NfsDriver):
                                                     method='MOVE')
         provider_location = new_volume['provider_location']
         return {'_name_id': None, 'provider_location': provider_location}
-
-    def manage_existing(self, volume, existing_ref):
-        """Manage an existing volume in the ZFSSA backend.
-
-        :param volume: Reference to the new volume.
-        :param existing_ref: Reference to the existing volume to be managed.
-        """
-        existing_vol_name = self._get_existing_vol_name(existing_ref)
-        try:
-            vol_props = self.zfssa.get_volume(existing_vol_name)
-        except exception.VolumeNotFound:
-            err_msg = (_("Volume %s doesn't exist on the ZFSSA backend.") %
-                       existing_vol_name)
-            LOG.error(err_msg)
-            raise exception.InvalidInput(reason=err_msg)
-
-        self._verify_volume_to_manage(existing_vol_name, vol_props)
-
-        try:
-            self.zfssa.rename_volume(existing_vol_name, volume['name'])
-        except Exception:
-            LOG.error(_LE("Failed to rename volume %(existing)s to %(new)s. "
-                          "Volume manage failed."),
-                      {'existing': existing_vol_name,
-                       'new': volume['name']})
-            raise
-
-        try:
-            self.zfssa.set_file_props(volume['name'],
-                                      {'cinder_managed': 'True'})
-        except Exception:
-            self.zfssa.rename_volume(volume['name'], existing_vol_name)
-            LOG.error(_LE("Failed to set properties for volume %(existing)s. "
-                          "Volume manage failed."),
-                      {'existing': volume['name']})
-            raise
-
-        return {'provider_location': self.mount_path}
-
-    def manage_existing_get_size(self, volume, existing_ref):
-        """Return size of the volume to be managed by manage_existing."""
-        existing_vol_name = self._get_existing_vol_name(existing_ref)
-
-        # The ZFSSA NFS driver only has one mounted share.
-        local_share_mount = self._get_mount_point_for_share(
-            self._mounted_shares[0])
-        local_vol_path = os.path.join(local_share_mount, existing_vol_name)
-
-        try:
-            if os.path.isfile(local_vol_path):
-                size = int(math.ceil(float(
-                    utils.get_file_size(local_vol_path)) / units.Gi))
-        except (OSError, ValueError):
-            err_msg = (_("Failed to get size of existing volume: %(vol). "
-                         "Volume Manage failed."), {'vol': existing_vol_name})
-            LOG.error(err_msg)
-            raise exception.VolumeBackendAPIException(data=err_msg)
-
-        LOG.debug("Size volume: %(vol)s to be migrated is: %(size)s.",
-                  {'vol': existing_vol_name, 'size': size})
-
-        return size
-
-    def _verify_volume_to_manage(self, name, vol_props):
-        lcfg = self.configuration
-
-        if lcfg.zfssa_manage_policy != 'strict':
-            return
-
-        if vol_props['cinder_managed'] == "":
-            err_msg = (_("Unknown if the volume: %s to be managed is "
-                         "already being managed by Cinder. Aborting manage "
-                         "volume. Please add 'cinder_managed' custom schema "
-                         "property to the volume and set its value to False. "
-                         "Alternatively, Set the value of cinder config "
-                         "policy 'zfssa_manage_policy' to 'loose' to "
-                         "remove this restriction.") % name)
-            LOG.error(err_msg)
-            raise exception.InvalidInput(reason=err_msg)
-
-        if vol_props['cinder_managed'] == 'True':
-            msg = (_("Volume: %s is already being managed by Cinder.") % name)
-            LOG.error(msg)
-            raise exception.ManageExistingAlreadyManaged(volume_ref=name)
-
-    def unmanage(self, volume):
-        """Remove an existing volume from cinder management.
-
-        :param volume: Reference to the volume to be unmanaged.
-        """
-        new_name = 'unmanaged-' + volume['name']
-        try:
-            self.zfssa.rename_volume(volume['name'], new_name)
-        except Exception:
-            LOG.error(_LE("Failed to rename volume %(existing)s to %(new)s. "
-                          "Volume unmanage failed."),
-                      {'existing': volume['name'],
-                       'new': new_name})
-            raise
-
-        try:
-            self.zfssa.set_file_props(new_name, {'cinder_managed': 'False'})
-        except Exception:
-            self.zfssa.rename_volume(new_name, volume['name'])
-            LOG.error(_LE("Failed to set properties for volume %(existing)s. "
-                          "Volume unmanage failed."),
-                      {'existing': volume['name']})
-            raise
-
-    def _get_existing_vol_name(self, existing_ref):
-        if 'source-name' not in existing_ref:
-            msg = _("Reference to volume to be managed must contain "
-                    "source-name.")
-            raise exception.ManageExistingInvalidReference(
-                existing_ref=existing_ref, reason=msg)
-        return existing_ref['source-name']

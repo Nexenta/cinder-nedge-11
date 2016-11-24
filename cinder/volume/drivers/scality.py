@@ -40,6 +40,7 @@ LOG = logging.getLogger(__name__)
 
 volume_opts = [
     cfg.StrOpt('scality_sofs_config',
+               default=None,
                help='Path or URL to Scality SOFS configuration file'),
     cfg.StrOpt('scality_sofs_mount_point',
                default='$state_path/scality',
@@ -124,7 +125,7 @@ class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
             parts = mount.split()
             if (parts[0].endswith('fuse') and
                     parts[1].rstrip('/') == mount_path):
-                return True
+                        return True
         return False
 
     @lockutils.synchronized('mount-sofs', 'cinder-sofs', external=True)
@@ -135,11 +136,10 @@ class ScalityDriver(remotefs_drv.RemoteFSSnapDriver):
         if not self._sofs_is_mounted():
             self._execute('mount', '-t', 'sofs', self.sofs_config,
                           self.sofs_mount_point, run_as_root=True)
-            # Check whether the mount command succeeded
-            if not self._sofs_is_mounted():
-                msg = _("Cannot mount Scality SOFS, check syslog for errors")
-                LOG.error(msg)
-                raise exception.VolumeBackendAPIException(data=msg)
+        if not self._sofs_is_mounted():
+            msg = _("Cannot mount Scality SOFS, check syslog for errors")
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
 
         fileutils.ensure_tree(self.sofs_abs_volume_dir)
 

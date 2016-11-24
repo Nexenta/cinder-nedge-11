@@ -49,7 +49,7 @@ def _translate_attachment_detail_view(_context, vol):
 def _translate_attachment_summary_view(_context, vol):
     """Maps keys for attachment summary view."""
     d = []
-    attachments = vol.volume_attachment
+    attachments = vol.get('volume_attachment', [])
     for attachment in attachments:
         if attachment.get('attach_status') == 'attached':
             a = {'id': attachment.get('volume_id'),
@@ -118,8 +118,12 @@ def _translate_volume_summary_view(context, vol, image_id=None):
 
     LOG.info(_LI("vol=%s"), vol, context=context)
 
-    if vol.metadata:
-        d['metadata'] = vol.metadata
+    if vol.get('volume_metadata'):
+        metadata = vol.get('volume_metadata')
+        d['metadata'] = {item['key']: item['value'] for item in metadata}
+    # avoid circular ref when vol is a Volume instance
+    elif vol.get('metadata') and isinstance(vol.get('metadata'), dict):
+        d['metadata'] = vol['metadata']
     else:
         d['metadata'] = {}
 
@@ -288,10 +292,12 @@ class VolumeController(wsgi.Controller):
                                           filters=search_opts,
                                           viewable_admin_meta=True)
 
+        volumes = [dict(vol) for vol in volumes]
+
         for volume in volumes:
             utils.add_visible_admin_metadata(volume)
 
-        limited_list = common.limited(volumes.objects, req)
+        limited_list = common.limited(volumes, req)
         req.cache_db_volumes(limited_list)
 
         res = [entity_maker(context, vol) for vol in limited_list]
@@ -391,6 +397,11 @@ class VolumeController(wsgi.Controller):
                                             volume.get('display_name'),
                                             volume.get('display_description'),
                                             **kwargs)
+
+        # TODO(vish): Instance should be None at db layer instead of
+        #             trying to lazy load, but for now we turn it into
+        #             a dict to avoid an error.
+        new_volume = dict(new_volume)
 
         retval = _translate_volume_detail_view(context, new_volume, image_uuid)
 

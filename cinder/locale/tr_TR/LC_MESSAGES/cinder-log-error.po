@@ -8,9 +8,9 @@
 # OpenStack Infra <zanata@openstack.org>, 2015. #zanata
 msgid ""
 msgstr ""
-"Project-Id-Version: cinder 8.0.1.dev85\n"
-"Report-Msgid-Bugs-To: https://bugs.launchpad.net/openstack-i18n/\n"
-"POT-Creation-Date: 2016-07-06 20:15+0000\n"
+"Project-Id-Version: cinder 7.0.2.dev6\n"
+"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
+"POT-Creation-Date: 2016-01-15 17:56+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -88,6 +88,10 @@ msgstr ""
 "için hesap bulunamadı!"
 
 #, python-format
+msgid "AddHba error: %(wwn)s to %(srvname)s : %(code)d %(reason)s"
+msgstr "AddHba hatası: %(srvname)s sunucusuna %(wwn)s : %(code)d %(reason)s"
+
+#, python-format
 msgid "Array mismatch %(myid)s vs %(arid)s"
 msgstr "Dizi uyuşmazlığı %(myid)s ve %(arid)s"
 
@@ -97,6 +101,9 @@ msgstr "İstek yetkilendiriliyor: %(zfssaurl)s tekrar deneme: %(retry)d ."
 
 msgid "Backend returned err for lun export."
 msgstr "Artalanda çalışan uygulama lun dışa aktarımı için hata döndürdü."
+
+msgid "Backup driver has not been initialized"
+msgstr "Yedekleme sürücüsü başlatılamadı"
 
 #, python-format
 msgid "Backup id %s is not invalid. Skipping reset."
@@ -213,6 +220,10 @@ msgid "Cannot get storage system."
 msgstr "Depolama sistemi alınamaz."
 
 #, python-format
+msgid "Caught error: %s"
+msgstr "Yakalama hatası: %s"
+
+#, python-format
 msgid "Clone Volume:%(volume)s failed from source volume:%(src_vref)s"
 msgstr ""
 "Kopya Mantıksal Sürücü:Kaynak mantıksal sürücüden %(volume)s başarısız oldu:"
@@ -268,8 +279,16 @@ msgstr ""
 "%(snap)s anlık sistem görüntüsü %(vol)s mantıksal sürücüsü için mantıksal "
 "sürücüye anlık sistem görüntüsü kopyalayamadı!"
 
+#, python-format
+msgid "Could not deactivate volume group %s"
+msgstr "Mantıksal sürücü grubu %s etkinliği kaldırılamadı"
+
 msgid "Could not decode scheduler options."
 msgstr "Zamanlayıcı seçenekleri şifresi çözülemedi."
+
+#, python-format
+msgid "Could not detach volume %(vol)s from device %(dev)s."
+msgstr "%(dev)s aygıtından %(vol)s mantıksal sürücüsü ayrılamadı."
 
 #, python-format
 msgid "Could not find a host for consistency group %(group_id)s."
@@ -283,9 +302,19 @@ msgstr ""
 "Bağlantı noktası grubu bulunamadı : %(portGroupName)s. EMC yapılandırma "
 "dosyasının doğru bağlantı grup adına sahip olup olmadığını kontrol edin."
 
+msgid "Could not get pool data from the storage."
+msgstr "Depolamadan havuz verisi alınamadı."
+
+#, python-format
+msgid "Could not get share %s capacity info."
+msgstr "%s paylaşımının kapasite bilgisi alınamadı."
+
 #, python-format
 msgid "Could not stat scheduler options file %(filename)s."
 msgstr "%(filename)s zamanlayıcı seçenek dosyalarının bilgileri gösterilemedi."
+
+msgid "Cound not setup urls on the Block Driver."
+msgstr "Blok Sürücüsüne adresler kurulamadı."
 
 #, python-format
 msgid "Create cg snapshot %s failed."
@@ -320,6 +349,10 @@ msgstr ""
 #, python-format
 msgid "Create volume notification failed: %s"
 msgstr "Mantıksal sürücü bildirimi oluşturma başarısız oldu: %s"
+
+#, python-format
+msgid "CreateReplay error: %(code)d %(reason)s"
+msgstr "CreateReplay hatası: %(code)d %(reason)s"
 
 #, python-format
 msgid "Creation of snapshot failed for volume: %s"
@@ -426,6 +459,9 @@ msgstr ""
 msgid "Error activating LV"
 msgstr "LV etkinleştirilirken hata"
 
+msgid "Error activating Volume Group"
+msgstr "Mantıksal Sürücü Grubu etkişleştirilirken hata"
+
 msgid "Error adding HBA to server"
 msgstr "Sunucuya HBA ekleme hatası"
 
@@ -472,8 +508,14 @@ msgstr "Anlık sistem görüntüsü oluşturma hatası"
 msgid "Error creating volume. Msg - %s."
 msgstr "Mantıksal sürücü oluşturulurken hata. İleti - %s."
 
+msgid "Error deactivating Volume Group"
+msgstr "Mantıksal Sürücü Grubu etkinliği kaldırılırken hata"
+
 msgid "Error deleting key."
 msgstr "Anahtar silinirken hata."
+
+msgid "Error destroying Volume Group"
+msgstr "Mantıksal Sürücü Grubu silinirken hata"
 
 #, python-format
 msgid "Error detaching volume %(volume)s, due to remove export failure."
@@ -492,6 +534,10 @@ msgstr "İlkeden depolama grubu ayırırken hata: %s."
 msgid "Error during re-export on driver init."
 msgstr "Sürücü init'inde yeniden dışa aktarma sırasında hata."
 
+#, python-format
+msgid "Error encountered during initialization of driver: %(name)s."
+msgstr "Sürücü başlatma sırasında hata ile karşılaşıldı: %(name)s."
+
 msgid "Error executing SSH command."
 msgstr "SSH komutu yürütülürken hata."
 
@@ -502,8 +548,15 @@ msgstr "ssh yoluyla komut yürütürken hata."
 msgid "Error executing command via ssh: %s"
 msgstr "ssh üzerinden komut yürütülürken hata: %s"
 
+#, python-format
+msgid "Error expanding volume %(name)s: %(code)d %(reason)s"
+msgstr "Mantıksal sürücü %(name)s genişletilirken hata: %(code)d %(reason)s"
+
 msgid "Error extending Volume"
 msgstr "Mantıksal sürücü genişletilirken hata"
+
+msgid "Error extending thin provisioning pool"
+msgstr "İnce hazırlık havuzu genişletilirken hata"
 
 #, python-format
 msgid "Error extending volume %(id)s. Ex: %(ex)s"
@@ -516,6 +569,9 @@ msgstr "Mantıksal sürücü genişletilirken hata: %(vol)s. İstisna: %(ex)s"
 #, python-format
 msgid "Error finding target pool instance name for pool: %(targetPoolName)s."
 msgstr "Havuz için hedef havuz örnek adı bulunurken hata: %(targetPoolName)s."
+
+msgid "Error getting FaultDomainList"
+msgstr "FaultDomainList alınırken hata"
 
 #, python-format
 msgid "Error getting LUN attribute. Exception: %s"
@@ -578,6 +634,10 @@ msgstr "Önbellekten iş akışı kopyalamasında hata. %s."
 #, python-format
 msgid "Error invalid json: %s"
 msgstr "Geçersiz json hatası: %s"
+
+#, python-format
+msgid "Error loading app %s"
+msgstr "%s uygulaması yüklenirken hata oluştu"
 
 msgid "Error manage existing get volume size."
 msgstr "Varolan mantıksal sürücü boyutu alma işleminde hata."
@@ -729,6 +789,15 @@ msgid "Error renaming logical volume"
 msgstr "Mantıksal sürücü yeniden adlandırılırken hata"
 
 #, python-format
+msgid "Error renaming volume %(original)s to %(name)s: %(code)d %(reason)s"
+msgstr ""
+"Mantıksal sürücüyü %(original)s özgün adından %(name)s adına yeniden "
+"adlandırırken hata: %(code)d %(reason)s"
+
+msgid "Error resizing Physical Volume"
+msgstr "Fiziki Sürücü yeniden boyutlandırılırken hata"
+
+#, python-format
 msgid "Error resolving host %(host)s. Error - %(e)s."
 msgstr "%(host)s istemci çözülürken hata. Hata - %(e)s."
 
@@ -843,6 +912,12 @@ msgstr "Fabric %s için fcns veritabanı bilgisi toplanamadı"
 #, python-format
 msgid "Failed collecting name server info from fabric %s"
 msgstr "Fabric %s'den ad sunucu bilgisi toplanamadı"
+
+msgid "Failed collecting nscamshow"
+msgstr "nscamshow toplanamadı"
+
+msgid "Failed collecting nsshow info for fabric"
+msgstr "Fabric için nsshow bilgisi toplanamadı"
 
 #, python-format
 msgid "Failed collecting nsshow info for fabric %s"
@@ -960,8 +1035,15 @@ msgstr ""
 msgid "Failed to add target(port: %s)"
 msgstr "Hedef eklenemedi(bağlantı noktası: %s)"
 
+#, python-format
+msgid "Failed to attach volume %(vol)s"
+msgstr "Disk bölümü %(vol)s ekleme başarısız"
+
 msgid "Failed to authenticate user."
 msgstr "Kullanıcı kimlik doğrulaması yapılamadı."
+
+msgid "Failed to bind iSCSI targets!"
+msgstr "ISCSI hedefleri bağlanamadı!"
 
 #, python-format
 msgid "Failed to close disk device %s"
@@ -1069,6 +1151,9 @@ msgstr "Mantıksal sürücü kimliği için iscsi hedefi oluşturulamadı:%s"
 msgid "Failed to create iscsi target for volume id:%s."
 msgstr "Mantıksal sürücü kimliği için iscsi hedefi oluşturulamadı:%s."
 
+msgid "Failed to create iscsi target!"
+msgstr "Iscsi hedefi oluşturulamadı!"
+
 #, python-format
 msgid "Failed to create snapshot of volume \"%s\"."
 msgstr "\"%s\" mantıksal sürücüsünün anlık sistem görüntüsü oluşturulamadı."
@@ -1092,6 +1177,10 @@ msgstr "\"%s\" anlık sistem görüntüsünden mantıksal sürücü oluşturulam
 #, python-format
 msgid "Failed to created Cinder secure environment indicator file: %s"
 msgstr "Cinder güvenli ortam gösterge dosyası oluşturulamadı: %s"
+
+#, python-format
+msgid "Failed to delete initiator iqn %s to target."
+msgstr "Hedefe başlatıcı iqn %s silinemedi."
 
 #, python-format
 msgid "Failed to delete snapshot %(snap)s of volume %(vol)s."
@@ -1230,6 +1319,14 @@ msgstr "%s yükleme başarısız"
 
 msgid "Failed to load osapi_volume"
 msgstr "osapi_volume yükleme başarısız"
+
+#, python-format
+msgid "Failed to open config for %(vol_id)s: %(e)s"
+msgstr "%(vol_id)s için yapılandırma açılamadı: %(e)s"
+
+#, python-format
+msgid "Failed to open config for %s."
+msgstr "%s için yapılandırma açılamadı."
 
 #, python-format
 msgid "Failed to open iet session list for %s"
@@ -1404,6 +1501,9 @@ msgstr "Anlık sistem görüntüsü silinirken kullanımlar güncellenemedi"
 msgid "Failed to update usages deleting volume."
 msgstr "Mantıksal sürücü silme kullanımları güncellenemedi."
 
+msgid "Failed to update usages while retyping volume."
+msgstr "Mantıksal sürücü yeniden yazılırken kullanımlar güncellenemedi."
+
 #, python-format
 msgid "Failed to update volume status: %s"
 msgstr "Mantıksal sürücü durumu güncellenemedi: %s"
@@ -1550,8 +1650,36 @@ msgstr "JSON aktarım hatası: %s."
 msgid "LUN %(path)s geometry failed. Message - %(msg)s"
 msgstr "LUN %(path)s geometrisi başarısız oldu. İleti - %(msg)s"
 
+#, python-format
+msgid "LUN export for %s failed!"
+msgstr "%s için LUN dışa aktarımı başarısız oldu!"
+
 msgid "LUN extend failed!"
 msgstr "LUN genişletme işlemi başarısız oldu!"
+
+#, python-format
+msgid "LUN extend for %s failed!"
+msgstr "%s için LUN genişletme başarısız oldu!"
+
+#, python-format
+msgid "LUN snapshot create for %s failed!"
+msgstr "%s için LUN anlık sistem görüntüsü oluşturma başarısız!"
+
+#, python-format
+msgid "LUN snapshot delete for %s failed!"
+msgstr "%s için LUN anlık sistem görüntüsü silme başarısız oldu!"
+
+msgid ""
+"Logging into the Datera cluster failed. Please check your username and "
+"password set in the cinder.conf and start the cinder-volumeservice again."
+msgstr ""
+"Datera kümesine giriş başarısız oldu. Lütfen kullanıcı adı ve parolanın "
+"cinder.conf dosyasındaki ayarını kontrol edin ve cinder-volumeservice "
+"servisini tekrar başlatın."
+
+#, python-format
+msgid "Login error: %(code)d %(reason)s"
+msgstr "Giriş hatası: %(code)d %(reason)s"
 
 #, python-format
 msgid "Looks like masking view: %(maskingViewName)s has recently been deleted."
@@ -1664,6 +1792,16 @@ msgstr ""
 "yolunda destek dosyaları %(backing_file)s var!"
 
 #, python-format
+msgid "Not able to find a different datastore to place the extended volume %s."
+msgstr ""
+"%s genişletilmiş mantıksal sürücüsünü yerleştirmek için farklı bir "
+"verideposu bulunması mümkün değil."
+
+#, python-format
+msgid "Not able to relocate volume %s for extending."
+msgstr "%s mantıksal sürücüsünün genişletmek için taşınması mümkün değil."
+
+#, python-format
 msgid ""
 "One of the components of the original masking view %(maskingViewName)s "
 "cannot be retrieved so please contact your system administrator to check "
@@ -1697,6 +1835,9 @@ msgstr "Pipe2 başarısız - %s "
 
 msgid "Promote volume replica failed."
 msgstr "Mantıksal sürücü kopyasını yükseltme başarısız oldu."
+
+msgid "Protocol must be specified as '<in> iSCSI' or '<in> FC'."
+msgstr "Protokol '<in> iSCSI' ya da '<in> FC' olarak belirtilmiş olmalıdır."
 
 #, python-format
 msgid ""
@@ -1759,6 +1900,15 @@ msgstr ""
 "Yeniden deneme %(retry)s süreleri: %(method)s Başarısız oldu %(rc)s: "
 "%(reason)s"
 
+msgid "Retype of encryption type not supported."
+msgstr "Şifreleme türü Retype desteklenmiyor."
+
+msgid "Retype of extra_specs not supported."
+msgstr "extra_specs Retype desteklenmiyor."
+
+msgid "Retype with host migration not supported."
+msgstr "İstemci göçü ile Retype desteklenmiyor."
+
 #, python-format
 msgid ""
 "SLO: %(slo)s is not valid. Valid values are Bronze, Silver, Gold, Platinum, "
@@ -1766,6 +1916,26 @@ msgid ""
 msgstr ""
 "SLO: %(slo)s geçersiz. Geçerli değerler Bronz, Gümüş, Altın, Platin, Elmas, "
 "Optimize Edilmiş, HİÇBİRİ."
+
+#, python-format
+msgid "ScPhysicalServer create error: %(wwn)s: %(code)d %(reason)s"
+msgstr "ScPhysicalServer oluşturma hatası: %(wwn)s: %(code)d %(reason)s"
+
+#, python-format
+msgid "ScReplay CreateView error: %(code)d %(reason)s"
+msgstr "ScReplay CreateView hatası: %(code)d %(reason)s"
+
+#, python-format
+msgid "ScReplay Expire error: %(code)d %(reason)s"
+msgstr "ScReplay Geçerlilik hatası: %(code)d %(reason)s"
+
+#, python-format
+msgid "ScServer error: %(code)d %(reason)s"
+msgstr "ScServer hatası: %(code)d %(reason)s"
+
+#, python-format
+msgid "ScVolume create error %(name)s: %(code)d %(reason)s"
+msgstr "ScVolume oluşturma hatası %(name)s: %(code)d %(reason)s"
 
 msgid ""
 "ScVolume returned success with empty payload.  Attempting to locate volume"
@@ -1799,8 +1969,16 @@ msgstr ""
 msgid "Snapshot %s: has clones"
 msgstr "Anlık sistem görüntüsü %s: kopyalara sahip"
 
+#, python-format
+msgid "Snapshot deletion failed with message: %s"
+msgstr "Anlık sistem görüntüsü silme işlemi şu ileti ile başarısız oldu: %s"
+
 msgid "Snapshot did not exist. It will not be deleted"
 msgstr "Anlık sistem görüntüsü olmasaydı silinemeyecekti"
+
+#, python-format
+msgid "Snapshot export for %s failed!"
+msgstr "%s için anlık sistem görüntüsü dışa aktarımı başarısız oldu!"
 
 #, python-format
 msgid "Source snapshot %(snapshot_id)s cannot be found."
@@ -1927,6 +2105,22 @@ msgid "Unable to delete due to existing snapshot for volume: %s"
 msgstr ""
 "Mantıksal sürücü için varolan anlık sistem görüntüsü nedeniyle silinemedi: %s"
 
+#, python-format
+msgid "Unable to delete due to existing snapshot for volume: %s."
+msgstr "Mantıksal sürücü anlık sistem görüntüleri nedeniyle silinemedi: %s."
+
+#, python-format
+msgid "Unable to delete profile %(cg)s : %(reason)s"
+msgstr "%(cg)s profili silinemedi: %(reason)s"
+
+#, python-format
+msgid ""
+"Unable to delete snapshot: %(snap_id)s, due to invalid status. Status must "
+"be available or error, not %(snap_status)s."
+msgstr ""
+"Geçersiz durum nedeniyle anlık sistem görüntüsü silinemedi: %(snap_id)s. "
+"Durum kullanılabilir ya da hata olmalıdır, %(snap_status)s değil."
+
 msgid ""
 "Unable to delete the destination volume during volume migration, (NOTE: "
 "database record needs to be deleted)."
@@ -1938,6 +2132,13 @@ msgstr ""
 msgid "Unable to determine whether %(volumeName)s is composite or not."
 msgstr ""
 "%(volumeName)s mantıksal sürücüsünün bileşik olup olmadığı belirlenemedi."
+
+msgid "Unable to disconnect host from volume."
+msgstr "Disk bölümünden istemci bağlantısı kesilemedi."
+
+#, python-format
+msgid "Unable to extend the size of the vmdk virtual disk at the path %s."
+msgstr "%s yolundaki vmdk sanal diskin boyutu genişletilemedi."
 
 msgid "Unable to find FC initiators"
 msgstr "FC başlatıcısı bulunamadı"
@@ -1955,6 +2156,10 @@ msgid ""
 "Unable to find default storage group for FAST policy : %(fastPolicyName)s."
 msgstr ""
 "FAST ilkesi için öntanımlı depolama grubu bulunamadı : %(fastPolicyName)s."
+
+#, python-format
+msgid "Unable to find volume mappings: %s"
+msgstr "Mantıksal sürücü eşleştirmeleri bulunamadı: %s"
 
 msgid "Unable to get associated pool of volume."
 msgstr "Mantıksal sürücünün ilişkili olduğu havuz alınamadı."
@@ -2226,6 +2431,10 @@ msgstr ""
 "İşyükü: %(workload)s geçerli değil. Geçerli değerler DSS_REP, DSS, OLTP, "
 "OLTP_REP, HİÇBİRİ."
 
+#, python-format
+msgid "XML exception reading parameter: %s"
+msgstr "XML okuma parametresi istisnası: %s"
+
 msgid "_find_mappings: volume is not active"
 msgstr "_find_mappings: mantıksal sürücü etkin değil"
 
@@ -2297,6 +2506,10 @@ msgid "cinder-rtstool is not installed correctly"
 msgstr "cinder-rtstool doğru bir şekilde kurulu değil"
 
 #, python-format
+msgid "create_replay_profile failed %s"
+msgstr "create_replay_profile başarısız oldu %s"
+
+#, python-format
 msgid ""
 "delete: %(vol_id)s failed with stdout: %(out)s\n"
 " stderr: %(err)s"
@@ -2317,6 +2530,10 @@ msgstr "rbd imajı %s açma hatası"
 
 msgid "error refreshing volume stats"
 msgstr "mantıksal sürücü durum bilgisi tazeleme hatası"
+
+#, python-format
+msgid "find_replay_profile error %s"
+msgstr "find_replay_profile hatası %s"
 
 msgid "horcm command timeout."
 msgstr "horcm komutu zaman aşımı."
@@ -2347,6 +2564,10 @@ msgstr "Model sunucusu gitti."
 #, python-format
 msgid "single_user auth mode enabled, but %(param)s not set"
 msgstr "single_user kimlik doğrulama kipi etkin, fakat %(param)s ayarlı değil"
+
+#, python-format
+msgid "snap_cg error: %(code)d %(reason)s"
+msgstr "snap_cg hatası: %(code)d %(reason)s"
 
 msgid "snm2 command timeout."
 msgstr "snm2 komutu zaman aşımı."

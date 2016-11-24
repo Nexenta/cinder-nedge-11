@@ -33,7 +33,6 @@ from cinder import exception
 from cinder import flow_utils
 from cinder.i18n import _, _LE
 from cinder import manager
-from cinder import objects
 from cinder import quota
 from cinder import rpc
 from cinder.scheduler.flows import create_volume
@@ -56,7 +55,7 @@ LOG = logging.getLogger(__name__)
 class SchedulerManager(manager.Manager):
     """Chooses a host to create volumes."""
 
-    RPC_API_VERSION = '2.0'
+    RPC_API_VERSION = '1.8'
 
     target = messaging.Target(version=RPC_API_VERSION)
 
@@ -66,7 +65,6 @@ class SchedulerManager(manager.Manager):
             scheduler_driver = CONF.scheduler_driver
         self.driver = importutils.import_object(scheduler_driver)
         super(SchedulerManager, self).__init__(*args, **kwargs)
-        self.additional_endpoints.append(_SchedulerV1Proxy(self))
         self._startup_delay = True
 
     def init_host_with_rpc(self):
@@ -75,10 +73,6 @@ class SchedulerManager(manager.Manager):
 
         eventlet.sleep(CONF.periodic_interval)
         self._startup_delay = False
-
-    def reset(self):
-        super(SchedulerManager, self).reset()
-        self.driver.reset()
 
     def update_service_capabilities(self, context, service_name=None,
                                     host=None, capabilities=None, **kwargs):
@@ -122,22 +116,15 @@ class SchedulerManager(manager.Manager):
 
     def create_volume(self, context, topic, volume_id, snapshot_id=None,
                       image_id=None, request_spec=None,
-                      filter_properties=None, volume=None):
+                      filter_properties=None):
 
         self._wait_for_scheduler()
-
-        # FIXME(thangp): Remove this in v2.0 of RPC API.
-        if volume is None:
-            # For older clients, mimic the old behavior and look up the
-            # volume by its volume_id.
-            volume = objects.Volume.get_by_id(context, volume_id)
-
         try:
             flow_engine = create_volume.get_flow(context,
                                                  db, self.driver,
                                                  request_spec,
                                                  filter_properties,
-                                                 volume,
+                                                 volume_id,
                                                  snapshot_id,
                                                  image_id)
         except Exception:
@@ -153,18 +140,13 @@ class SchedulerManager(manager.Manager):
 
     def migrate_volume_to_host(self, context, topic, volume_id, host,
                                force_host_copy, request_spec,
-                               filter_properties=None, volume=None):
+                               filter_properties=None):
         """Ensure that the host exists and can accept the volume."""
 
         self._wait_for_scheduler()
 
-        # FIXME(thangp): Remove this in v2.0 of RPC API.
-        if volume is None:
-            # For older clients, mimic the old behavior and look up the
-            # volume by its volume_id.
-            volume = objects.Volume.get_by_id(context, volume_id)
-
         def _migrate_volume_set_error(self, context, ex, request_spec):
+            volume = db.volume_get(context, request_spec['volume_id'])
             if volume.status == 'maintenance':
                 previous_status = (
                     volume.previous_status or 'maintenance')
@@ -186,12 +168,13 @@ class SchedulerManager(manager.Manager):
             with excutils.save_and_reraise_exception():
                 _migrate_volume_set_error(self, context, ex, request_spec)
         else:
-            volume_rpcapi.VolumeAPI().migrate_volume(context, volume,
+            volume_ref = db.volume_get(context, volume_id)
+            volume_rpcapi.VolumeAPI().migrate_volume(context, volume_ref,
                                                      tgt_host,
                                                      force_host_copy)
 
     def retype(self, context, topic, volume_id,
-               request_spec, filter_properties=None, volume=None):
+               request_spec, filter_properties=None):
         """Schedule the modification of a volume's type.
 
         :param context: the request context
@@ -199,16 +182,9 @@ class SchedulerManager(manager.Manager):
         :param volume_id: the ID of the volume to retype
         :param request_spec: parameters for this retype request
         :param filter_properties: parameters to filter by
-        :param volume: the volume object to retype
         """
 
         self._wait_for_scheduler()
-
-        # FIXME(thangp): Remove this in v2.0 of RPC API.
-        if volume is None:
-            # For older clients, mimic the old behavior and look up the
-            # volume by its volume_id.
-            volume = objects.Volume.get_by_id(context, volume_id)
 
         def _retype_volume_set_error(self, context, ex, request_spec,
                                      volume_ref, msg, reservations):
@@ -220,14 +196,14 @@ class SchedulerManager(manager.Manager):
             self._set_volume_state_and_notify('retype', volume_state,
                                               context, ex, request_spec, msg)
 
+        volume_ref = db.volume_get(context, volume_id)
         reservations = request_spec.get('quota_reservations')
-        old_reservations = request_spec.get('old_reservations', None)
         new_type = request_spec.get('volume_type')
         if new_type is None:
             msg = _('New volume type not specified in request_spec.')
             ex = exception.ParameterNotFound(param='volume_type')
             _retype_volume_set_error(self, context, ex, request_spec,
-                                     volume, msg, reservations)
+                                     volume_ref, msg, reservations)
 
         # Default migration policy is 'never'
         migration_policy = request_spec.get('migration_policy')
@@ -241,19 +217,17 @@ class SchedulerManager(manager.Manager):
         except exception.NoValidHost as ex:
             msg = (_("Could not find a host for volume %(volume_id)s with "
                      "type %(type_id)s.") %
-                   {'type_id': new_type['id'], 'volume_id': volume.id})
+                   {'type_id': new_type['id'], 'volume_id': volume_id})
             _retype_volume_set_error(self, context, ex, request_spec,
-                                     volume, msg, reservations)
+                                     volume_ref, msg, reservations)
         except Exception as ex:
             with excutils.save_and_reraise_exception():
                 _retype_volume_set_error(self, context, ex, request_spec,
-                                         volume, None, reservations)
+                                         volume_ref, None, reservations)
         else:
-            volume_rpcapi.VolumeAPI().retype(context, volume,
+            volume_rpcapi.VolumeAPI().retype(context, volume_ref,
                                              new_type['id'], tgt_host,
-                                             migration_policy,
-                                             reservations,
-                                             old_reservations)
+                                             migration_policy, reservations)
 
     def manage_existing(self, context, topic, volume_id,
                         request_spec, filter_properties=None):
@@ -316,59 +290,3 @@ class SchedulerManager(manager.Manager):
         rpc.get_notifier("scheduler").error(context,
                                             'scheduler.' + method,
                                             payload)
-
-
-# TODO(dulek): This goes away immediately in Newton and is just present in
-# Mitaka so that we can receive v1.x and v2.0 messages.
-class _SchedulerV1Proxy(object):
-
-    target = messaging.Target(version='1.11')
-
-    def __init__(self, manager):
-        self.manager = manager
-
-    def update_service_capabilities(self, context, service_name=None,
-                                    host=None, capabilities=None, **kwargs):
-        return self.manager.update_service_capabilities(
-            context, service_name=service_name, host=host,
-            capabilities=capabilities, **kwargs)
-
-    def create_consistencygroup(self, context, topic, group,
-                                request_spec_list=None,
-                                filter_properties_list=None):
-        return self.manager.create_consistencygroup(
-            context, topic, group, request_spec_list=request_spec_list,
-            filter_properties_list=None)
-
-    def create_volume(self, context, topic, volume_id, snapshot_id=None,
-                      image_id=None, request_spec=None, filter_properties=None,
-                      volume=None):
-        return self.manager.create_volume(
-            context, topic, volume_id, snapshot_id=snapshot_id,
-            image_id=image_id, request_spec=request_spec,
-            filter_properties=filter_properties, volume=volume)
-
-    def request_service_capabilities(self, context):
-        return self.manager.request_service_capabilities(context)
-
-    def migrate_volume_to_host(self, context, topic, volume_id, host,
-                               force_host_copy, request_spec,
-                               filter_properties=None, volume=None):
-        return self.manager.migrate_volume_to_host(
-            context, topic, volume_id, host, force_host_copy, request_spec,
-            filter_properties=filter_properties, volume=volume)
-
-    def retype(self, context, topic, volume_id, request_spec,
-               filter_properties=None, volume=None):
-        return self.manager.retype(context, topic, volume_id, request_spec,
-                                   filter_properties=filter_properties,
-                                   volume=volume)
-
-    def manage_existing(self, context, topic, volume_id, request_spec,
-                        filter_properties=None):
-        return self.manager.manage_existing(
-            context, topic, volume_id, request_spec,
-            filter_properties=filter_properties)
-
-    def get_pools(self, context, filters=None):
-        return self.manager.get_pools(context, filters=filters)

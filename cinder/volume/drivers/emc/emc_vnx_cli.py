@@ -15,7 +15,6 @@
 """
 VNX CLI
 """
-import copy
 import math
 import os
 import random
@@ -41,7 +40,7 @@ from taskflow.types import failure
 
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
-from cinder.objects import fields
+from cinder import objects
 from cinder import utils
 from cinder.volume import configuration as config
 from cinder.volume.drivers.san import san
@@ -66,15 +65,18 @@ loc_opts = [
                default='global',
                help='VNX authentication scope type.'),
     cfg.StrOpt('storage_vnx_security_file_dir',
+               default=None,
                help='Directory path that contains the VNX security file. '
                'Make sure the security file is generated first.'),
     cfg.StrOpt('naviseccli_path',
                default='',
                help='Naviseccli Path.'),
     cfg.StrOpt('storage_vnx_pool_names',
+               default=None,
                deprecated_name='storage_vnx_pool_name',
                help='Comma-separated list of storage pool names to be used.'),
     cfg.StrOpt('san_secondary_ip',
+               default=None,
                help='VNX secondary SP IP Address.'),
     cfg.IntOpt('default_timeout',
                default=60 * 24 * 365,
@@ -171,58 +173,14 @@ def log_enter_exit(func):
 
 
 class PropertyDescriptor(object):
-    def __init__(self, option, label, key=None, converter=None):
+    def __init__(self, option, label, key, converter=None):
         self.option = option
-        self._label = None
-        self._key = key
+        self.label = label
+        self.key = key
         self.converter = converter
 
-        self.label = label
 
-    @property
-    def label(self):
-        return self._label
-
-    @label.setter
-    def label(self, value):
-        value = value.strip()
-        if value[-1] == ':':
-            value = value[:-1]
-        self._label = value
-
-    @property
-    def key(self):
-        if self._key is None:
-            self._key = '_'.join(self.label.lower().split())
-        return self._key
-
-
-class _Enum(object):
-    @classmethod
-    def get_all(cls):
-        return [getattr(cls, member) for member in dir(cls)
-                if cls._is_enum(member)]
-
-    @classmethod
-    def _is_enum(cls, name):
-        return (isinstance(name, str)
-                and hasattr(cls, name)
-                and name.isupper())
-
-    @classmethod
-    def get_opt(cls, tier):
-        option_map = getattr(cls, '_map', None)
-        if option_map is None:
-            raise NotImplementedError(
-                _('Option map (cls._map) is not defined.'))
-
-        ret = option_map.get(tier)
-        if ret is None:
-            raise ValueError(_("{} is not a valid option.").format(tier))
-        return ret
-
-
-class VNXError(_Enum):
+class VNXError(object):
 
     GENERAL_NOT_FOUND = 'cannot find|may not exist|does not exist'
 
@@ -245,8 +203,18 @@ class VNXError(_Enum):
     SNAP_ALREADY_MOUNTED = 0x716d8055
     SNAP_NOT_ATTACHED = ('The specified Snapshot mount point '
                          'is not currently attached.')
-    MIRROR_NOT_FOUND = 'Mirror not found'
-    MIRROR_IN_USE = 'Mirror name already in use'
+
+    @classmethod
+    def get_all(cls):
+        return (member for member in dir(cls)
+                if cls._is_enum(member))
+
+    @classmethod
+    def _is_enum(cls, name):
+        return (isinstance(name, str)
+                and hasattr(cls, name)
+                and not callable(name)
+                and name.isupper())
 
     @staticmethod
     def _match(output, error_code):
@@ -272,418 +240,105 @@ class VNXError(_Enum):
                     for error_code in error_codes])
 
 
-class VNXMigrationRate(_Enum):
-    LOW = 'low'
-    MEDIUM = 'medium'
-    HIGH = 'high'
-    ASAP = 'asap'
+@decorate_all_methods(log_enter_exit)
+class CommandLineHelper(object):
 
-
-class VNXProvisionEnum(_Enum):
-    THIN = 'thin'
-    THICK = 'thick'
-    COMPRESSED = 'compressed'
-    DEDUPED = 'deduplicated'
-
-    _map = {
-        THIN: ['-type', 'Thin'],
-        THICK: ['-type', 'NonThin'],
-        COMPRESSED: ['-type', 'Thin'],
-        DEDUPED: ['-type', 'Thin', '-deduplication', 'on']}
-
-
-class VNXTieringEnum(_Enum):
-    NONE = 'none'
-    HIGH_AUTO = 'starthighthenauto'
-    AUTO = 'auto'
-    HIGH = 'highestavailable'
-    LOW = 'lowestavailable'
-    NO_MOVE = 'nomovement'
-
-    _map = {
-        NONE: ['', ''],
-        HIGH_AUTO: [
-            '-initialTier', 'highestAvailable',
-            '-tieringPolicy', 'autoTier'],
-        AUTO: [
-            '-initialTier', 'optimizePool',
-            '-tieringPolicy', 'autoTier'],
-        HIGH: [
-            '-initialTier', 'highestAvailable',
-            '-tieringPolicy', 'highestAvailable'],
-        LOW: [
-            '-initialTier', 'lowestAvailable',
-            '-tieringPolicy', 'lowestAvailable'],
-        NO_MOVE: [
-            '-initialTier', 'optimizePool',
-            '-tieringPolicy', 'noMovement']
-    }
-
-    @classmethod
-    def get_tier(cls, initial, policy):
-        ret = None
-        for k, v in cls._map.items():
-            if len(v) >= 4:
-                v_initial, v_policy = v[1], v[3]
-                if (cls.match_option(initial, v_initial) and
-                        cls.match_option(policy, v_policy)):
-                    ret = k
-                    break
-                elif cls.match_option(policy, 'noMovement'):
-                    # no movement could have different initial tier
-                    ret = cls.NO_MOVE
-                    break
-        if ret is None:
-            raise ValueError(_('Initial tier: {}, policy: {} is not valid.')
-                             .format(initial, policy))
-        return ret
-
-    @staticmethod
-    def match_option(output, option):
-        return output.replace(' ', '').lower() == option.lower()
-
-
-class VNXLun(object):
-
-    DEFAULT_TIER = VNXTieringEnum.HIGH_AUTO
-    DEFAULT_PROVISION = VNXProvisionEnum.THICK
-
-    def __init__(self):
-        self._lun_id = -1
-        self._capacity = 0.0
-        self._pool_name = ''
-        self._tier = self.DEFAULT_TIER
-        self._provision = self.DEFAULT_PROVISION
-
-        self._const = VNXLunProperties
-
-    @property
-    def lun_id(self):
-        return self._lun_id
-
-    @lun_id.setter
-    def lun_id(self, data):
-        if isinstance(data, dict):
-            self._lun_id = self._get(data, self._const.LUN_ID)
-        elif isinstance(data, int):
-            self._lun_id = data
-        elif isinstance(data, str):
-            try:
-                self._lun_id = int(data)
-            except ValueError:
-                raise ValueError(
-                    _('LUN number ({}) is not an integer.').format(data))
-        else:
-            self._raise_type_error(data)
-
-        if self.lun_id < 0:
-            raise ValueError(_('LUN id({}) is not valid.')
-                             .format(self.lun_id))
-
-    @property
-    def pool_name(self):
-        return self._pool_name
-
-    @pool_name.setter
-    def pool_name(self, data):
-        if isinstance(data, dict):
-            self._pool_name = self._get(data, self._const.LUN_POOL)
-        elif isinstance(data, str):
-            self._pool_name = data
-        else:
-            self._raise_type_error(data)
-
-    @property
-    def capacity(self):
-        return self._capacity
-
-    @capacity.setter
-    def capacity(self, data):
-        if isinstance(data, dict):
-            self._capacity = self._get(data, self._const.LUN_CAPACITY)
-        elif isinstance(data, float):
-            self._capacity = data
-        elif isinstance(data, int):
-            self._capacity = float(data)
-        else:
-            self._raise_type_error(data)
-
-    @property
-    def tier(self):
-        return self._tier
-
-    @tier.setter
-    def tier(self, data):
-        if isinstance(data, dict):
-            initial = self._get(data, self._const.LUN_INITIAL_TIER)
-            policy = self._get(data, self._const.LUN_TIERING_POLICY)
-
-            self._tier = VNXTieringEnum.get_tier(initial, policy)
-        elif isinstance(data, str) and data in VNXTieringEnum.get_all():
-            self._tier = data
-        else:
-            self._raise_type_error(data)
-
-    @property
-    def provision(self):
-        return self._provision
-
-    @provision.setter
-    def provision(self, data):
-        self._provision = VNXProvisionEnum.THICK
-        if isinstance(data, dict):
-            is_thin = self._get(data, self._const.LUN_IS_THIN_LUN)
-            is_compressed = self._get(data, self._const.LUN_IS_COMPRESSED)
-            is_dedup = self._get(data, self._const.LUN_DEDUP_STATE)
-
-            if is_compressed:
-                self._provision = VNXProvisionEnum.COMPRESSED
-            elif is_dedup:
-                self._provision = VNXProvisionEnum.DEDUPED
-            elif is_thin:
-                self._provision = VNXProvisionEnum.THIN
-        elif isinstance(data, str) and data in VNXProvisionEnum.get_all():
-            self._provision = data
-        else:
-            self._raise_type_error(data)
-
-    @staticmethod
-    def _raise_type_error(data):
-        raise ValueError(_('Input type {} is not supported.')
-                         .format(type(data)))
-
-    def update(self, data):
-        self.lun_id = data
-        self.pool_name = data
-        self.capacity = data
-        self.provision = data
-        self.tier = data
-
-    @staticmethod
-    def get_lun_by_id(client, lun_id):
-        lun = VNXLun()
-        lun.lun_id = lun_id
-        lun.update(client)
-        return lun
-
-    @staticmethod
-    def _get(data, key):
-        if isinstance(key, PropertyDescriptor):
-            key = key.key
-        return data.get(key)
-
-    def __repr__(self):
-        return ('VNXLun ['
-                'lun_id: {}, '
-                'pool_name: {}, '
-                'capacity: {}, '
-                'provision: {}, '
-                'tier: {}]'
-                .format(self.lun_id,
-                        self.pool_name,
-                        self.capacity,
-                        self.provision,
-                        self.tier))
-
-
-class Converter(object):
-    @staticmethod
-    def str_to_boolean(str_input):
-        ret = False
-        if str_input.strip().lower() in ('yes', 'true', 'enabled', 'on'):
-            ret = True
-        return ret
-
-
-class Dict(dict):
-    def __getattr__(self, item):
-        try:
-            ret = super(Dict, self).__getattr__(item)
-        except AttributeError:
-            if item in self:
-                value = self.get(item)
-            else:
-                raise AttributeError(
-                    _("'{}' object has no attribute '{}'")
-                    .format(__name__, item))
-            ret = value
-        return ret
-
-
-class VNXCliParser(_Enum):
-    @classmethod
-    def get_all_property_descriptor(cls):
-        return (p for p in cls.get_all()
-                if isinstance(p, PropertyDescriptor))
-
-    @classmethod
-    def get_property_options(cls):
-        properties = cls.get_all_property_descriptor()
-        return [p.option for p in properties if p.option is not None]
-
-    @classmethod
-    def parse(cls, output, properties=None):
-        ret = Dict()
-        output = output.strip()
-
-        if properties is None:
-            properties = cls.get_all_property_descriptor()
-
-        for p in properties:
-            pattern = re.compile(
-                '^\s*{}\s*[:]?\s*(?P<value>.*)\s*$'.format(
-                    re.escape(p.label)),
-                re.MULTILINE | re.IGNORECASE)
-            matched = re.search(pattern, output)
-
-            if matched is not None:
-                value = matched.group('value')
-                if p.converter is not None and callable(p.converter):
-                    value = p.converter(value)
-                ret[p.key] = value
-            else:
-                ret[p.key] = None
-        return ret
-
-
-class VNXLunProperties(VNXCliParser):
     LUN_STATE = PropertyDescriptor(
         '-state',
-        'Current State',
+        'Current State:\s*(.*)\s*',
         'state')
     LUN_STATUS = PropertyDescriptor(
         '-status',
-        'Status')
+        'Status:\s*(.*)\s*',
+        'status')
     LUN_OPERATION = PropertyDescriptor(
         '-opDetails',
-        'Current Operation',
+        'Current Operation:\s*(.*)\s*',
         'operation')
     LUN_CAPACITY = PropertyDescriptor(
         '-userCap',
-        'User Capacity (GBs)',
+        'User Capacity \(GBs\):\s*(.*)\s*',
         'total_capacity_gb',
         float)
     LUN_OWNER = PropertyDescriptor(
         '-owner',
-        'Current Owner',
+        'Current Owner:\s*SP\s*(.*)\s*',
         'owner')
     LUN_ATTACHEDSNAP = PropertyDescriptor(
         '-attachedSnapshot',
-        'Attached Snapshot')
+        'Attached Snapshot:\s*(.*)\s*',
+        'attached_snapshot')
     LUN_NAME = PropertyDescriptor(
-        None,
-        'Name',
+        '-name',
+        'Name:\s*(.*)\s*',
         'lun_name')
     LUN_ID = PropertyDescriptor(
-        None,
-        'LOGICAL UNIT NUMBER',
+        '-id',
+        'LOGICAL UNIT NUMBER\s*(\d+)\s*',
         'lun_id',
         int)
     LUN_POOL = PropertyDescriptor(
         '-poolName',
-        'Pool Name',
+        'Pool Name:\s*(.*)\s*',
         'pool')
-    LUN_IS_THIN_LUN = PropertyDescriptor(
-        '-isThinLUN',
-        'Is Thin LUN',
-        converter=Converter.str_to_boolean)
-    LUN_IS_COMPRESSED = PropertyDescriptor(
-        '-isCompressed',
-        'Is Compressed',
-        converter=Converter.str_to_boolean)
-    LUN_DEDUP_STATE = PropertyDescriptor(
-        '-dedupState',
-        'Deduplication State',
-        'dedup_state',
-        Converter.str_to_boolean)
-    LUN_INITIAL_TIER = PropertyDescriptor(
-        '-initialTier',
-        'Initial Tier')
-    LUN_TIERING_POLICY = PropertyDescriptor(
-        '-tieringPolicy',
-        'Tiering Policy')
 
-    lun_all = [LUN_STATE,
-               LUN_STATUS,
-               LUN_OPERATION,
-               LUN_CAPACITY,
-               LUN_OWNER,
-               LUN_ATTACHEDSNAP]
+    LUN_ALL = [LUN_STATE, LUN_STATUS, LUN_OPERATION,
+               LUN_CAPACITY, LUN_OWNER, LUN_ATTACHEDSNAP]
 
-    lun_with_pool = [LUN_STATE,
-                     LUN_CAPACITY,
-                     LUN_OWNER,
-                     LUN_ATTACHEDSNAP,
-                     LUN_POOL]
+    LUN_WITH_POOL = [LUN_STATE, LUN_CAPACITY, LUN_OWNER,
+                     LUN_ATTACHEDSNAP, LUN_POOL]
 
-
-class VNXPoolProperties(VNXCliParser):
-    POOL_ID = PropertyDescriptor(
-        None,
-        'Pool ID',
-        'pool_id',
-        int)
     POOL_STATE = PropertyDescriptor(
         '-state',
-        'State')
+        'State:\s*(.*)\s*',
+        'state')
     POOL_TOTAL_CAPACITY = PropertyDescriptor(
         '-userCap',
-        'User Capacity (GBs)',
+        'User Capacity \(GBs\):\s*(.*)\s*',
         'total_capacity_gb',
         float)
     POOL_FREE_CAPACITY = PropertyDescriptor(
         '-availableCap',
-        'Available Capacity (GBs)',
+        'Available Capacity *\(GBs\) *:\s*(.*)\s*',
         'free_capacity_gb',
         float)
     POOL_FAST_CACHE = PropertyDescriptor(
         '-fastcache',
-        'FAST Cache',
+        'FAST Cache:\s*(.*)\s*',
         'fast_cache_enabled',
-        Converter.str_to_boolean)
+        lambda value: 'True' if value == 'Enabled' else 'False')
     POOL_NAME = PropertyDescriptor(
-        None,
-        'Pool Name')
+        '-name',
+        'Pool Name:\s*(.*)\s*',
+        'pool_name')
     POOL_SUBSCRIBED_CAPACITY = PropertyDescriptor(
         '-subscribedCap',
-        'Total Subscribed Capacity (GBs)',
+        'Total Subscribed Capacity *\(GBs\) *:\s*(.*)\s*',
         'provisioned_capacity_gb',
         float)
     POOL_FULL_THRESHOLD = PropertyDescriptor(
         '-prcntFullThreshold',
-        'Percent Full Threshold',
+        'Percent Full Threshold:\s*(.*)\s*',
         'pool_full_threshold',
-        int)
+        lambda value: int(value))
 
-    pool_all = [POOL_TOTAL_CAPACITY,
+    POOL_ALL = [POOL_TOTAL_CAPACITY,
                 POOL_FREE_CAPACITY,
                 POOL_STATE,
                 POOL_FULL_THRESHOLD]
 
-
-class VNXPoolFeatureProperties(VNXCliParser):
     MAX_POOL_LUNS = PropertyDescriptor(
         '-maxPoolLUNs',
-        'Max. Pool LUNs',
+        'Max. Pool LUNs:\s*(.*)\s*',
         'max_pool_luns',
         int)
     TOTAL_POOL_LUNS = PropertyDescriptor(
         '-numPoolLUNs',
-        'Total Number of Pool LUNs',
+        'Total Number of Pool LUNs:\s*(.*)\s*',
         'total_pool_luns',
         int)
 
-    default = [MAX_POOL_LUNS, TOTAL_POOL_LUNS]
-
-
-@decorate_all_methods(log_enter_exit)
-class CommandLineHelper(object):
-    # extra spec constants
-    tiering_spec = 'storagetype:tiering'
-    provisioning_specs = [
-        'provisioning:type',
-        'storagetype:provisioning']
-    copytype_spec = 'copytype:snap'
+    POOL_FEATURE_DEFAULT = (MAX_POOL_LUNS, TOTAL_POOL_LUNS)
 
     def __init__(self, configuration):
         configuration.append_config_values(san.san_opts)
@@ -712,8 +367,7 @@ class CommandLineHelper(object):
                         'san_ip is not set.')
             LOG.error(err_msg)
             raise exception.VolumeBackendAPIException(data=err_msg)
-        # Lock file name for this specific back-end
-        self.toggle_lock_name = configuration.config_group
+
         self.credentials = ()
         storage_username = configuration.san_login
         storage_password = configuration.san_password
@@ -752,6 +406,35 @@ class CommandLineHelper(object):
                 json.loads(configuration.iscsi_initiators)
             LOG.info(_LI("iscsi_initiators: %s"), self.iscsi_initiator_map)
 
+        # extra spec constants
+        self.tiering_spec = 'storagetype:tiering'
+        self.provisioning_specs = [
+            'provisioning:type',
+            'storagetype:provisioning']
+        self.copytype_spec = 'copytype:snap'
+        self.provisioning_values = {
+            'thin': ['-type', 'Thin'],
+            'thick': ['-type', 'NonThin'],
+            'compressed': ['-type', 'Thin'],
+            'deduplicated': ['-type', 'Thin', '-deduplication', 'on']}
+        self.tiering_values = {
+            'none': None,
+            'starthighthenauto': [
+                '-initialTier', 'highestAvailable',
+                '-tieringPolicy', 'autoTier'],
+            'auto': [
+                '-initialTier', 'optimizePool',
+                '-tieringPolicy', 'autoTier'],
+            'highestavailable': [
+                '-initialTier', 'highestAvailable',
+                '-tieringPolicy', 'highestAvailable'],
+            'lowestavailable': [
+                '-initialTier', 'lowestAvailable',
+                '-tieringPolicy', 'lowestAvailable'],
+            'nomovement': [
+                '-initialTier', 'optimizePool',
+                '-tieringPolicy', 'noMovement']}
+
     def _raise_cli_error(self, cmd=None, rc=None, out='', **kwargs):
         raise exception.EMCVnxCLICmdError(cmd=cmd,
                                           rc=rc,
@@ -764,7 +447,7 @@ class CommandLineHelper(object):
                                         ignore_thresholds=False,
                                         poll=True):
         command_create_lun = ['lun', '-create',
-                              '-capacity', int(size),
+                              '-capacity', size,
                               '-sq', 'gb',
                               '-poolName', pool,
                               '-name', name]
@@ -772,10 +455,10 @@ class CommandLineHelper(object):
             command_create_lun = ['-np'] + command_create_lun
         # provisioning
         if provisioning:
-            command_create_lun.extend(VNXProvisionEnum.get_opt(provisioning))
+            command_create_lun.extend(self.provisioning_values[provisioning])
         # tiering
-        if tiering and tiering != 'none':
-            command_create_lun.extend(VNXTieringEnum.get_opt(tiering))
+        if tiering != 'none':
+            command_create_lun.extend(self.tiering_values[tiering])
         if ignore_thresholds:
             command_create_lun.append('-ignoreThresholds')
 
@@ -817,27 +500,25 @@ class CommandLineHelper(object):
                 self._raise_cli_error(cmd, rc, out)
 
         def _lun_state_validation(lun_data):
-            lun_state = lun_data[VNXLunProperties.LUN_STATE.key]
+            lun_state = lun_data[self.LUN_STATE.key]
             if lun_state == 'Initializing':
                 return False
             # Lun in Ready or Faulted state is eligible for IO access,
             # so if no lun operation, return success.
             elif lun_state in ['Ready', 'Faulted']:
-                return lun_data[VNXLunProperties.LUN_OPERATION.key] == 'None'
+                return lun_data[self.LUN_OPERATION.key] == 'None'
             # Raise exception if lun state is Offline, Invalid, Destroying
             # or other unexpected states.
             else:
-                msg = (_("Volume %(name)s was created in VNX, "
-                         "but in %(state)s state.")
-                       % {'name': lun_data[VNXLunProperties.LUN_NAME.key],
-                          'state': lun_state})
+                msg = _("Volume %(lun_name)s was created in VNX, but in"
+                        " %(lun_state)s state."
+                        ) % {'lun_name': lun_data[self.LUN_NAME.key],
+                             'lun_state': lun_state}
                 raise exception.VolumeBackendAPIException(data=msg)
 
         def lun_is_ready():
             try:
-                data = self.get_lun_by_name(name,
-                                            VNXLunProperties.lun_all,
-                                            False)
+                data = self.get_lun_by_name(name, self.LUN_ALL, False)
             except exception.EMCVnxCLICmdError as ex:
                 orig_out = "\n".join(ex.kwargs["out"])
                 if VNXError.has_error(orig_out, VNXError.GENERAL_NOT_FOUND):
@@ -850,7 +531,7 @@ class CommandLineHelper(object):
                                    interval=INTERVAL_5_SEC,
                                    ignorable_exception_arbiter=lambda ex:
                                    isinstance(ex, exception.EMCVnxCLICmdError))
-        lun = self.get_lun_by_name(name, VNXLunProperties.lun_all, False)
+        lun = self.get_lun_by_name(name, self.LUN_ALL, False)
         return lun
 
     def delete_lun(self, name):
@@ -949,7 +630,7 @@ class CommandLineHelper(object):
 
         def lun_is_extented():
             data = self.get_lun_by_name(name, poll=False)
-            return new_size == data[VNXLunProperties.LUN_CAPACITY.key]
+            return new_size == data[self.LUN_CAPACITY.key]
 
         self._wait_for_a_condition(lun_is_extented)
 
@@ -963,19 +644,14 @@ class CommandLineHelper(object):
         if rc != 0:
             self._raise_cli_error(command_lun_rename, rc, out)
 
-    def modify_lun_tiering_by_id(self, lun_id, tiering):
-        """Modify the tiering policy of the LUN."""
-        command_modify_lun = ['lun', '-modify', '-l', lun_id, '-o']
-        self._modify_lun_tiering(command_modify_lun, tiering)
-
-    def modify_lun_tiering_by_name(self, name, tiering):
+    def modify_lun_tiering(self, name, tiering):
         """This function used to modify a lun's tiering policy."""
-        command_modify_lun = ['lun', '-modify', '-name', name, '-o']
-        self._modify_lun_tiering(command_modify_lun, tiering)
+        command_modify_lun = ['lun', '-modify',
+                              '-name', name,
+                              '-o']
+        if tiering != 'none':
+            command_modify_lun.extend(self.tiering_values[tiering])
 
-    def _modify_lun_tiering(self, command_modify_lun, tiering):
-        if tiering and tiering != 'none':
-            command_modify_lun.extend(VNXTieringEnum.get_opt(tiering))
             out, rc = self.command_execute(*command_modify_lun)
             if rc != 0:
                 self._raise_cli_error(command_modify_lun, rc, out)
@@ -1045,6 +721,22 @@ class CommandLineHelper(object):
                                                   'cg_name': cg_name})
             self._raise_cli_error(add_lun_to_cg_cmd, rc, out)
 
+        def add_lun_to_consistency_success():
+            data = self.get_consistency_group_by_name(cg_name)
+            if str(lun_id) in data['Luns']:
+                LOG.debug("Add lun %(lun)s to consistency "
+                          "group %(cg_name)s successfully.",
+                          {'lun': lun_id, 'cg_name': cg_name})
+                return True
+            else:
+                LOG.debug("Adding lun %(lun)s to consistency "
+                          "group %(cg_name)s.",
+                          {'lun': lun_id, 'cg_name': cg_name})
+                return False
+
+        self._wait_for_a_condition(add_lun_to_consistency_success,
+                                   interval=INTERVAL_30_SEC)
+
     def remove_luns_from_consistencygroup(self, cg_name, remove_ids,
                                           poll=False):
         """Removes LUN(s) from cg"""
@@ -1091,8 +783,10 @@ class CommandLineHelper(object):
             LOG.info(_LI('Consistency group %s was deleted '
                          'successfully.'), cg_name)
 
-    def create_cgsnapshot(self, cg_name, snap_name):
+    def create_cgsnapshot(self, cgsnapshot):
         """Create a cgsnapshot (snap group)."""
+        cg_name = cgsnapshot['consistencygroup_id']
+        snap_name = cgsnapshot['id']
         create_cg_snap_cmd = ('-np', 'snap', '-create',
                               '-res', cg_name,
                               '-resType', 'CG',
@@ -1277,11 +971,11 @@ class CommandLineHelper(object):
 
         return rc
 
-    def migrate_lun(self, src_id, dst_id, rate=VNXMigrationRate.HIGH):
+    def migrate_lun(self, src_id, dst_id):
         command_migrate_lun = ('migrate', '-start',
                                '-source', src_id,
                                '-dest', dst_id,
-                               '-rate', rate,
+                               '-rate', 'high',
                                '-o')
         # SP HA is not supported by LUN migration
         out, rc = self.command_execute(*command_migrate_lun,
@@ -1294,10 +988,9 @@ class CommandLineHelper(object):
         return rc
 
     def migrate_lun_without_verification(self, src_id, dst_id,
-                                         dst_name=None,
-                                         rate=VNXMigrationRate.HIGH):
+                                         dst_name=None):
         try:
-            self.migrate_lun(src_id, dst_id, rate)
+            self.migrate_lun(src_id, dst_id)
             return True
         except exception.EMCVnxCLICmdError as ex:
             migration_succeed = False
@@ -1337,8 +1030,6 @@ class CommandLineHelper(object):
                 # parse the percentage
                 state = re.search(r'Current State:\s*([^\n]+)', out)
                 percentage = re.search(r'Percent Complete:\s*([^\n]+)', out)
-                percentage_complete = 'N/A'
-                current_state = 'N/A'
                 if state is not None:
                     current_state = state.group(1)
                     percentage_complete = percentage.group(1)
@@ -1407,10 +1098,9 @@ class CommandLineHelper(object):
 
     def migrate_lun_with_verification(self, src_id,
                                       dst_id,
-                                      dst_name=None,
-                                      rate=VNXMigrationRate.HIGH):
+                                      dst_name=None):
         migration_started = self.migrate_lun_without_verification(
-            src_id, dst_id, dst_name, rate)
+            src_id, dst_id, dst_name)
         if not migration_started:
             return False
 
@@ -1553,26 +1243,20 @@ class CommandLineHelper(object):
             else:
                 self._raise_cli_error(command_remove_hlu, rc, out)
 
-    def get_lun_by_name(self,
-                        name,
-                        properties=VNXLunProperties.lun_all,
-                        poll=True):
+    def get_lun_by_name(self, name, properties=LUN_ALL, poll=True):
         data = self.get_lun_properties(('-name', name),
                                        properties,
                                        poll=poll)
         return data
 
-    def get_lun_by_id(self,
-                      lunid,
-                      properties=VNXLunProperties.lun_all,
-                      poll=True):
+    def get_lun_by_id(self, lunid, properties=LUN_ALL, poll=True):
         data = self.get_lun_properties(('-l', lunid),
                                        properties, poll=poll)
         return data
 
     def get_lun_current_ops_state(self, name, poll=False):
         data = self.get_lun_by_name(name, poll=poll)
-        return data[VNXLunProperties.LUN_OPERATION.key]
+        return data[self.LUN_OPERATION.key]
 
     def wait_until_lun_ready_for_ops(self, name):
         def is_lun_ready_for_ops():
@@ -1584,49 +1268,39 @@ class CommandLineHelper(object):
         if ops != 'None':
             self._wait_for_a_condition(is_lun_ready_for_ops)
 
-    def get_pool(self,
-                 name,
-                 properties=VNXPoolProperties.pool_all,
-                 poll=True):
+    def get_pool(self, name, properties=POOL_ALL, poll=True):
         data = self.get_pool_properties(('-name', name),
                                         properties=properties,
                                         poll=poll)
         return data
 
-    def get_pool_properties(self,
-                            filter_option,
-                            properties=VNXPoolProperties.pool_all,
+    def get_pool_properties(self, filter_option, properties=POOL_ALL,
                             poll=True):
         module_list = ('storagepool', '-list')
         data = self._get_obj_properties(
             module_list, filter_option,
-            base_properties=(VNXPoolProperties.POOL_NAME,),
-            adv_properties=tuple(properties),
+            base_properties=[self.POOL_NAME],
+            adv_properties=properties,
             poll=poll)
         return data
 
-    def get_lun_properties(self,
-                           filter_option,
-                           properties=VNXLunProperties.lun_all,
+    def get_lun_properties(self, filter_option, properties=LUN_ALL,
                            poll=True):
         module_list = ('lun', '-list')
         data = self._get_obj_properties(
             module_list, filter_option,
-            base_properties=(VNXLunProperties.LUN_NAME,
-                             VNXLunProperties.LUN_ID),
-            adv_properties=tuple(properties),
+            base_properties=[self.LUN_NAME, self.LUN_ID],
+            adv_properties=properties,
             poll=poll)
         return data
 
-    def get_pool_feature_properties(
-            self,
-            properties=VNXPoolFeatureProperties.default,
-            poll=True):
+    def get_pool_feature_properties(self, properties=POOL_FEATURE_DEFAULT,
+                                    poll=True):
         module_list = ("storagepool", '-feature', '-info')
         data = self._get_obj_properties(
             module_list, tuple(),
-            base_properties=(),
-            adv_properties=tuple(properties),
+            base_properties=[],
+            adv_properties=properties,
             poll=poll)
         return data
 
@@ -1637,19 +1311,20 @@ class CommandLineHelper(object):
                             poll=True):
         # to do instance check
         command_get = module_list + filter_option
-        options = []
         for prop in adv_properties:
-            option = prop.option
-            if option and option not in options:
-                options.append(option)
-        command_get += tuple(options)
+            command_get += (prop.option, )
         out, rc = self.command_execute(*command_get, poll=poll)
 
         if rc != 0:
             self._raise_cli_error(command_get, rc, out)
 
-        data = VNXCliParser.parse(out,
-                                  list(base_properties) + list(adv_properties))
+        data = {}
+        for baseprop in base_properties:
+            data[baseprop.key] = self._get_property_value(out, baseprop)
+
+        for prop in adv_properties:
+            data[prop.key] = self._get_property_value(out, prop)
+
         LOG.debug('Return Object properties. Data: %s', data)
         return data
 
@@ -1659,10 +1334,7 @@ class CommandLineHelper(object):
         if m:
             if (propertyDescriptor.converter is not None):
                 try:
-                    converter = propertyDescriptor.converter
-                    if isinstance(converter, staticmethod):
-                        converter = converter.__func__
-                    return converter(m.group(1))
+                    return propertyDescriptor.converter(m.group(1))
                 except ValueError:
                     LOG.error(_LE("Invalid value for %(key)s, "
                                   "value is %(value)s."),
@@ -1680,28 +1352,29 @@ class CommandLineHelper(object):
         cmd = ('snap', '-list', '-res', lun_id)
         rc = self.command_execute(*cmd, poll=False)[1]
         if rc == 0:
-            LOG.debug("Found snapshots for %s.", lun_id)
+            LOG.debug("Find snapshots for %s.", lun_id)
             return True
         else:
             return False
 
-    def get_pool_list(self,
-                      properties=VNXPoolProperties.pool_all,
-                      poll=True):
+    def get_pool_list(self, properties=POOL_ALL, poll=True):
         temp_cache = []
         list_cmd = ('storagepool', '-list')
         for prop in properties:
             list_cmd += (prop.option,)
-        output_properties = [VNXPoolProperties.POOL_NAME] + properties
+        output_properties = [self.POOL_NAME] + properties
         out, rc = self.command_execute(*list_cmd, poll=poll)
         if rc != 0:
             self._raise_cli_error(list_cmd, rc, out)
 
         try:
-            for pool in out.strip().split('\n\n'):
-                pool_data = VNXPoolProperties.parse(
-                    pool, output_properties)
-                temp_cache.append(pool_data)
+            for pool in out.split('\n\n'):
+                if len(pool.strip()) == 0:
+                    continue
+                obj = {}
+                for prop in output_properties:
+                    obj[prop.key] = self._get_property_value(pool, prop)
+                temp_cache.append(obj)
         except Exception as ex:
             LOG.error(_LE("Error happened during storage pool querying, %s."),
                       ex)
@@ -1993,48 +1666,44 @@ class CommandLineHelper(object):
         return target_portals
 
     def _is_sp_unavailable_error(self, out):
-        error_pattern = ('(^Error.*Message.*End of data stream.*)|'
-                         '(.*Message.*connection refused.*)|'
-                         '(^Error.*Message.*Service Unavailable.*)|'
-                         '(^A network error occurred while trying to'
-                         ' connect.* )|'
-                         '(^Exception: Error occurred because of time out\s*)')
+        error_pattern = '(^Error.*Message.*End of data stream.*)|'\
+                        '(.*Message.*connection refused.*)|'\
+                        '(^Error.*Message.*Service Unavailable.*)|'\
+                        '(^A network error occurred while trying to'\
+                        ' connect.* )|'\
+                        '(^Exception: Error occurred because of time out\s*)'
         pattern = re.compile(error_pattern)
         return pattern.match(out)
 
-    @utils.retry(exception.EMCSPUnavailableException, retries=5,
-                 interval=30, backoff_rate=1)
-    def command_execute(self, *command, **kwargs):
+    def command_execute(self, *command, **kwargv):
         """Executes command against the VNX array.
 
         When there is named parameter poll=False, the command will be sent
         alone with option -np.
         """
-        # NOTE: retry_disable need to be removed from kwargs
+        # NOTE: retry_disable need to be removed from kwargv
         # before it pass to utils.execute, otherwise exception will thrown
-        retry_disable = kwargs.pop('retry_disable', False)
-        # get active ip before execute command
-        current_ip = self.active_storage_ip
-        out, rc = self._command_execute_on_active_ip(*command, **kwargs)
+        retry_disable = kwargv.pop('retry_disable', False)
+        out, rc = self._command_execute_on_active_ip(*command, **kwargv)
         if not retry_disable and self._is_sp_unavailable_error(out):
             # When active sp is unavailable, switch to another sp
             # and set it to active and force a poll
-            if self._toggle_sp(current_ip):
+            if self._toggle_sp():
                 LOG.debug('EMC: Command Exception: %(rc)s %(result)s. '
                           'Retry on another SP.', {'rc': rc,
                                                    'result': out})
-                # Raise exception for retry
-                raise exception.EMCSPUnavailableException(
-                    cmd=command, rc=rc, out=out.split('\n'))
+                kwargv['poll'] = True
+                out, rc = self._command_execute_on_active_ip(*command,
+                                                             **kwargv)
 
         return out, rc
 
-    def _command_execute_on_active_ip(self, *command, **kwargs):
-        if "check_exit_code" not in kwargs:
-            kwargs["check_exit_code"] = True
+    def _command_execute_on_active_ip(self, *command, **kwargv):
+        if "check_exit_code" not in kwargv:
+            kwargv["check_exit_code"] = True
         rc = 0
         out = ""
-        need_poll = kwargs.pop('poll', True)
+        need_poll = kwargv.pop('poll', True)
         if "-np" not in command and not need_poll:
             command = ("-np",) + command
 
@@ -2045,7 +1714,7 @@ class CommandLineHelper(object):
                   + active_ip
                   + self.credentials
                   + command),
-                **kwargs)
+                **kwargv)
         except processutils.ProcessExecutionError as pe:
             rc = pe.exit_code
             out = pe.stdout
@@ -2057,29 +1726,24 @@ class CommandLineHelper(object):
 
         return out, rc
 
-    def _toggle_sp(self, current_ip):
+    def _toggle_sp(self):
         """Toggle the storage IP.
 
-        :param current_ip: active ip before toggle
-        :returns True or False: if toggle happens, return True, otherwise False
-
+        Address between primary IP and secondary IP, if no SP IP address has
+        exchanged, return False, otherwise True will be returned.
         """
-        @lockutils.synchronized(
-            'vnx-toggle-' + self.toggle_lock_name, 'vnx-toggle-', True)
-        def inner():
-            if self.secondary_storage_ip is None:
-                return False
-            self.active_storage_ip = (
-                self.secondary_storage_ip
-                if current_ip == self.primary_storage_ip
-                else self.primary_storage_ip)
+        if self.secondary_storage_ip is None:
+            return False
+        old_ip = self.active_storage_ip
+        self.active_storage_ip = self.secondary_storage_ip if\
+            self.active_storage_ip == self.primary_storage_ip else\
+            self.primary_storage_ip
 
-            LOG.info(_LI('Toggle san_ip from %(current)s to '
-                         '%(new)s.'),
-                     {'current': current_ip,
-                      'new': self.active_storage_ip})
-            return True
-        return inner()
+        LOG.info(_LI('Toggle storage_vnx_ip_address from %(old)s to '
+                     '%(new)s.'),
+                 {'old': old_ip,
+                  'new': self.active_storage_ip})
+        return True
 
     def get_enablers_on_array(self, poll=False):
         """The function would get all the enablers installed on array."""
@@ -2124,7 +1788,7 @@ class CommandLineHelper(object):
 class EMCVnxCliBase(object):
     """This class defines the functions to use the native CLI functionality."""
 
-    VERSION = '07.00.00'
+    VERSION = '06.00.00'
     stats = {'driver_version': VERSION,
              'storage_protocol': None,
              'vendor_name': 'EMC',
@@ -2134,16 +1798,13 @@ class EMCVnxCliBase(object):
              'deduplication_support': 'False',
              'thin_provisioning_support': False,
              'thick_provisioning_support': True}
-    REPLICATION_KEYS = ['san_ip', 'san_login', 'san_password',
-                        'san_secondary_ip',
-                        'storage_vnx_authentication_type',
-                        'storage_vnx_security_file_dir']
     enablers = []
     tmp_snap_prefix = 'tmp-snap-'
-    tmp_smp_for_backup_prefix = 'tmp-smp-'
     snap_as_vol_prefix = 'snap-as-vol-'
+    tmp_cgsnap_prefix = 'tmp-cgsnapshot-'
+    tmp_smp_for_backup_prefix = 'tmp-smp-'
 
-    def __init__(self, prtcl, configuration=None, active_backend_id=None):
+    def __init__(self, prtcl, configuration=None):
         self.protocol = prtcl
         self.configuration = configuration
         self.max_luns_per_sg = self.configuration.max_luns_per_storage_group
@@ -2170,19 +1831,7 @@ class EMCVnxCliBase(object):
                          "Initiator auto registration is not enabled. "
                          "Please register initiator manually."))
         self.hlu_set = set(range(1, self.max_luns_per_sg + 1))
-        self._client = self._build_client(active_backend_id)
-        self._active_backend_id = active_backend_id
-        # Create connection to the secondary storage device
-        self._mirror = self._build_mirror_view()
-        self.update_enabler_in_volume_stats()
-        # Fail the driver if configuration is not correct
-        if self._mirror:
-            if '-MirrorView/S' not in self.enablers:
-                no_enabler_err = _('MirrorView/S enabler is not installed.')
-                raise exception.VolumeBackendAPIException(data=no_enabler_err)
-        else:
-            self._mirror = None
-
+        self._client = CommandLineHelper(self.configuration)
         conf_pools = self.configuration.safe_get("storage_vnx_pool_names")
         self.storage_pools = self._get_managed_storage_pools(conf_pools)
         self.array_serial = None
@@ -2212,7 +1861,7 @@ class EMCVnxCliBase(object):
         if pools:
             storage_pools = set([po.strip() for po in pools.split(",")])
             array_pools = self._client.get_pool_list(
-                [VNXPoolProperties.POOL_STATE], False)
+                [self._client.POOL_STATE], False)
             array_pools = set([po['pool_name'] for po in array_pools])
             un_exist_pools = storage_pools.difference(array_pools)
             storage_pools.difference_update(un_exist_pools)
@@ -2298,45 +1947,43 @@ class EMCVnxCliBase(object):
 
     def _construct_store_spec(self, volume, snapshot):
         if snapshot['cgsnapshot_id']:
-            # Snapshot is part of cg snapshot
             snapshot_name = snapshot['cgsnapshot_id']
         else:
             snapshot_name = snapshot['name']
-        new_snap_name = snapshot_name
-        if self._is_snapcopy_enabled(volume):
-            new_snap_name = self._construct_snap_name(volume)
-        pool_name = self.get_target_storagepool(volume, snapshot['volume'])
+        source_volume_name = snapshot['volume_name']
         volume_name = volume['name']
         volume_size = snapshot['volume_size']
         dest_volume_name = volume_name + '_dest'
+        snap_name = snapshot_name
+        pool_name = self.get_target_storagepool(volume, snapshot['volume'])
         specs = self.get_volumetype_extraspecs(volume)
-        provisioning, tiering = self._get_extra_spec_value(specs)
+        provisioning, tiering, snapcopy = self._get_extra_spec_value(specs)
+        if snapcopy == 'true':
+            snap_name = self._construct_snap_as_vol_name(volume)
         store_spec = {
+            'source_vol_name': source_volume_name,
             'volume': volume,
             'src_snap_name': snapshot_name,
-            'new_snap_name': new_snap_name,
+            'snap_name': snap_name,
             'dest_vol_name': dest_volume_name,
             'pool_name': pool_name,
             'provisioning': provisioning,
             'tiering': tiering,
+            'snapcopy': snapcopy,
             'volume_size': volume_size,
             'client': self._client,
             'ignore_pool_full_threshold': self.ignore_pool_full_threshold
         }
         return store_spec
 
-    def _construct_snap_name(self, volume):
-        """Returns snapshot or cgsnapshot name."""
-        if self._is_snapcopy_enabled(volume):
-            return self.snap_as_vol_prefix + six.text_type(volume['name_id'])
-        else:
-            return self.tmp_snap_prefix + six.text_type(volume['name_id'])
+    def _construct_snap_as_vol_name(self, volume):
+        return self.snap_as_vol_prefix + volume['id']
+
+    def _construct_tmp_snap_name(self, volume):
+        return self.tmp_snap_prefix + volume['id']
 
     def _construct_tmp_smp_name(self, snapshot):
         return self.tmp_smp_for_backup_prefix + snapshot.id
-
-    def _construct_mirror_name(self, volume):
-        return 'mirror_' + volume.id
 
     def create_volume(self, volume):
         """Creates a EMC volume."""
@@ -2348,56 +1995,42 @@ class EMCVnxCliBase(object):
         # defining CLI command
         specs = self.get_volumetype_extraspecs(volume)
         pool = self.get_target_storagepool(volume)
-        provisioning, tiering = self._get_extra_spec_value(specs)
-        if 'snapcopy' in volume_metadata:
-            # We ignore snapcopy metadata when creating volume
-            LOG.warning(_LW('snapcopy metadata is ignored when'
-                            ' creating volume.'))
+        provisioning, tiering, snapcopy = self._get_extra_spec_value(specs)
 
-        volume_metadata['snapcopy'] = 'False'
+        if snapcopy == 'true' and volume['consistencygroup_id']:
+            msg = _("Volume with copytype:snap=True can not be put in "
+                    "consistency group.")
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+
         LOG.info(_LI('Create Volume: %(volume)s  Size: %(size)s '
                      'pool: %(pool)s '
                      'provisioning: %(provisioning)s '
-                     'tiering: %(tiering)s '),
+                     'tiering: %(tiering)s '
+                     'snapcopy: %(snapcopy)s.'),
                  {'volume': volume_name,
                   'size': volume_size,
                   'pool': pool,
                   'provisioning': provisioning,
-                  'tiering': tiering})
+                  'tiering': tiering,
+                  'snapcopy': snapcopy})
 
         data = self._client.create_lun_with_advance_feature(
             pool, volume_name, volume_size,
             provisioning, tiering, volume['consistencygroup_id'],
             ignore_thresholds=self.ignore_pool_full_threshold,
             poll=False)
-        pl = self._build_provider_location(lun_id=data['lun_id'],
-                                           base_lun_name=volume['name'])
-        # Setup LUN Replication/MirrorView between devices,
-        # secondary LUN will inherit properties from primary LUN.
-        rep_update, metadata_update = self.setup_lun_replication(
-            volume, data['lun_id'], provisioning, tiering)
-        volume_metadata.update(metadata_update)
+        pl = self._build_provider_location(data['lun_id'])
+        volume_metadata['lun_type'] = 'lun'
         model_update = {'provider_location': pl,
                         'metadata': volume_metadata}
-        model_update.update(rep_update)
+
         return model_update
 
     def _volume_creation_check(self, volume):
         """Checks on extra spec before the volume can be created."""
         specs = self.get_volumetype_extraspecs(volume)
         self._get_and_validate_extra_specs(specs)
-
-    def _get_migration_rate(self, volume):
-        metadata = self._get_volume_metadata(volume)
-        rate = metadata.get('migrate_rate', VNXMigrationRate.HIGH)
-        if rate:
-            if rate.lower() in VNXMigrationRate.get_all():
-                return rate.lower()
-            else:
-                LOG.warning(_LW('Unknown migration rate specified, '
-                                'using [high] as migration rate.'))
-
-        return VNXMigrationRate.HIGH
 
     def _get_and_validate_extra_specs(self, specs):
         """Checks on extra specs combinations."""
@@ -2406,20 +2039,18 @@ class EMCVnxCliBase(object):
                             "since driver version 5.1.0. This key will be "
                             "ignored."))
 
-        provisioning, tiering = self._get_extra_spec_value(specs)
+        provisioning, tiering, snapcopy = self._get_extra_spec_value(specs)
         # step 1: check extra spec value
-        if provisioning:
-            self._check_extra_spec_value(
-                provisioning,
-                VNXProvisionEnum.get_all())
-        if tiering:
-            self._check_extra_spec_value(
-                tiering,
-                VNXTieringEnum.get_all())
-
-        # step 2: check extra spec combination
-        self._check_extra_spec_combination([provisioning, tiering])
-        return provisioning, tiering
+        self._check_extra_spec_value(
+            provisioning,
+            self._client.provisioning_values.keys())
+        self._check_extra_spec_value(
+            tiering,
+            self._client.tiering_values.keys())
+        self._check_extra_spec_value(
+            snapcopy, ['true', 'false'])
+        self._check_extra_spec_combination([provisioning, tiering, snapcopy])
+        return provisioning, tiering, snapcopy
 
     def _check_extra_spec_value(self, extra_spec, valid_values):
         """Checks whether an extra spec's value is valid."""
@@ -2454,15 +2085,17 @@ class EMCVnxCliBase(object):
                             "'provisioning:type' instead."))
         tiering = extra_specs.get(
             self._client.tiering_spec, 'None').lower()
+        snapcopy = extra_specs.get(
+            self._client.copytype_spec, 'False').lower()
 
-        return provisioning, tiering
+        return provisioning, tiering, snapcopy
 
     def _check_extra_spec_combination(self, spec_values):
         """Checks whether extra spec combination is valid."""
         enablers = self.enablers
-        # check provisioning, tiering
+        # check provisioning, tiering, snapcopy
         # deduplicated and tiering can not be both enabled
-        provisioning, tiering = spec_values
+        provisioning, tiering, snapcopy = spec_values
         if provisioning == 'deduplicated' and tiering != 'none':
             msg = _("deduplicated and auto tiering can't be both enabled.")
             LOG.error(msg)
@@ -2493,8 +2126,6 @@ class EMCVnxCliBase(object):
 
     def delete_volume(self, volume, force_delete=False):
         """Deletes an EMC volume."""
-        if self._is_replication_enabled(volume):
-            self.cleanup_lun_replication(volume)
         try:
             self._client.delete_lun(volume['name'])
         except exception.EMCVnxCLICmdError as ex:
@@ -2515,11 +2146,11 @@ class EMCVnxCliBase(object):
                     # Reraise the original exception
                     pass
         if volume['provider_location']:
-            lun_type = self.extract_provider_location(
+            lun_type = self._extract_provider_location_for_lun(
                 volume['provider_location'], 'type')
             if lun_type == 'smp':
                 self._client.delete_snapshot(
-                    self._construct_snap_name(volume))
+                    self._construct_snap_as_vol_name(volume))
 
     def extend_volume(self, volume, new_size):
         """Extends an EMC volume."""
@@ -2611,31 +2242,25 @@ class EMCVnxCliBase(object):
         if not is_valid:
             return false_ret
 
-        specs = None
-        if new_type is not None:
-            specs = new_type.get('extra_specs')
+        return self._migrate_volume(volume, target_pool_name, new_type)
 
-        return self._migrate_volume(volume, target_pool_name, specs)
-
-    def _migrate_volume(self,
-                        volume,
-                        target_pool_name,
-                        type_specs=None,
-                        src_id=None):
+    def _migrate_volume(self, volume, target_pool_name, new_type=None):
         LOG.debug("Starting real storage-assisted migration...")
         # first create a new volume with same name and size of source volume
         volume_name = volume['name']
         new_volume_name = "%(src)s-%(ts)s" % {'src': volume_name,
                                               'ts': int(time.time())}
+        src_id = self.get_lun_id(volume)
 
-        if src_id is None:
-            src_id = self.get_lun_id(volume)
-
-        if type_specs is not None:
-            provisioning, tiering = self._get_extra_spec_value(
-                type_specs)
+        provisioning = 'thick'
+        # because the value of tiering is a string, so change its defalut
+        # value from None to 'none'
+        tiering = 'none'
+        if new_type:
+            provisioning, tiering, snapcopy = self._get_extra_spec_value(
+                new_type['extra_specs'])
         else:
-            provisioning, tiering = self._get_extra_spec_value(
+            provisioning, tiering, snapcopy = self._get_extra_spec_value(
                 self.get_volumetype_extraspecs(volume))
 
         data = self._client.create_lun_with_advance_feature(
@@ -2645,74 +2270,56 @@ class EMCVnxCliBase(object):
 
         dst_id = data['lun_id']
         moved = self._client.migrate_lun_with_verification(
-            src_id, dst_id, new_volume_name,
-            rate=self._get_migration_rate(volume))
+            src_id, dst_id, new_volume_name)
 
-        lun_type = self.extract_provider_location(
+        lun_type = self._extract_provider_location_for_lun(
             volume['provider_location'], 'type')
-        # A smp will become a LUN after migration
         if lun_type == 'smp':
             self._client.delete_snapshot(
-                self._construct_snap_name(volume))
+                self._construct_snap_as_vol_name(volume))
 
-        pl = self._build_provider_location(src_id, 'lun',
-                                           base_lun_name=volume['name'])
+        pl = self._build_provider_location(src_id, 'lun')
         volume_metadata = self._get_volume_metadata(volume)
-        volume_metadata['snapcopy'] = 'False'
+        volume_metadata['lun_type'] = 'lun'
         model_update = {'provider_location': pl,
                         'metadata': volume_metadata}
         return moved, model_update
 
     def update_migrated_volume(self, context, volume, new_volume,
                                original_volume_status):
-        """Updates metadata after host-assisted migration."""
-
-        lun_type = self.extract_provider_location(
+        lun_type = self._extract_provider_location_for_lun(
             new_volume['provider_location'], 'type')
         volume_metadata = self._get_volume_metadata(volume)
-        model_update = {'provider_location':
-                        new_volume['provider_location']}
         if lun_type:
-            volume_metadata['snapcopy'] = (
-                'True' if lun_type == 'smp' else 'False')
-            model_update['metadata'] = volume_metadata
-        return model_update
+            volume_metadata['lun_type'] = lun_type
+            model_update = {'metadata': volume_metadata}
+            return model_update
 
     def retype(self, ctxt, volume, new_type, diff, host):
         new_specs = new_type['extra_specs']
 
-        new_provisioning, new_tiering = (
+        new_provisioning, new_tiering, snapcopy = (
             self._get_and_validate_extra_specs(new_specs))
 
         # Check what changes are needed
-        changes = self.determine_changes_when_retype(volume, new_type, host)
+        migration, tiering_change = self.determine_changes_when_retype(
+            volume, new_type, host)
 
-        if self._client.check_lun_has_snap(self.get_lun_id(volume)):
-            # Reject if volume has snapshot when migration is needed
-            if changes['migration']:
-                LOG.debug('Driver is not able to do retype because the volume '
-                          '%s has a snapshot which is forbidden to migrate.',
-                          volume['id'])
-                return False
-            # Reject if volume has snapshot when trying to
-            # turn on compression
-            if changes['compression_on']:
-                LOG.debug('Driver is not able to do retype because the volume '
-                          '%s has a snapshot which is forbidden to turn on '
-                          'compression.', volume['id'])
-                return False
+        # Reject if volume has snapshot when migration is needed
+        if migration and self._client.check_lun_has_snap(
+                self.get_lun_id(volume)):
+            LOG.debug('Driver is not able to do retype because the volume '
+                      'has snapshot which is forbidden to migrate.')
+            return False
 
-        if changes['migration']:
+        if migration:
             # Check whether the migration is valid
             is_valid, target_pool_name = (
                 self._is_valid_for_storage_assisted_migration(
                     volume, host, new_type))
             if is_valid:
-                specs = None
-                if new_type is not None:
-                    specs = new_type.get('extra_specs')
                 moved, model_update = self._migrate_volume(
-                    volume, target_pool_name, specs)
+                    volume, target_pool_name, new_type)
                 if moved:
                     return moved, model_update
                 else:
@@ -2725,48 +2332,37 @@ class EMCVnxCliBase(object):
                           'storage-assisted migration is not valid '
                           'in this situation.')
                 return False
-        if changes['compression_on']:
-            # Turn on compression feature on the volume
-            self._client.enable_or_disable_compression_on_lun(
-                volume['name'], 'on')
-        if changes['tiering']:
+        elif tiering_change:
             # Modify lun to change tiering policy
-            self._client.modify_lun_tiering_by_name(volume['name'],
-                                                    new_tiering)
-        return True
+            self._client.modify_lun_tiering(volume['name'], new_tiering)
+            return True
+        else:
+            return True
 
     def determine_changes_when_retype(self, volume, new_type, host):
-        changes = {
-            'migration': False,
-            'tiering': False,
-            'compression_on': False
-        }
+        migration = False
+        tiering_change = False
 
         old_specs = self.get_volumetype_extraspecs(volume)
-        old_provisioning, old_tiering = (
+        old_provisioning, old_tiering, old_snapcopy = (
             self._get_extra_spec_value(old_specs))
 
         new_specs = new_type['extra_specs']
-        new_provisioning, new_tiering = (
+        new_provisioning, new_tiering, new_snapcopy = (
             self._get_extra_spec_value(new_specs))
 
-        lun_type = self.extract_provider_location(
+        lun_type = self._extract_provider_location_for_lun(
             volume['provider_location'], 'type')
 
-        if volume['host'] != host['host']:
-            changes['migration'] = True
-        elif old_provisioning != new_provisioning:
-            if (old_provisioning in ['thin', 'thick'] and
-                    new_provisioning == 'compressed'):
-                changes['compression_on'] = True
-            else:
-                changes['migration'] = True
+        if volume['host'] != host['host'] or \
+                old_provisioning != new_provisioning:
+            migration = True
         if lun_type == 'smp':
-            changes['migration'] = True
+            migration = True
 
         if new_tiering != old_tiering:
-            changes['tiering'] = True
-        return changes
+            tiering_change = True
+        return migration, tiering_change
 
     def determine_all_enablers_exist(self, enablers):
         """Determine all wanted enablers whether exist."""
@@ -2780,11 +2376,11 @@ class EMCVnxCliBase(object):
         return True
 
     def _build_pool_stats(self, pool, pool_feature=None):
-        pool_stats = {
-            'pool_name': pool['pool_name'],
-            'total_capacity_gb': pool['total_capacity_gb'],
-            'provisioned_capacity_gb': (pool['provisioned_capacity_gb'])
-        }
+        pool_stats = {}
+        pool_stats['pool_name'] = pool['pool_name']
+        pool_stats['total_capacity_gb'] = pool['total_capacity_gb']
+        pool_stats['provisioned_capacity_gb'] = (
+            pool['provisioned_capacity_gb'])
 
         # Handle pool state Initializing, Ready, Faulted, Offline or Deleting.
         if pool['state'] in ('Initializing', 'Offline', 'Deleting'):
@@ -2850,17 +2446,7 @@ class EMCVnxCliBase(object):
             self.stats['consistencygroup_support'])
         pool_stats['max_over_subscription_ratio'] = (
             self.max_over_subscription_ratio)
-        # Add replication V2 support
-        targets = []
-        if self._mirror:
-            pool_stats['replication_enabled'] = True
-            pool_stats['replication_count'] = 1
-            pool_stats['replication_type'] = ['sync']
-            for device in self.configuration.replication_device:
-                targets.append(device['backend_id'])
-        else:
-            pool_stats['replication_enabled'] = False
-        pool_stats['replication_targets'] = targets
+
         return pool_stats
 
     def update_enabler_in_volume_stats(self):
@@ -2882,7 +2468,6 @@ class EMCVnxCliBase(object):
 
         self.stats['consistencygroup_support'] = (
             'True' if '-VNXSnapshots' in self.enablers else 'False')
-
         return self.stats
 
     def create_snapshot(self, snapshot):
@@ -2891,6 +2476,14 @@ class EMCVnxCliBase(object):
         snapshot_name = snapshot['name']
         volume_name = snapshot['volume_name']
         volume = snapshot['volume']
+        lun_type = self._extract_provider_location_for_lun(
+            volume['provider_location'], 'type')
+        if lun_type == 'smp':
+            msg = (_('Failed to create snapshot of %s because it is a '
+                     'snapshot mount point.')
+                   % volume_name)
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
         LOG.info(_LI('Create snapshot: %(snapshot)s: volume: %(volume)s'),
                  {'snapshot': snapshot_name,
                   'volume': volume_name})
@@ -2933,36 +2526,16 @@ class EMCVnxCliBase(object):
         1. Create a snap mount point (SMP) for the snapshot.
         2. Attach the snapshot to the SMP created in the first step.
         3. Create a temporary lun prepare for migration.
-           (Skipped if snapcopy='true')
+           (Skipped if copytype:snap='true')
         4. Start a migration between the SMP and the temp lun.
-           (Skipped if snapcopy='true')
+           (Skipped if copytype:snap='true')
         """
         self._volume_creation_check(volume)
         flow_name = 'create_volume_from_snapshot'
-        base_lun_name = self._get_base_lun_name(snapshot.volume)
         work_flow = linear_flow.Flow(flow_name)
         store_spec = self._construct_store_spec(volume, snapshot)
-        store_spec.update({'base_lun_name': base_lun_name})
         volume_metadata = self._get_volume_metadata(volume)
-        rep_update = {}
-        if self._is_snapcopy_enabled(volume):
-            if self._is_replication_enabled(volume):
-                err_msg = _("Unable to enable replication "
-                            "and snapcopy at the same time.")
-                raise exception.VolumeBackendAPIException(data=err_msg)
-            work_flow.add(CopySnapshotTask(),
-                          AllowReadWriteOnSnapshotTask(),
-                          CreateSMPTask(),
-                          AttachSnapTask())
-            flow_engine = taskflow.engines.load(work_flow,
-                                                store=store_spec)
-            flow_engine.run()
-            new_lun_id = flow_engine.storage.fetch('new_smp_id')
-            pl = self._build_provider_location(
-                new_lun_id, 'smp', base_lun_name)
-            volume_metadata['snapcopy'] = 'True'
-        else:
-            store_spec.update({'rate': self._get_migration_rate(volume)})
+        if store_spec['snapcopy'] == 'false':
             work_flow.add(CreateSMPTask(),
                           AttachSnapTask(),
                           CreateDestLunTask(),
@@ -2971,19 +2544,21 @@ class EMCVnxCliBase(object):
                                                 store=store_spec)
             flow_engine.run()
             new_lun_id = flow_engine.storage.fetch('new_lun_id')
-            pl = self._build_provider_location(
-                new_lun_id, 'lun', volume['name'])
-            volume_metadata['snapcopy'] = 'False'
-            # Setup LUN Replication/MirrorView between devices,
-            # secondary LUN will inherit properties from primary LUN.
-            rep_update, metadata_update = self.setup_lun_replication(
-                volume, new_lun_id,
-                store_spec['provisioning'],
-                store_spec['tiering'])
-            volume_metadata.update(metadata_update)
+            pl = self._build_provider_location(new_lun_id, 'lun')
+            volume_metadata['lun_type'] = 'lun'
+        else:
+            work_flow.add(CopySnapshotTask(),
+                          AllowReadWriteOnSnapshotTask(),
+                          CreateSMPTask(),
+                          AttachSnapTask())
+            flow_engine = taskflow.engines.load(work_flow,
+                                                store=store_spec)
+            flow_engine.run()
+            new_lun_id = flow_engine.storage.fetch('new_smp_id')
+            pl = self._build_provider_location(new_lun_id, 'smp')
+            volume_metadata['lun_type'] = 'smp'
         model_update = {'provider_location': pl,
                         'metadata': volume_metadata}
-        model_update.update(rep_update)
         volume_host = volume['host']
         host = vol_utils.extract_host(volume_host, 'backend')
         host_and_pool = vol_utils.append_host(host, store_spec['pool_name'])
@@ -2994,52 +2569,42 @@ class EMCVnxCliBase(object):
 
     def create_cloned_volume(self, volume, src_vref):
         """Creates a clone of the specified volume."""
+        lun_type = self._extract_provider_location_for_lun(
+            src_vref['provider_location'], 'type')
+        if lun_type == 'smp':
+            msg = (_('Failed to clone %s because it is a '
+                     'snapshot mount point.')
+                   % src_vref['name'])
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
         self._volume_creation_check(volume)
-        base_lun_name = self._get_base_lun_name(src_vref)
-        source_lun_id = self.get_lun_id(src_vref)
-        volume_size = volume['size']
         source_volume_name = src_vref['name']
+        source_lun_id = self.get_lun_id(src_vref)
+        volume_size = src_vref['size']
         consistencygroup_id = src_vref['consistencygroup_id']
-        cgsnapshot_name = None
+        snapshot_name = self._construct_tmp_snap_name(volume)
+        tmp_cgsnapshot_name = None
         if consistencygroup_id:
-            cgsnapshot_name = self._construct_snap_name(volume)
+            tmp_cgsnapshot_name = self.tmp_cgsnap_prefix + volume['id']
 
-        snapshot_name = self._construct_snap_name(volume)
         snapshot = {
             'name': snapshot_name,
             'volume_name': source_volume_name,
             'volume_size': volume_size,
             'volume': src_vref,
-            'cgsnapshot_id': cgsnapshot_name,
+            'cgsnapshot_id': tmp_cgsnapshot_name,
             'consistencygroup_id': consistencygroup_id,
-            'id': cgsnapshot_name
+            'id': tmp_cgsnapshot_name
         }
         flow_name = 'create_cloned_volume'
         store_spec = self._construct_store_spec(volume, snapshot)
+        volume_metadata = self._get_volume_metadata(volume)
         work_flow = linear_flow.Flow(flow_name)
+        if store_spec['snapcopy'] == 'true':
+            snapshot['name'] = self._construct_snap_as_vol_name(volume)
         store_spec.update({'snapshot': snapshot})
         store_spec.update({'source_lun_id': source_lun_id})
-        store_spec.update({'base_lun_name': base_lun_name})
-        volume_metadata = self._get_volume_metadata(volume)
-        rep_update = {}
-        if self._is_snapcopy_enabled(volume):
-            # snapcopy feature enabled
-            if self._is_replication_enabled(volume):
-                err_msg = _("Unable to enable replication "
-                            "and snapcopy at the same time.")
-                raise exception.VolumeBackendAPIException(data=err_msg)
-            work_flow.add(CreateSnapshotTask(),
-                          CreateSMPTask(),
-                          AttachSnapTask())
-            flow_engine = taskflow.engines.load(work_flow,
-                                                store=store_spec)
-            flow_engine.run()
-            new_lun_id = flow_engine.storage.fetch('new_smp_id')
-            pl = self._build_provider_location(
-                new_lun_id, 'smp', base_lun_name)
-        else:
-            # snapcopy feature disabled, need to migrate
-            store_spec.update({'rate': self._get_migration_rate(volume)})
+        if store_spec['snapcopy'] == 'false':
             work_flow.add(CreateSnapshotTask(),
                           CreateSMPTask(),
                           AttachSnapTask(),
@@ -3054,22 +2619,21 @@ class EMCVnxCliBase(object):
                 self._client.delete_cgsnapshot(snapshot['id'])
             else:
                 self.delete_snapshot(snapshot)
-            # After migration, volume's base lun is itself
-            pl = self._build_provider_location(
-                new_lun_id, 'lun', volume['name'])
-            volume_metadata['snapcopy'] = 'False'
-
-            # Setup LUN Replication/MirrorView between devices,
-            # secondary LUN will inherit properties from primary LUN.
-            rep_update, metadata_update = self.setup_lun_replication(
-                volume, new_lun_id,
-                store_spec['provisioning'],
-                store_spec['tiering'])
-            volume_metadata.update(metadata_update)
+            pl = self._build_provider_location(new_lun_id, 'lun')
+            volume_metadata['lun_type'] = 'lun'
+        else:
+            work_flow.add(CreateSnapshotTask(),
+                          CreateSMPTask(),
+                          AttachSnapTask())
+            flow_engine = taskflow.engines.load(work_flow,
+                                                store=store_spec)
+            flow_engine.run()
+            new_lun_id = flow_engine.storage.fetch('new_smp_id')
+            pl = self._build_provider_location(new_lun_id, 'smp')
+            volume_metadata['lun_type'] = 'smp'
 
         model_update = {'provider_location': pl,
                         'metadata': volume_metadata}
-        model_update.update(rep_update)
         volume_host = volume['host']
         host = vol_utils.extract_host(volume_host, 'backend')
         host_and_pool = vol_utils.append_host(host, store_spec['pool_name'])
@@ -3078,57 +2642,25 @@ class EMCVnxCliBase(object):
 
         return model_update
 
-    @staticmethod
-    def _get_volume_metadata(volume):
-        # Since versionedobjects is partially merged, metadata
-        # may come from 'volume_metadata' or 'metadata', here
-        # we need to take care both of them.
+    def _get_volume_metadata(self, volume):
         volume_metadata = {}
         if 'volume_metadata' in volume:
             for metadata in volume['volume_metadata']:
                 volume_metadata[metadata['key']] = metadata['value']
-            return volume_metadata
-        return volume['metadata'] if 'metadata' in volume else {}
-
-    def _is_snapcopy_enabled(self, volume):
-        meta = self._get_volume_metadata(volume)
-        return 'snapcopy' in meta and meta['snapcopy'].lower() == 'true'
-
-    def _get_base_lun_name(self, volume):
-        """Returns base LUN name for SMP or LUN."""
-        base_name = self.extract_provider_location(
-            volume['provider_location'], 'base_lun_name')
-        if base_name is None or base_name == 'None':
-            return volume['name']
-        return base_name
+        return volume_metadata
 
     def dumps_provider_location(self, pl_dict):
         return '|'.join([k + '^' + pl_dict[k] for k in pl_dict])
 
-    def _build_provider_location(self, lun_id, type='lun', base_lun_name=None):
-        """Builds provider_location for volume or snapshot.
-
-        :param lun_id: LUN ID in VNX
-        :param type: 'lun' or 'smp'
-        :param base_lun_name: primary LUN name,
-                              it will be used when creating snap lun
-        """
+    def _build_provider_location(self, lun_id, type='lun'):
+        """Builds provider_location for volume or snapshot."""
         pl_dict = {'system': self.get_array_serial(),
                    'type': type,
                    'id': six.text_type(lun_id),
-                   'base_lun_name': six.text_type(base_lun_name),
                    'version': self.VERSION}
         return self.dumps_provider_location(pl_dict)
 
-    def _update_provider_location(self, provider_location,
-                                  key=None, value=None):
-        pl_dict = {tp.split('^')[0]: tp.split('^')[1]
-                   for tp in provider_location.split('|')}
-        pl_dict[key] = value
-        return self.dumps_provider_location(pl_dict)
-
-    @staticmethod
-    def extract_provider_location(provider_location, key='id'):
+    def _extract_provider_location_for_lun(self, provider_location, key='id'):
         """Extracts value of the specified field from provider_location string.
 
         :param provider_location: provider_location string
@@ -3136,14 +2668,12 @@ class EMCVnxCliBase(object):
         :return: value of the specified field if it exists, otherwise,
                  None is returned
         """
-        ret = None
-        if provider_location is not None:
-            kvps = provider_location.split('|')
-            for kvp in kvps:
-                fields = kvp.split('^')
-                if len(fields) == 2 and fields[0] == key:
-                    ret = fields[1]
-        return ret
+
+        kvps = provider_location.split('|')
+        for kvp in kvps:
+            fields = kvp.split('^')
+            if len(fields) == 2 and fields[0] == key:
+                return fields[1]
 
     def _consistencygroup_creation_check(self, group):
         """Check extra spec for consistency group."""
@@ -3151,13 +2681,19 @@ class EMCVnxCliBase(object):
         if group.get('volume_type_id') is not None:
             for id in group['volume_type_id'].split(","):
                 if id:
-                    provisioning, tiering = (
+                    provisioning, tiering, snapcopy = (
                         self._get_extra_spec_value(
                             volume_types.get_volume_type_extra_specs(id)))
                     if provisioning == 'compressed':
                         msg = _("Failed to create consistency group %s "
                                 "because VNX consistency group cannot "
                                 "accept compressed LUNs as members."
+                                ) % group['id']
+                        raise exception.VolumeBackendAPIException(data=msg)
+                    if snapcopy == 'true':
+                        msg = _("Failed to create consistency group %s "
+                                "because VNX consistency group cannot "
+                                "enable copytype:snap=True on its members."
                                 ) % group['id']
                         raise exception.VolumeBackendAPIException(data=msg)
 
@@ -3169,7 +2705,7 @@ class EMCVnxCliBase(object):
 
         self._consistencygroup_creation_check(group)
 
-        model_update = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
+        model_update = {'status': 'available'}
         try:
             self._client.create_consistencygroup(group['id'])
         except Exception:
@@ -3179,12 +2715,12 @@ class EMCVnxCliBase(object):
 
         return model_update
 
-    def delete_consistencygroup(self, context, group, volumes):
+    def delete_consistencygroup(self, driver, context, group):
         """Deletes a consistency group."""
         cg_name = group['id']
+        volumes = driver.db.volume_get_all_by_group(context, group['id'])
 
         model_update = {}
-        volumes_model_update = []
         model_update['status'] = group['status']
         LOG.info(_LI('Start to delete consistency group: %(cg_name)s'),
                  {'cg_name': cg_name})
@@ -3197,20 +2733,19 @@ class EMCVnxCliBase(object):
         for volume_ref in volumes:
             try:
                 self._client.delete_lun(volume_ref['name'])
-                volumes_model_update.append(
-                    {'id': volume_ref['id'], 'status': 'deleted'})
+                volume_ref['status'] = 'deleted'
             except Exception:
-                volumes_model_update.append(
-                    {'id': volume_ref['id'], 'status': 'error_deleting'})
+                volume_ref['status'] = 'error_deleting'
+                model_update['status'] = 'error_deleting'
 
-        return model_update, volumes_model_update
+        return model_update, volumes
 
     def update_consistencygroup(self, context,
                                 group,
                                 add_volumes,
                                 remove_volumes):
         """Adds or removes LUN(s) to/from an existing consistency group"""
-        model_update = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
+        model_update = {'status': 'available'}
         cg_name = group['id']
         add_ids = [six.text_type(self.get_lun_id(vol))
                    for vol in add_volumes] if add_volumes else []
@@ -3240,22 +2775,21 @@ class EMCVnxCliBase(object):
                                                           ids_later)
         return model_update, None, None
 
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def create_cgsnapshot(self, driver, context, cgsnapshot):
         """Creates a cgsnapshot (snap group)."""
         cgsnapshot_id = cgsnapshot['id']
+        snapshots = objects.SnapshotList().get_all_for_cgsnapshot(
+            context, cgsnapshot_id)
 
         model_update = {}
-        snapshots_model_update = []
         LOG.info(_LI('Start to create cgsnapshot for consistency group'
                      ': %(group_name)s'),
                  {'group_name': cgsnapshot['consistencygroup_id']})
 
         try:
-            self._client.create_cgsnapshot(cgsnapshot['consistencygroup_id'],
-                                           cgsnapshot['id'])
+            self._client.create_cgsnapshot(cgsnapshot)
             for snapshot in snapshots:
-                snapshots_model_update.append(
-                    {'id': snapshot['id'], 'status': 'available'})
+                snapshot['status'] = 'available'
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.error(_LE('Create cg snapshot %s failed.'),
@@ -3263,14 +2797,15 @@ class EMCVnxCliBase(object):
 
         model_update['status'] = 'available'
 
-        return model_update, snapshots_model_update
+        return model_update, snapshots
 
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def delete_cgsnapshot(self, driver, context, cgsnapshot):
         """Deletes a cgsnapshot (snap group)."""
         cgsnapshot_id = cgsnapshot['id']
+        snapshots = objects.SnapshotList().get_all_for_cgsnapshot(
+            context, cgsnapshot_id)
 
         model_update = {}
-        snapshots_model_update = []
         model_update['status'] = cgsnapshot['status']
         LOG.info(_LI('Delete cgsnapshot %(snap_name)s for consistency group: '
                      '%(group_name)s'), {'snap_name': cgsnapshot['id'],
@@ -3279,21 +2814,20 @@ class EMCVnxCliBase(object):
         try:
             self._client.delete_cgsnapshot(cgsnapshot['id'])
             for snapshot in snapshots:
-                snapshots_model_update.append(
-                    {'id': snapshot['id'], 'status': 'deleted'})
+                snapshot['status'] = 'deleted'
         except Exception:
             with excutils.save_and_reraise_exception():
                 LOG.error(_LE('Delete cgsnapshot %s failed.'),
                           cgsnapshot_id)
 
-        return model_update, snapshots_model_update
+        return model_update, snapshots
 
     def get_lun_id(self, volume):
         lun_id = None
         try:
             provider_location = volume.get('provider_location')
             if provider_location:
-                lun_id = self.extract_provider_location(
+                lun_id = self._extract_provider_location_for_lun(
                     provider_location,
                     'id')
             if lun_id:
@@ -3366,9 +2900,11 @@ class EMCVnxCliBase(object):
         wwnns = connector['wwnns']
         wwpns = connector['wwpns']
         wwns = [(node + port).upper() for node, port in zip(wwnns, wwpns)]
-        return [re.sub(r'\S\S', lambda m: m.group(0) + ':',
-                       wwn, len(wwn) // 2 - 1)
-                for wwn in wwns]
+        return map(lambda wwn: re.sub(r'\S\S',
+                                      lambda m: m.group(0) + ':',
+                                      wwn,
+                                      len(wwn) / 2 - 1),
+                   wwns)
 
     def _exec_command_setpath(self, initiator_uid, sp, port_id,
                               ip, host, vport_id=None):
@@ -3728,7 +3264,6 @@ class EMCVnxCliBase(object):
             return self.assure_host_access(
                 volume, connector)
 
-        data = {}
         if self.protocol == 'iSCSI':
             (device_number, sg_data) = do_initialize_connection()
             iscsi_properties = self.vnx_get_iscsi_properties(
@@ -3849,11 +3384,11 @@ class EMCVnxCliBase(object):
         if 'source-id' in existing_ref:
             data = self._client.get_lun_by_id(
                 existing_ref['source-id'],
-                properties=VNXLunProperties.lun_with_pool)
+                properties=self._client.LUN_WITH_POOL)
         elif 'source-name' in existing_ref:
             data = self._client.get_lun_by_name(
                 existing_ref['source-name'],
-                properties=VNXLunProperties.lun_with_pool)
+                properties=self._client.LUN_WITH_POOL)
         else:
             reason = _('Reference must contain source-id or source-name key.')
             raise exception.ManageExistingInvalidReference(
@@ -3880,73 +3415,6 @@ class EMCVnxCliBase(object):
             'source-name':<lun name in VNX>
         }
         """
-        client = self._client
-
-        lun_id = self._get_lun_id(manage_existing_ref)
-
-        specs = self.get_volumetype_extraspecs(volume)
-        LOG.debug('Specs of the volume is: %s.', specs)
-
-        host = volume['host']
-        LOG.debug('Host of the volume is: %s.', host)
-
-        tar_pool = vol_utils.extract_host(volume['host'], 'pool')
-        LOG.debug("Target pool of LUN to manage is: %s.", tar_pool)
-
-        tar_type, tar_tier = self._get_extra_spec_value(specs)
-        vnx_lun = self._get_lun_pool_and_type(lun_id)
-        LOG.debug("LUN to manage: %s.", vnx_lun)
-        LOG.debug("Target info: pool: %(pool)s, type: %(type)s, "
-                  "tier: %(tier)s.", {'pool': tar_pool,
-                                      'type': tar_type,
-                                      'tier': tar_tier})
-
-        do_migration = (tar_type is not None and
-                        tar_type != vnx_lun.provision or
-                        tar_pool != vnx_lun.pool_name)
-        change_tier = (tar_tier is not None and
-                       not do_migration and
-                       tar_tier != vnx_lun.tier)
-
-        reason = None
-        if do_migration:
-            LOG.debug("Need migration during manage.")
-            if client.check_lun_has_snap(lun_id):
-                reason = _('Driver is not able to do retype because'
-                           ' the volume (LUN {}) has snapshot which is '
-                           'forbidden to migrate.').format(lun_id)
-            else:
-                volume['size'] = vnx_lun.capacity
-                moved, empty = self._migrate_volume(volume,
-                                                    tar_pool,
-                                                    specs,
-                                                    src_id=lun_id)
-                if not moved:
-                    reason = _('Storage-assisted migration failed during '
-                               'manage volume.')
-
-        if reason is None and change_tier:
-            LOG.debug('Change LUN tier policy to: %s.', tar_tier)
-            client.modify_lun_tiering_by_id(lun_id, tar_tier)
-
-        if reason is not None:
-            raise exception.ManageExistingVolumeTypeMismatch(reason=reason)
-        else:
-            client.rename_lun(lun_id, volume['name'])
-
-        location = self._build_provider_location(lun_id, 'lun', volume['name'])
-        return {'provider_location': location}
-
-    def _get_lun_pool_and_type(self, lun_id):
-        client = self._client
-        data = client.get_lun_by_id(lun_id,
-                                    VNXLunProperties.get_all(),
-                                    poll=False)
-        lun = VNXLun()
-        lun.update(data)
-        return lun
-
-    def _get_lun_id(self, manage_existing_ref):
         if 'source-id' in manage_existing_ref:
             lun_id = manage_existing_ref['source-id']
         elif 'source-name' in manage_existing_ref:
@@ -3956,7 +3424,10 @@ class EMCVnxCliBase(object):
             reason = _('Reference must contain source-id or source-name key.')
             raise exception.ManageExistingInvalidReference(
                 existing_ref=manage_existing_ref, reason=reason)
-        return lun_id
+        self._client.rename_lun(lun_id, volume['name'])
+        model_update = {'provider_location':
+                        self._build_provider_location(lun_id)}
+        return model_update
 
     def get_login_ports(self, connector, io_ports=None):
         return self._client.get_login_ports(connector['host'],
@@ -3991,327 +3462,60 @@ class EMCVnxCliBase(object):
 
         return specs
 
-    def failover_host(self, context, volumes, secondary_backend_id):
-        """Fails over the volume back and forth.
-
-        Driver needs to update following info for this volume:
-        2. provider_location: update serial number and lun id
-        """
-        volume_update_list = []
-
-        if secondary_backend_id != 'default':
-            rep_status = 'failed-over'
-            backend_id = (
-                self.configuration.replication_device[0]['backend_id'])
-            if secondary_backend_id != backend_id:
-                msg = (_('Invalid secondary_backend_id specified. '
-                         'Valid backend id is %s.') % backend_id)
-                LOG.error(msg)
-                raise exception.VolumeBackendAPIException(data=msg)
-        else:
-            rep_status = 'enabled'
-
-        def failover_one(volume, new_status):
-            rep_data = json.loads(volume['replication_driver_data'])
-            is_primary = rep_data['is_primary']
-            mirror_name = self._construct_mirror_name(volume)
-            mirror_view = self._get_mirror_view(volume)
-            remote_client = mirror_view._secondary_client
-
-            provider_location = volume['provider_location']
-            try:
-                mirror_view.promote_image(mirror_name)
-            except exception.EMCVnxCLICmdError as ex:
-                msg = _LE(
-                    'Failed to failover volume %(volume_id)s '
-                    'to %(target)s: %(error)s.')
-                LOG.error(msg, {'volume_id': volume.id,
-                                'target': secondary_backend_id,
-                                'error': ex},)
-                new_status = 'error'
-            else:
-                rep_data.update({'is_primary': not is_primary})
-                # Transfer ownership to secondary_backend_id and
-                # update provider_location field
-                provider_location = self._update_provider_location(
-                    provider_location,
-                    'system', remote_client.get_array_serial()['array_serial'])
-                provider_location = self._update_provider_location(
-                    provider_location,
-                    'id',
-                    six.text_type(
-                        remote_client.get_lun_by_name(volume.name)['lun_id'])
-                )
-            model_update = {'volume_id': volume.id,
-                            'updates':
-                                {'replication_driver_data':
-                                    json.dumps(rep_data),
-                                 'replication_status': new_status,
-                                 'provider_location': provider_location}}
-            volume_update_list.append(model_update)
-        for volume in volumes:
-            if self._is_replication_enabled(volume):
-                failover_one(volume, rep_status)
-            else:
-                volume_update_list.append({
-                    'volume_id': volume.id,
-                    'updates': {'status': 'error'}})
-        return secondary_backend_id, volume_update_list
-
-    def _is_replication_enabled(self, volume):
-        """Return True if replication extra specs is specified.
-
-        If replication_enabled exists and value is '<is> True', return True.
-        If replication exists and value is 'True', return True.
-        Otherwise, return False.
-        """
-        specs = self.get_volumetype_extraspecs(volume)
-        return specs and specs.get('replication_enabled') == '<is> True'
-
-    def setup_lun_replication(self, volume, primary_lun_id,
-                              provisioning, tiering):
-        """Setup replication for LUN, this only happens in primary system."""
-        rep_update = {'replication_driver_data': None,
-                      'replication_status': 'disabled'}
-        metadata_update = {}
-        if self._is_replication_enabled(volume):
-            LOG.debug('Starting setup replication '
-                      'for volume: %s.', volume.id)
-            lun_size = volume['size']
-            mirror_name = self._construct_mirror_name(volume)
-            pool_name = vol_utils.extract_host(volume.host, 'pool')
-            self._mirror.create_mirror_workflow(
-                mirror_name, primary_lun_id, pool_name,
-                volume.name, lun_size,
-                provisioning, tiering)
-
-            LOG.info(_LI('Successfully setup replication for %s.'), volume.id)
-            rep_update.update({'replication_driver_data':
-                              self.__class__._build_replication_driver_data(
-                                  self.configuration),
-                               'replication_status': 'enabled'})
-            metadata_update = {
-                'system': self.get_array_serial()}
-        return rep_update, metadata_update
-
-    def cleanup_lun_replication(self, volume):
-        if self._is_replication_enabled(volume):
-            LOG.debug('Starting cleanup replication form volume: '
-                      '%s.', volume.id)
-            mirror_name = self._construct_mirror_name(volume)
-            mirror_view = self._get_mirror_view(volume)
-            mv = mirror_view.get_image(mirror_name)
-            if mv:
-                mirror_view.destroy_mirror_view(mirror_name, volume.name, mv)
-
-    def _get_mirror_view(self, volume):
-        """Determines where to build a Mirror View operator."""
-        if volume['replication_driver_data']:
-            rep_data = json.loads(volume['replication_driver_data'])
-            is_primary = rep_data['is_primary']
-        else:
-            is_primary = True
-        if is_primary:
-            # if on primary, promote to configured array in conf
-            mirror_view = self._mirror
-        else:
-            # else promote to array according to volume data
-            mirror_view = self._build_mirror_view(volume)
-        return mirror_view
-
-    @staticmethod
-    def _build_replication_driver_data(configuration):
-        """Builds driver specific data for replication.
-
-        This data will be used by secondary backend to connect
-        primary device.
-        """
-        driver_data = dict()
-        driver_data['san_ip'] = configuration.san_ip
-        driver_data['san_login'] = configuration.san_login
-        driver_data['san_password'] = configuration.san_password
-        driver_data['san_secondary_ip'] = configuration.san_secondary_ip
-        driver_data['storage_vnx_authentication_type'] = (
-            configuration.storage_vnx_authentication_type)
-        driver_data['storage_vnx_security_file_dir'] = (
-            configuration.storage_vnx_security_file_dir)
-        driver_data['is_primary'] = True
-        return json.dumps(driver_data)
-
-    def _build_client(self, active_backend_id=None):
-        """Builds a client pointing to the right VNX."""
-        if not active_backend_id:
-            return CommandLineHelper(self.configuration)
-        else:
-            configuration = self.configuration
-            if not configuration.replication_device:
-                err_msg = (
-                    _('replication_device should be configured '
-                      'on backend: %s.') % configuration.config_group)
-                LOG.error(err_msg)
-                raise exception.VolumeBackendAPIException(data=err_msg)
-            current_target = None
-            for target in configuration.replication_device:
-                if target['backend_id'] == active_backend_id:
-                    current_target = target
-                    break
-            if not current_target:
-                err_msg = (
-                    _('replication_device with backend_id [%s] is missing.')
-                    % active_backend_id)
-                LOG.error(err_msg)
-                raise exception.VolumeBackendAPIException(data=err_msg)
-            target_conf = copy.copy(configuration)
-            for key in self.REPLICATION_KEYS:
-                if key in current_target:
-                    setattr(target_conf, key, current_target[key])
-            return CommandLineHelper(target_conf)
-
-    def _build_mirror_view(self, volume=None):
-        """Builds a client for remote storage device.
-
-        Currently, only support one remote, managed device.
-        :param volume: if volume is not None, then build a remote client
-                       from volume's replication_driver_data.
-        """
-        configuration = self.configuration
-        remote_info = None
-        if volume:
-            if volume['replication_driver_data']:
-                remote_info = json.loads(volume['replication_driver_data'])
-            else:
-                LOG.warning(
-                    _LW('No replication info from this volume: %s.'),
-                    volume.id)
-                return None
-        else:
-            if not configuration.replication_device:
-                LOG.info(_LI('Replication is not configured on backend: %s.'),
-                         configuration.config_group)
-                return None
-            remote_info = configuration.replication_device[0]
-        # Copy info to replica configuration for remote client
-        replica_conf = copy.copy(configuration)
-        for key in self.REPLICATION_KEYS:
-            if key in remote_info:
-                setattr(replica_conf, key, remote_info[key])
-        _remote_client = CommandLineHelper(replica_conf)
-        _mirror = MirrorView(self._client, _remote_client)
-        return _mirror
-
     def get_pool(self, volume):
         """Returns the pool name of a volume."""
 
         data = self._client.get_lun_by_name(volume['name'],
-                                            [VNXLunProperties.LUN_POOL],
+                                            [self._client.LUN_POOL],
                                             poll=False)
-        return data.get(VNXLunProperties.LUN_POOL.key)
+        return data.get(self._client.LUN_POOL.key)
 
     def unmanage(self, volume):
         """Unmanages a volume"""
         pass
 
     def create_consistencygroup_from_src(self, context, group, volumes,
-                                         cgsnapshot=None, snapshots=None,
-                                         source_cg=None, source_vols=None):
+                                         cgsnapshot=None, snapshots=None):
         """Creates a consistency group from cgsnapshot."""
-        if cgsnapshot and snapshots and not source_cg:
-            return self._create_consisgroup_from_cgsnapshot(
-                group, volumes, cgsnapshot, snapshots)
-        elif source_cg and source_vols and not cgsnapshot:
-            return self._clone_consisgroup(
-                group, volumes, source_cg, source_vols)
-        else:
-            msg = _("create_consistencygroup_from_src supports a "
-                    "cgsnapshot source or a consistency group source. "
-                    "Multiple sources cannot be used.")
-            raise exception.InvalidInput(reason=msg)
 
-    def _clone_consisgroup(self, group, volumes, source_cg, source_vols):
-        temp_cgsnapshot_name = 'temp_snapshot_for_{}'.format(group.id)
-        store_spec = {
-            'group': group,
-            'snapshot': {'id': temp_cgsnapshot_name,
-                         'consistencygroup_id': source_cg.id},
-            'new_snap_name': temp_cgsnapshot_name,
-            'source_lun_id': None,
-            'client': self._client
-        }
-        flow_name = 'clone_consisgroup'
-        snap_build_tasks = [CreateSnapshotTask()]
+        if not cgsnapshot or not snapshots:
+            msg = _("create_consistencygroup_from_src only supports a "
+                    "cgsnapshot source, other sources cannot be used.")
+            raise exception.InvalidInput(msg)
 
-        volume_model_updates = self._create_cg_from_cgsnap_use_workflow(
-            flow_name, snap_build_tasks, store_spec,
-            volumes, source_vols)
-
-        self._delete_temp_cgsnap(temp_cgsnapshot_name)
-
-        LOG.info(_LI('Consistency group %(cg)s is created successfully.'),
-                 {'cg': group.id})
-
-        return None, volume_model_updates
-
-    def _create_consisgroup_from_cgsnapshot(self, group, volumes,
-                                            cgsnapshot, snapshots):
-        flow_name = 'create_consisgroup_from_cgsnapshot'
-        copied_snapshot_name = 'temp_snapshot_for_%s' % group.id
+        flow_name = 'create_consistencygroup_from_cgsnapshot'
+        work_flow = linear_flow.Flow(flow_name)
+        copied_snapshot_name = 'temp_snapshot_for_%s' % group['id']
         store_spec = {
             'group': group,
             'src_snap_name': cgsnapshot['id'],
-            'new_snap_name': copied_snapshot_name,
+            'snap_name': copied_snapshot_name,
             'client': self._client
         }
 
-        snap_build_tasks = [CopySnapshotTask(),
-                            AllowReadWriteOnSnapshotTask()]
+        work_flow.add(CopySnapshotTask(),
+                      AllowReadWriteOnSnapshotTask())
 
-        src_vols = map(lambda snap: snap.volume, snapshots)
-
-        volume_model_updates = self._create_cg_from_cgsnap_use_workflow(
-            flow_name, snap_build_tasks, store_spec, volumes, src_vols)
-
-        self._delete_temp_cgsnap(copied_snapshot_name)
-
-        LOG.info(_LI('Consistency group %(cg)s is created successfully.'),
-                 {'cg': group.id})
-
-        return None, volume_model_updates
-
-    def _delete_temp_cgsnap(self, snap):
-        try:
-            self._client.delete_cgsnapshot(snap)
-        except exception.EMCVnxCLICmdError as ex:
-            LOG.warning(_LW('Delete the temporary cgsnapshot %(name)s failed. '
-                            'This temporary cgsnapshot can be deleted '
-                            'manually. '
-                            'Message: %(msg)s'),
-                        {'name': snap,
-                         'msg': ex.kwargs['out']})
-
-    def _create_cg_from_cgsnap_use_workflow(self, flow_name, snap_build_tasks,
-                                            store_spec, volumes, source_vols):
-        work_flow = linear_flow.Flow(flow_name)
-        work_flow.add(*snap_build_tasks)
         # Add tasks for each volumes in the consistency group
         lun_id_key_template = 'new_lun_id_%s'
         lun_data_key_template = 'vol_%s'
         volume_model_updates = []
 
-        for i, (volume, src_volume) in enumerate(zip(volumes, source_vols)):
+        for i, (volume, snap) in enumerate(zip(volumes, snapshots)):
             specs = self.get_volumetype_extraspecs(volume)
-            provisioning, tiering = (
+            provisioning, tiering, snapcopy = (
                 self._get_and_validate_extra_specs(specs))
-            pool_name = self.get_target_storagepool(volume, src_volume)
-            base_lun_name = self._get_base_lun_name(src_volume)
+            pool_name = self. get_target_storagepool(volume, snap['volume'])
             sub_store_spec = {
                 'volume': volume,
-                'base_lun_name': base_lun_name,
+                'source_vol_name': snap['volume_name'],
                 'pool_name': pool_name,
                 'dest_vol_name': volume['name'] + '_dest',
                 'volume_size': volume['size'],
                 'provisioning': provisioning,
                 'tiering': tiering,
                 'ignore_pool_full_threshold': self.ignore_pool_full_threshold,
+                'snapcopy': snapcopy
             }
             work_flow.add(
                 CreateSMPTask(name="CreateSMPTask%s" % i,
@@ -4319,10 +3523,10 @@ class EMCVnxCliBase(object):
                 AttachSnapTask(name="AttachSnapTask%s" % i,
                                inject=sub_store_spec),
                 CreateDestLunTask(name="CreateDestLunTask%s" % i,
-                                  provides=lun_data_key_template % i,
+                                  providers=lun_data_key_template % i,
                                   inject=sub_store_spec),
                 MigrateLunTask(name="MigrateLunTask%s" % i,
-                               provides=lun_id_key_template % i,
+                               providers=lun_id_key_template % i,
                                inject=sub_store_spec,
                                rebind={'lun_data': lun_data_key_template % i},
                                wait_for_completion=False))
@@ -4342,11 +3546,26 @@ class EMCVnxCliBase(object):
         flow_engine = taskflow.engines.load(work_flow, store=store_spec)
         flow_engine.run()
 
+        # Delete copied snapshot
+        try:
+            self._client.delete_cgsnapshot(copied_snapshot_name)
+        except exception.EMCVnxCLICmdError as ex:
+            LOG.warning(_LW('Delete the temporary cgsnapshot %(name)s failed. '
+                            'This temporary cgsnapshot can be deleted '
+                            'manually. Consistency group %(cg)s is created '
+                            'successfully from cgsnapshot %(cgsnapshot)s. '
+                            'Message: %(msg)s'),
+                        {'name': copied_snapshot_name,
+                         'cg': group['id'],
+                         'cgsnapshot': cgsnapshot['id'],
+                         'msg': ex.kwargs['out']})
+
         for i, update in enumerate(volume_model_updates):
             new_lun_id = flow_engine.storage.fetch(lun_id_key_template % i)
             update['provider_location'] = (
                 self._build_provider_location(new_lun_id))
-        return volume_model_updates
+
+        return None, volume_model_updates
 
     def get_target_storagepool(self, volume, source_volume=None):
         pool = vol_utils.extract_host(volume['host'], 'pool')
@@ -4365,21 +3584,21 @@ class EMCVnxCliBase(object):
         provider_location = source_volume.get('provider_location')
 
         if (not provider_location or
-                not self.extract_provider_location(provider_location,
-                                                   'version')):
+                not self._extract_provider_location_for_lun(provider_location,
+                                                            'version')):
             LOG.warning(_LW("The source volume is a legacy volume. "
                             "Create volume in the pool where the source "
                             "volume %s is created."),
                         source_volume['name'])
             data = self._client.get_lun_by_name(source_volume['name'],
-                                                [VNXLunProperties.LUN_POOL],
+                                                [self._client.LUN_POOL],
                                                 poll=False)
             if data is None:
                 msg = (_("Failed to find storage pool for source volume %s.")
                        % source_volume['name'])
                 LOG.error(msg)
                 raise exception.VolumeBackendAPIException(data=msg)
-            pool = data[VNXLunProperties.LUN_POOL.key]
+            pool = data[self._client.LUN_POOL.key]
 
         if self.storage_pools and pool not in self.storage_pools:
             msg = (_("The source volume %s is not in the pool which "
@@ -4396,13 +3615,13 @@ class EMCVnxCliBase(object):
             self.iscsi_targets = self._client.get_iscsi_targets(
                 poll=False, io_ports=self.io_ports)
 
-        properties = [VNXPoolProperties.POOL_FREE_CAPACITY,
-                      VNXPoolProperties.POOL_TOTAL_CAPACITY,
-                      VNXPoolProperties.POOL_STATE,
-                      VNXPoolProperties.POOL_SUBSCRIBED_CAPACITY,
-                      VNXPoolProperties.POOL_FULL_THRESHOLD]
+        properties = [self._client.POOL_FREE_CAPACITY,
+                      self._client.POOL_TOTAL_CAPACITY,
+                      self._client.POOL_STATE,
+                      self._client.POOL_SUBSCRIBED_CAPACITY,
+                      self._client.POOL_FULL_THRESHOLD]
         if '-FASTCache' in self.enablers:
-            properties.append(VNXPoolProperties.POOL_FAST_CACHE)
+            properties.append(self._client.POOL_FAST_CACHE)
 
         pool_list = self._client.get_pool_list(properties, False)
 
@@ -4411,16 +3630,15 @@ class EMCVnxCliBase(object):
                                pool_list)
         pool_feature = (self._client.get_pool_feature_properties(poll=False)
                         if self.check_max_pool_luns_threshold else None)
-        self.stats['pools'] = [self._build_pool_stats(pool, pool_feature)
-                               for pool in pool_list]
+        self.stats['pools'] = map(
+            lambda pool: self._build_pool_stats(pool, pool_feature), pool_list)
 
         return self.stats
 
 
-def getEMCVnxCli(prtcl, configuration=None, active_backend_id=None):
+def getEMCVnxCli(prtcl, configuration=None):
     configuration.append_config_values(loc_opts)
-    return EMCVnxCliBase(prtcl, configuration=configuration,
-                         active_backend_id=active_backend_id)
+    return EMCVnxCliBase(prtcl, configuration=configuration)
 
 
 class CreateSMPTask(task.Task):
@@ -4433,9 +3651,9 @@ class CreateSMPTask(task.Task):
                                             provides='new_smp_id',
                                             inject=inject)
 
-    def execute(self, client, volume, base_lun_name, *args, **kwargs):
+    def execute(self, client, volume, source_vol_name, *args, **kwargs):
         LOG.debug('CreateSMPTask.execute')
-        client.create_mount_point(base_lun_name, volume['name'])
+        client.create_mount_point(source_vol_name, volume['name'])
         return client.get_lun_by_name(volume['name'])['lun_id']
 
     def revert(self, result, client, volume, *args, **kwargs):
@@ -4453,10 +3671,10 @@ class AttachSnapTask(task.Task):
 
     Reversion strategy: Detach the SMP.
     """
-    def execute(self, client, volume, new_snap_name,
+    def execute(self, client, volume, snapcopy, snap_name,
                 *args, **kwargs):
         LOG.debug('AttachSnapTask.execute')
-        client.attach_mount_point(volume['name'], new_snap_name)
+        client.attach_mount_point(volume['name'], snap_name)
 
     def revert(self, result, client, volume, *args, **kwargs):
         LOG.debug('AttachSnapTask.revert')
@@ -4481,9 +3699,9 @@ class CreateDestLunTask(task.Task):
 
     Reversion strategy: Delete the temp destination lun.
     """
-    def __init__(self, name=None, provides='lun_data', inject=None):
+    def __init__(self, name=None, providers='lun_data', inject=None):
         super(CreateDestLunTask, self).__init__(name=name,
-                                                provides=provides,
+                                                provides=providers,
                                                 inject=inject)
 
     def execute(self, client, pool_name, dest_vol_name, volume_size,
@@ -4511,24 +3729,23 @@ class MigrateLunTask(task.Task):
 
     Reversion strategy: None
     """
-    def __init__(self, name=None, provides='new_lun_id', inject=None,
+    def __init__(self, name=None, providers='new_lun_id', inject=None,
                  rebind=None, wait_for_completion=True):
         super(MigrateLunTask, self).__init__(name=name,
-                                             provides=provides,
+                                             provides=providers,
                                              inject=inject,
                                              rebind=rebind)
         self.wait_for_completion = wait_for_completion
 
-    def execute(self, client, new_smp_id, lun_data, rate=VNXMigrationRate.HIGH,
-                *args, **kwargs):
+    def execute(self, client, new_smp_id, lun_data, *args, **kwargs):
         LOG.debug('MigrateLunTask.execute')
         dest_vol_lun_id = lun_data['lun_id']
+
         LOG.debug('Migrating Mount Point Volume ID: %s', new_smp_id)
         if self.wait_for_completion:
             migrated = client.migrate_lun_with_verification(new_smp_id,
                                                             dest_vol_lun_id,
-                                                            None,
-                                                            rate)
+                                                            None)
         else:
             migrated = client.migrate_lun_without_verification(
                 new_smp_id, dest_vol_lun_id, None)
@@ -4554,8 +3771,7 @@ class CreateSnapshotTask(task.Task):
         LOG.debug('CreateSnapshotTask.execute')
         # Create temp Snapshot
         if snapshot['consistencygroup_id']:
-            client.create_cgsnapshot(snapshot['consistencygroup_id'],
-                                     snapshot['id'])
+            client.create_cgsnapshot(snapshot)
         else:
             snapshot_name = snapshot['name']
             volume_name = snapshot['volume_name']
@@ -4586,12 +3802,12 @@ class CopySnapshotTask(task.Task):
 
     Reversion Strategy: Delete the copied snapshot/cgsnapshot
     """
-    def execute(self, client, src_snap_name, new_snap_name, *args, **kwargs):
+    def execute(self, client, src_snap_name, snap_name, *args, **kwargs):
         LOG.debug('CopySnapshotTask.execute')
         client.copy_snapshot(src_snap_name,
-                             new_snap_name)
+                             snap_name)
 
-    def revert(self, result, client, src_snap_name, new_snap_name,
+    def revert(self, result, client, src_snap_name, snap_name,
                *args, **kwargs):
         LOG.debug('CopySnapshotTask.revert')
         if isinstance(result, failure.Failure):
@@ -4600,23 +3816,23 @@ class CopySnapshotTask(task.Task):
             LOG.warning(_LW('CopySnapshotTask.revert: delete the '
                             'copied snapshot %(new_name)s of '
                             '%(source_name)s.'),
-                        {'new_name': new_snap_name,
+                        {'new_name': snap_name,
                          'source_name': src_snap_name})
-            client.delete_snapshot(new_snap_name)
+            client.delete_snapshot(snap_name)
 
 
 class AllowReadWriteOnSnapshotTask(task.Task):
     """Task to modify a Snapshot to allow ReadWrite on it."""
-    def execute(self, client, new_snap_name, *args, **kwargs):
+    def execute(self, client, snap_name, *args, **kwargs):
         LOG.debug('AllowReadWriteOnSnapshotTask.execute')
-        client.allow_snapshot_readwrite_and_autodelete(new_snap_name)
+        client.allow_snapshot_readwrite_and_autodelete(snap_name)
 
 
 class CreateConsistencyGroupTask(task.Task):
     """Task to create a consistency group."""
     def __init__(self, lun_id_key_template, num_of_members):
-        self.lun_id_keys = sorted(set(
-            [lun_id_key_template % i for i in range(num_of_members)]))
+        self.lun_id_keys = set(
+            [lun_id_key_template % i for i in range(num_of_members)])
         super(CreateConsistencyGroupTask, self).__init__(
             requires=self.lun_id_keys)
 
@@ -4630,8 +3846,8 @@ class CreateConsistencyGroupTask(task.Task):
 class WaitMigrationsCompleteTask(task.Task):
     """Task to wait migrations to be completed."""
     def __init__(self, lun_id_key_template, num_of_members):
-        self.lun_id_keys = sorted(set(
-            [lun_id_key_template % i for i in range(num_of_members)]))
+        self.lun_id_keys = set(
+            [lun_id_key_template % i for i in range(num_of_members)])
         super(WaitMigrationsCompleteTask, self).__init__(
             requires=self.lun_id_keys)
 
@@ -4643,359 +3859,3 @@ class WaitMigrationsCompleteTask(task.Task):
             if not migrated:
                 msg = _("Migrate volume %(src)s failed.") % {'src': lun_id}
                 raise exception.VolumeBackendAPIException(data=msg)
-
-
-class MirrorView(object):
-    """MirrorView synchronous/asynchronous operations.
-
-    This class is to support operations for volume replication.
-    Each operation should ensure commands are sent to correct targeting device.
-
-    NOTE: currently, only synchronous is supported.
-    """
-    SYNCHRONIZE_MODE = ['sync']
-
-    SYNCHRONIZED_STATE = 'Synchronized'
-    CONSISTENT_STATE = 'Consistent'
-
-    def __init__(self, client, secondary_client, mode='sync'):
-        """Caller needs to initialize MirrorView via this method.
-
-        :param client: client connecting to primary system
-        :param secondary_client: client connecting to secondary system
-        :param mode: only 'sync' is allowed
-        """
-        self._client = client
-        self._secondary_client = secondary_client
-        if mode not in self.SYNCHRONIZE_MODE:
-            msg = _('Invalid synchronize mode specified, allowed '
-                    'mode is %s.') % self.SYNCHRONIZE_MODE
-            raise exception.VolumeBackendAPIException(
-                data=msg)
-        self.mode = '-sync'
-
-    def create_mirror_workflow(self, mirror_name, lun_id, pool_name,
-                               lun_name, lun_size, provisioning, tiering):
-        """Creates mirror view for LUN."""
-        store_spec = {'mirror': self}
-        work_flow = self._get_create_mirror_flow(
-            mirror_name, lun_id, pool_name,
-            lun_name, lun_size, provisioning, tiering)
-        flow_engine = taskflow.engines.load(work_flow, store=store_spec)
-        flow_engine.run()
-
-    def destroy_mirror_view(self, mirror_name, lun_name, mv=None):
-        self.fracture_image(mirror_name, mv)
-        self.remove_image(mirror_name, mv)
-        self.destroy_mirror(mirror_name)
-        self.delete_secondary_lun(lun_name)
-
-    def _get_create_mirror_flow(self, mirror_name, lun_id, pool_name,
-                                lun_name, lun_size, provisioning, tiering):
-        """Gets mirror create flow."""
-        flow_name = 'create_mirror_view'
-        work_flow = linear_flow.Flow(flow_name)
-        work_flow.add(MirrorCreateTask(mirror_name, lun_id),
-                      MirrorSecLunCreateTask(pool_name, lun_name, lun_size,
-                                             provisioning, tiering),
-                      MirrorAddImageTask(mirror_name))
-        return work_flow
-
-    def create_mirror(self, name, primary_lun_id, poll=False):
-        command_create = ('mirror', '-sync', '-create',
-                          '-name', name, '-lun', primary_lun_id,
-                          '-usewriteintentlog', '-o')
-        out, rc = self._client.command_execute(*command_create, poll=poll)
-        if rc != 0 or out.strip():
-            if VNXError.has_error(out, VNXError.MIRROR_IN_USE):
-                LOG.warning(_LW('MirrorView already created, mirror name '
-                                '%(name)s. Message: %(msg)s'),
-                            {'name': name, 'msg': out})
-            else:
-                self._client._raise_cli_error(cmd=command_create,
-                                              rc=rc,
-                                              out=out)
-        return rc
-
-    def create_secondary_lun(self, pool_name, lun_name, lun_size,
-                             provisioning,
-                             tiering, poll=False):
-        """Creates secondary LUN in remote device."""
-        data = self._secondary_client.create_lun_with_advance_feature(
-            pool=pool_name,
-            name=lun_name,
-            size=lun_size,
-            provisioning=provisioning,
-            tiering=tiering,
-            consistencygroup_id=None,
-            ignore_thresholds=False,
-            poll=poll)
-        return data['lun_id']
-
-    def delete_secondary_lun(self, lun_name):
-        """Deletes secondary LUN in remote device."""
-        self._secondary_client.delete_lun(lun_name)
-
-    def destroy_mirror(self, name, poll=False):
-        command_destroy = ('mirror', '-sync', '-destroy',
-                           '-name', name, '-force', '-o')
-        out, rc = self._client.command_execute(*command_destroy, poll=poll)
-        if rc != 0 or out.strip():
-            if VNXError.has_error(out, VNXError.MIRROR_NOT_FOUND):
-                LOG.warning(_LW('MirrorView %(name)s was already deleted. '
-                                'Message: %(msg)s'),
-                            {'name': name, 'msg': out})
-            else:
-                self._client._raise_cli_error(cmd=command_destroy,
-                                              rc=rc,
-                                              out=out)
-        return out, rc
-
-    def add_image(self, name, secondary_lun_id, poll=False):
-        """Adds secondary image to mirror."""
-        secondary_array_ip = self._secondary_client.active_storage_ip
-        command_add = ('mirror', '-sync', '-addimage',
-                       '-name', name, '-arrayhost', secondary_array_ip,
-                       '-lun', secondary_lun_id, '-recoverypolicy', 'auto',
-                       '-syncrate', 'high')
-        out, rc = self._client.command_execute(*command_add, poll=poll)
-        if rc != 0:
-            self._client._raise_cli_error(cmd=command_add,
-                                          rc=rc,
-                                          out=out)
-        return out, rc
-
-    def remove_image(self, name, mirror_view=None, poll=False):
-        """Removes secondary image(s) from mirror."""
-        if not mirror_view:
-            mirror_view = self.get_image(name, poll=True)
-        image_uid = self._extract_image_uid(mirror_view, 'secondary')
-        command_remove = ('mirror', '-sync', '-removeimage',
-                          '-name', name, '-imageuid', image_uid,
-                          '-o')
-        out, rc = self._client.command_execute(*command_remove, poll=poll)
-        if rc != 0:
-            self._client._raise_cli_error(cmd=command_remove,
-                                          rc=rc,
-                                          out=out)
-        return out, rc
-
-    def get_image(self, name, use_secondary=False, poll=False):
-        """Returns mirror view properties.
-
-        :param name: mirror view name
-        :param use_secondary: get image info from secodnary or not
-        :return: dict of mirror view properties as below:
-            {
-                'MirrorView Name': 'mirror name',
-                'MirrorView Description': 'some desciption here',
-                ...,
-                'images': [
-                    {
-                        'Image UID': '50:06:01:60:88:60:08:0F',
-                        'Is Image Primary': 'YES',
-                        ...
-                        'Preferred SP': 'A'
-                    },
-                    {
-                        'Image UID': '50:06:01:60:88:60:03:BA',
-                        'Is Image Primary': 'NO',
-                        ...,
-                        'Synchronizing Progress(%)': 100
-                    }
-                ]
-            }
-        """
-        if use_secondary:
-            client = self._secondary_client
-        else:
-            client = self._client
-        command_get = ('mirror', '-sync', '-list', '-name', name)
-        out, rc = client.command_execute(
-            *command_get, poll=poll)
-        if rc != 0:
-            if VNXError.has_error(out, VNXError.MIRROR_NOT_FOUND):
-                LOG.warning(_LW('Getting MirrorView %(name)s failed.'
-                                ' Message: %(msg)s.'),
-                            {'name': name, 'msg': out})
-                return None
-            else:
-                client._raise_cli_error(cmd=command_get,
-                                        rc=rc,
-                                        out=out)
-        mvs = {}
-        mvs_info, images_info = re.split('Images:\s*', out)
-        for line in mvs_info.strip('\n').split('\n'):
-            k, v = re.split(':\s*', line, 1)
-            mvs[k] = v if not v or re.search('\D', v) else int(v)
-        mvs['images'] = []
-        for image_raw in re.split('\n\n+', images_info.strip('\n')):
-            image = {}
-            for line in image_raw.split('\n'):
-                k, v = re.split(':\s*', line, 1)
-                image[k] = v if not v or re.search('\D', v) else int(v)
-            mvs['images'].append(image)
-        return mvs
-
-    def fracture_image(self, name, mirror_view=None, poll=False):
-        """Stops the synchronization between LUNs."""
-        if not mirror_view:
-            mirror_view = self.get_image(name, poll=True)
-        image_uid = self._extract_image_uid(mirror_view, 'secondary')
-        command_fracture = ('mirror', '-sync', '-fractureimage', '-name', name,
-                            '-imageuid', image_uid, '-o')
-        out, rc = self._client.command_execute(*command_fracture, poll=poll)
-        if rc != 0:
-            self._client._raise_cli_error(cmd=command_fracture,
-                                          rc=rc,
-                                          out=out)
-        return out, rc
-
-    def sync_image(self, name, mirror_view=None, poll=False):
-        """Synchronizes the secondary image and wait for completion."""
-        if not mirror_view:
-            mirror_view = self.get_image(name, poll=True)
-        image_state = mirror_view['images'][1]['Image State']
-        if image_state == self.SYNCHRONIZED_STATE:
-            LOG.debug('replication %(name)s is already in %(state)s.',
-                      {'name': name, 'state': image_state})
-            return "", 0
-        image_uid = self._extract_image_uid(mirror_view, 'secondary')
-        command_sync = ('mirror', '-sync', '-syncimage', '-name', name,
-                        '-imageuid', image_uid, '-o')
-        out, rc = self._client.command_execute(*command_sync, poll=poll)
-        if rc != 0:
-            self._client._raise_cli_error(cmd=command_sync,
-                                          rc=rc,
-                                          out=out)
-
-        def inner():
-            tmp_mirror = self.get_image(name)
-            for image in tmp_mirror['images']:
-                if 'Image State' in image:
-                    # Only secondary image contains this field
-                    return (image['Image State'] == self.SYNCHRONIZED_STATE and
-                            image['Synchronizing Progress(%)'] == 100)
-        self._client._wait_for_a_condition(inner)
-        return out, rc
-
-    def promote_image(self, name, mirror_view=None, poll=False):
-        """Promotes the secondary image on secondary system.
-
-        NOTE: Only when "Image State" in 'Consistent' or 'Synchnonized'
-              can be promoted.
-        """
-        if not mirror_view:
-            mirror_view = self.get_image(name, use_secondary=True, poll=True)
-        image_uid = self._extract_image_uid(mirror_view, 'secondary')
-
-        command_promote = ('mirror', '-sync', '-promoteimage', '-name', name,
-                           '-imageuid', image_uid, '-o')
-        out, rc = self._secondary_client.command_execute(
-            *command_promote, poll=poll)
-        if rc != 0:
-            raise self._client._raise_cli_error(command_promote, rc, out)
-        return out, rc
-
-    def _extract_image_uid(self, mirror_view, image_type='primary'):
-        """Returns primary or secondary image uid from mirror objects.
-
-        :param mirror_view: parsed mirror view.
-        :param image_type: 'primary' or 'secondary'.
-        """
-        images = mirror_view['images']
-        for image in images:
-            is_primary = image['Is Image Primary']
-            if image_type == 'primary' and is_primary == 'YES':
-                image_uid = image['Image UID']
-                break
-            if image_type == 'secondary' and is_primary == 'NO':
-                image_uid = image['Image UID']
-                break
-        return image_uid
-
-
-class MirrorCreateTask(task.Task):
-    """Creates a MirrorView with primary lun for replication.
-
-    Reversion strategy: Destroy the created MirrorView.
-    """
-    def __init__(self, mirror_name, primary_lun_id, **kwargs):
-        super(MirrorCreateTask, self).__init__()
-        self.mirror_name = mirror_name
-        self.primary_lun_id = primary_lun_id
-
-    def execute(self, mirror, *args, **kwargs):
-        LOG.debug('%s.execute', self.__class__.__name__)
-        mirror.create_mirror(self.mirror_name, self.primary_lun_id, poll=True)
-
-    def revert(self, result, mirror, *args, **kwargs):
-        method_name = '%s.revert' % self.__class__.__name__
-        LOG.debug(method_name)
-        if isinstance(result, failure.Failure):
-            return
-        else:
-            LOG.warning(_LW('%(method)s: destroying mirror '
-                            'view %(name)s.'),
-                        {'method': method_name,
-                         'name': self.mirror_name})
-            mirror.destroy_mirror(self.mirror_name, poll=True)
-
-
-class MirrorSecLunCreateTask(task.Task):
-    """Creates a secondary LUN on secondary system.
-
-    Reversion strategy: Delete secondary LUN.
-    """
-    def __init__(self, pool_name, lun_name, lun_size, provisioning, tiering):
-        super(MirrorSecLunCreateTask, self).__init__(provides='sec_lun_id')
-        self.pool_name = pool_name
-        self.lun_name = lun_name
-        self.lun_size = lun_size
-        self.provisioning = provisioning
-        self.tiering = tiering
-
-    def execute(self, mirror, *args, **kwargs):
-        LOG.debug('%s.execute', self.__class__.__name__)
-        sec_lun_id = mirror.create_secondary_lun(
-            self.pool_name, self.lun_name, self.lun_size,
-            self.provisioning, self.tiering)
-        return sec_lun_id
-
-    def revert(self, result, mirror, *args, **kwargs):
-        method_name = '%s.revert' % self.__class__.__name__
-        LOG.debug(method_name)
-        if isinstance(result, failure.Failure):
-            return
-        else:
-            LOG.warning(_LW('%(method)s: destroying secondary LUN '
-                            '%(name)s.'),
-                        {'method': method_name,
-                         'name': self.lun_name})
-            mirror.delete_secondary_lun(self.lun_name)
-
-
-class MirrorAddImageTask(task.Task):
-    """Add the secondary image to MirrorView.
-
-    Reversion strategy: Remove the secondary image.
-    """
-    def __init__(self, mirror_name):
-        super(MirrorAddImageTask, self).__init__()
-        self.mirror_name = mirror_name
-
-    def execute(self, mirror, sec_lun_id, *args, **kwargs):
-        LOG.debug('%s.execute', self.__class__.__name__)
-        mirror.add_image(self.mirror_name, sec_lun_id, poll=True)
-
-    def revert(self, result, mirror, *args, **kwargs):
-        method_name = '%s.revert' % self.__class__.__name__
-        LOG.debug(method_name)
-        if isinstance(result, failure.Failure):
-            return
-        else:
-            LOG.warning(_LW('%(method)s: removing secondary image '
-                            'from %(name)s.'),
-                        {'method': method_name,
-                         'name': self.mirror_name})
-            mirror.remove_image(self.mirror_name, poll=True)

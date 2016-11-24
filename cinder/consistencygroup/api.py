@@ -29,7 +29,6 @@ from cinder.db import base
 from cinder import exception
 from cinder.i18n import _, _LE, _LW
 from cinder import objects
-from cinder.objects import fields as c_fields
 import cinder.policy
 from cinder import quota
 from cinder.scheduler import rpcapi as scheduler_rpcapi
@@ -43,14 +42,7 @@ CONF = cfg.CONF
 
 LOG = logging.getLogger(__name__)
 CGQUOTAS = quota.CGQUOTAS
-VALID_REMOVE_VOL_FROM_CG_STATUS = (
-    'available',
-    'in-use',
-    'error',
-    'error_deleting')
-VALID_ADD_VOL_TO_CG_STATUS = (
-    'available',
-    'in-use')
+VALID_REMOVE_VOL_FROM_CG_STATUS = ('available', 'in-use',)
 
 
 def wrap_check_policy(func):
@@ -138,7 +130,7 @@ class API(base.Base):
         kwargs = {'user_id': context.user_id,
                   'project_id': context.project_id,
                   'availability_zone': availability_zone,
-                  'status': c_fields.ConsistencyGroupStatus.CREATING,
+                  'status': "creating",
                   'name': name,
                   'description': description,
                   'volume_type_id': req_volume_type_ids}
@@ -176,16 +168,15 @@ class API(base.Base):
         orig_cg = None
         if cgsnapshot_id:
             try:
-                cgsnapshot = objects.CGSnapshot.get_by_id(context,
-                                                          cgsnapshot_id)
+                cgsnapshot = self.db.cgsnapshot_get(context, cgsnapshot_id)
             except exception.CgSnapshotNotFound:
                 with excutils.save_and_reraise_exception():
                     LOG.error(_LE("CG snapshot %(cgsnap)s not found when "
                                   "creating consistency group %(cg)s from "
                                   "source."),
                               {'cg': name, 'cgsnap': cgsnapshot_id})
-            else:
-                orig_cg = cgsnapshot.consistencygroup
+            orig_cg = objects.ConsistencyGroup.get_by_id(
+                context, cgsnapshot['consistencygroup_id'])
 
         source_cg = None
         if source_cgid:
@@ -202,7 +193,7 @@ class API(base.Base):
         kwargs = {
             'user_id': context.user_id,
             'project_id': context.project_id,
-            'status': c_fields.ConsistencyGroupStatus.CREATING,
+            'status': "creating",
             'name': name,
             'description': description,
             'cgsnapshot_id': cgsnapshot_id,
@@ -247,7 +238,7 @@ class API(base.Base):
     def _create_cg_from_cgsnapshot(self, context, group, cgsnapshot):
         try:
             snapshots = objects.SnapshotList.get_all_for_cgsnapshot(
-                context, cgsnapshot.id)
+                context, cgsnapshot['id'])
 
             if not snapshots:
                 msg = _("Cgsnahost is empty. No consistency group "
@@ -283,7 +274,7 @@ class API(base.Base):
                                       "creating consistency group %(group)s "
                                       "from cgsnapshot %(cgsnap)s."),
                                   {'group': group.id,
-                                   'cgsnap': cgsnapshot.id})
+                                   'cgsnap': cgsnapshot['id']})
         except Exception:
             with excutils.save_and_reraise_exception():
                 try:
@@ -293,7 +284,7 @@ class API(base.Base):
                                   "group %(group)s from cgsnapshot "
                                   "%(cgsnap)s."),
                               {'group': group.id,
-                               'cgsnap': cgsnapshot.id})
+                               'cgsnap': cgsnapshot['id']})
 
         volumes = self.db.volume_get_all_by_group(context,
                                                   group.id)
@@ -448,16 +439,15 @@ class API(base.Base):
 
             return
 
-        if not force and group.status not in (
-                [c_fields.ConsistencyGroupStatus.AVAILABLE,
-                 c_fields.ConsistencyGroupStatus.ERROR]):
+        if not force and group.status not in ["available", "error"]:
             msg = _("Consistency group status must be available or error, "
                     "but current status is: %s") % group.status
             raise exception.InvalidConsistencyGroup(reason=msg)
 
-        cgsnapshots = objects.CGSnapshotList.get_all_by_group(
-            context.elevated(), group.id)
-        if cgsnapshots:
+        cgsnaps = self.db.cgsnapshot_get_all_by_group(
+            context.elevated(),
+            group.id)
+        if cgsnaps:
             msg = _("Consistency group %s still has dependent "
                     "cgsnapshots.") % group.id
             LOG.error(msg)
@@ -487,7 +477,7 @@ class API(base.Base):
                 LOG.error(msg)
                 raise exception.InvalidConsistencyGroup(reason=msg)
 
-        group.status = c_fields.ConsistencyGroupStatus.DELETING
+        group.status = 'deleting'
         group.terminated_at = timeutils.utcnow()
         group.save()
 
@@ -496,7 +486,7 @@ class API(base.Base):
     def update(self, context, group, name, description,
                add_volumes, remove_volumes):
         """Update consistency group."""
-        if group.status != c_fields.ConsistencyGroupStatus.AVAILABLE:
+        if group.status != 'available':
             msg = _("Consistency group status must be available, "
                     "but current status is: %s.") % group.status
             raise exception.InvalidConsistencyGroup(reason=msg)
@@ -541,11 +531,11 @@ class API(base.Base):
 
         if (not name and not description and not add_volumes_new and
                 not remove_volumes_new):
-            msg = (_("Cannot update consistency group %(group_id)s "
-                     "because no valid name, description, add_volumes, "
-                     "or remove_volumes were provided.") %
-                   {'group_id': group.id})
-            raise exception.InvalidConsistencyGroup(reason=msg)
+                msg = (_("Cannot update consistency group %(group_id)s "
+                         "because no valid name, description, add_volumes, "
+                         "or remove_volumes were provided.") %
+                       {'group_id': group.id})
+                raise exception.InvalidConsistencyGroup(reason=msg)
 
         fields = {'updated_at': timeutils.utcnow()}
 
@@ -654,7 +644,7 @@ class API(base.Base):
                             'volume_type': add_vol_type_id})
                     raise exception.InvalidVolume(reason=msg)
                 if (add_vol_ref['status'] not in
-                        VALID_ADD_VOL_TO_CG_STATUS):
+                        VALID_REMOVE_VOL_FROM_CG_STATUS):
                     msg = (_("Cannot add volume %(volume_id)s to consistency "
                              "group %(group_id)s because volume is in an "
                              "invalid state: %(status)s. Valid states are: "
@@ -662,7 +652,7 @@ class API(base.Base):
                            {'volume_id': add_vol_ref['id'],
                             'group_id': group.id,
                             'status': add_vol_ref['status'],
-                            'valid': VALID_ADD_VOL_TO_CG_STATUS})
+                            'valid': VALID_REMOVE_VOL_FROM_CG_STATUS})
                     raise exception.InvalidVolume(reason=msg)
 
                 # group.host and add_vol_ref['host'] are in this format:
@@ -693,100 +683,106 @@ class API(base.Base):
         check_policy(context, 'get', group)
         return group
 
-    def get_all(self, context, filters=None, marker=None, limit=None,
-                offset=None, sort_keys=None, sort_dirs=None):
+    def get_all(self, context, marker=None, limit=None, sort_key='created_at',
+                sort_dir='desc', filters=None):
         check_policy(context, 'get_all')
         if filters is None:
             filters = {}
+
+        try:
+            if limit is not None:
+                limit = int(limit)
+                if limit < 0:
+                    msg = _('limit param must be positive')
+                    raise exception.InvalidInput(reason=msg)
+        except ValueError:
+            msg = _('limit param must be an integer')
+            raise exception.InvalidInput(reason=msg)
 
         if filters:
             LOG.debug("Searching by: %s", filters)
 
         if (context.is_admin and 'all_tenants' in filters):
-            del filters['all_tenants']
-            groups = objects.ConsistencyGroupList.get_all(
-                context, filters=filters, marker=marker, limit=limit,
-                offset=offset, sort_keys=sort_keys, sort_dirs=sort_dirs)
+            groups = objects.ConsistencyGroupList.get_all(context)
         else:
             groups = objects.ConsistencyGroupList.get_all_by_project(
-                context, context.project_id, filters=filters, marker=marker,
-                limit=limit, offset=offset, sort_keys=sort_keys,
-                sort_dirs=sort_dirs)
+                context, context.project_id)
         return groups
 
-    def create_cgsnapshot(self, context, group, name, description):
+    def create_cgsnapshot(self, context,
+                          group, name,
+                          description):
         return self._create_cgsnapshot(context, group, name, description)
 
     def _create_cgsnapshot(self, context,
                            group, name, description):
-        volumes = self.db.volume_get_all_by_group(
-            context.elevated(),
-            group.id)
-
-        if not volumes:
-            msg = _("Consistency group is empty. No cgsnapshot "
-                    "will be created.")
-            raise exception.InvalidConsistencyGroup(reason=msg)
-
-        options = {'consistencygroup_id': group.id,
+        options = {'consistencygroup_id': group['id'],
                    'user_id': context.user_id,
                    'project_id': context.project_id,
                    'status': "creating",
                    'name': name,
                    'description': description}
 
-        cgsnapshot = None
-        cgsnapshot_id = None
         try:
-            cgsnapshot = objects.CGSnapshot(context, **options)
-            cgsnapshot.create()
-            cgsnapshot_id = cgsnapshot.id
+            cgsnapshot = self.db.cgsnapshot_create(context, options)
+            cgsnapshot_id = cgsnapshot['id']
 
-            snap_name = cgsnapshot.name
-            snap_desc = cgsnapshot.description
+            volumes = self.db.volume_get_all_by_group(
+                context.elevated(),
+                cgsnapshot['consistencygroup_id'])
+
+            if not volumes:
+                msg = _("Consistency group is empty. No cgsnapshot "
+                        "will be created.")
+                raise exception.InvalidConsistencyGroup(reason=msg)
+
+            snap_name = cgsnapshot['name']
+            snap_desc = cgsnapshot['description']
             self.volume_api.create_snapshots_in_db(
                 context, volumes, snap_name, snap_desc, True, cgsnapshot_id)
 
         except Exception:
             with excutils.save_and_reraise_exception():
                 try:
-                    if cgsnapshot:
-                        cgsnapshot.destroy()
+                    self.db.cgsnapshot_destroy(context, cgsnapshot_id)
                 finally:
                     LOG.error(_LE("Error occurred when creating cgsnapshot"
                                   " %s."), cgsnapshot_id)
 
-        self.volume_rpcapi.create_cgsnapshot(context, cgsnapshot)
+        self.volume_rpcapi.create_cgsnapshot(context, group, cgsnapshot)
 
         return cgsnapshot
 
     def delete_cgsnapshot(self, context, cgsnapshot, force=False):
-        if cgsnapshot.status not in ["available", "error"]:
+        if cgsnapshot['status'] not in ["available", "error"]:
             msg = _("Cgsnapshot status must be available or error")
             raise exception.InvalidCgSnapshot(reason=msg)
-        cgsnapshot.update({'status': 'deleting'})
-        cgsnapshot.save()
-        self.volume_rpcapi.delete_cgsnapshot(context.elevated(), cgsnapshot)
+        self.db.cgsnapshot_update(context, cgsnapshot['id'],
+                                  {'status': 'deleting'})
+        group = objects.ConsistencyGroup.get_by_id(context, cgsnapshot[
+            'consistencygroup_id'])
+        self.volume_rpcapi.delete_cgsnapshot(context.elevated(), cgsnapshot,
+                                             group.host)
 
     def update_cgsnapshot(self, context, cgsnapshot, fields):
-        cgsnapshot.update(fields)
-        cgsnapshot.save()
+        self.db.cgsnapshot_update(context, cgsnapshot['id'], fields)
 
     def get_cgsnapshot(self, context, cgsnapshot_id):
         check_policy(context, 'get_cgsnapshot')
-        cgsnapshots = objects.CGSnapshot.get_by_id(context, cgsnapshot_id)
-        return cgsnapshots
+        rv = self.db.cgsnapshot_get(context, cgsnapshot_id)
+        return dict(rv)
 
     def get_all_cgsnapshots(self, context, search_opts=None):
         check_policy(context, 'get_all_cgsnapshots')
 
         search_opts = search_opts or {}
 
-        if context.is_admin and 'all_tenants' in search_opts:
+        if (context.is_admin and 'all_tenants' in search_opts):
             # Need to remove all_tenants to pass the filtering below.
             del search_opts['all_tenants']
-            cgsnapshots = objects.CGSnapshotList.get_all(context, search_opts)
+            cgsnapshots = self.db.cgsnapshot_get_all(context, search_opts)
         else:
-            cgsnapshots = objects.CGSnapshotList.get_all_by_project(
+            cgsnapshots = self.db.cgsnapshot_get_all_by_project(
                 context.elevated(), context.project_id, search_opts)
+
         return cgsnapshots

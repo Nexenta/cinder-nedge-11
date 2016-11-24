@@ -29,8 +29,6 @@ from oslo_log import log as logging
 from oslo_versionedobjects import exception as obj_exc
 import six
 import webob.exc
-from webob.util import status_generic_reasons
-from webob.util import status_reasons
 
 from cinder.i18n import _, _LE
 
@@ -50,21 +48,7 @@ CONF.register_opts(exc_log_opts)
 class ConvertedException(webob.exc.WSGIHTTPException):
     def __init__(self, code=500, title="", explanation=""):
         self.code = code
-        # There is a strict rule about constructing status line for HTTP:
-        # '...Status-Line, consisting of the protocol version followed by a
-        # numeric status code and its associated textual phrase, with each
-        # element separated by SP characters'
-        # (http://www.faqs.org/rfcs/rfc2616.html)
-        # 'code' and 'title' can not be empty because they correspond
-        # to numeric status code and its associated text
-        if title:
-            self.title = title
-        else:
-            try:
-                self.title = status_reasons[self.code]
-            except KeyError:
-                generic_code = self.code // 100
-                self.title = status_generic_reasons[generic_code]
+        self.title = title
         self.explanation = explanation
         super(ConvertedException, self).__init__()
 
@@ -243,20 +227,6 @@ class InvalidUUID(Invalid):
     message = _("Expected a uuid but received %(uuid)s.")
 
 
-class InvalidAPIVersionString(Invalid):
-    message = _("API Version String %(version)s is of invalid format. Must "
-                "be of format MajorNum.MinorNum.")
-
-
-class VersionNotFoundForAPIMethod(Invalid):
-    message = _("API version %(version)s is not supported on this method.")
-
-
-class InvalidGlobalAPIVersion(Invalid):
-    message = _("Version %(req_ver)s is not supported by the API. Minimum "
-                "is %(min_ver)s and maximum is %(max_ver)s.")
-
-
 class APIException(CinderException):
     message = _("Error while requesting %(service)s API.")
 
@@ -268,12 +238,6 @@ class APIException(CinderException):
 
 class APITimeout(APIException):
     message = _("Timeout while requesting %(service)s API.")
-
-
-class RPCTimeout(CinderException):
-    message = _("Timeout while requesting capabilities from backend "
-                "%(service)s.")
-    code = 502
 
 
 class NotFound(CinderException):
@@ -368,18 +332,7 @@ class ImageNotFound(NotFound):
 
 
 class ServiceNotFound(NotFound):
-
-    def __init__(self, message=None, **kwargs):
-        if kwargs.get('host', None):
-            self.message = _("Service %(service_id)s could not be "
-                             "found on host %(host)s.")
-        else:
-            self.message = _("Service %(service_id)s could not be found.")
-        super(ServiceNotFound, self).__init__(None, **kwargs)
-
-
-class ServiceTooOld(Invalid):
-    message = _("Service is too old to fulfil this request.")
+    message = _("Service %(service_id)s could not be found.")
 
 
 class HostNotFound(NotFound):
@@ -394,6 +347,10 @@ class SchedulerHostWeigherNotFound(NotFound):
     message = _("Scheduler Host Weigher %(weigher_name)s could not be found.")
 
 
+class HostBinaryNotFound(NotFound):
+    message = _("Could not find binary %(binary)s on host %(host)s.")
+
+
 class InvalidReservationExpiration(Invalid):
     message = _("Invalid reservation expiration %(expire)s.")
 
@@ -401,11 +358,6 @@ class InvalidReservationExpiration(Invalid):
 class InvalidQuotaValue(Invalid):
     message = _("Change would make usage less than 0 for the following "
                 "resources: %(unders)s")
-
-
-class InvalidNestedQuotaSetup(CinderException):
-    message = _("Project quotas are not properly setup for nested quotas: "
-                "%(reason)s.")
 
 
 class QuotaNotFound(NotFound):
@@ -489,7 +441,7 @@ class NoMoreTargets(CinderException):
 class QuotaError(CinderException):
     message = _("Quota exceeded: code=%(code)s")
     code = 413
-    headers = {'Retry-After': '0'}
+    headers = {'Retry-After': 0}
     safe = True
 
 
@@ -647,6 +599,10 @@ class TransferNotFound(NotFound):
     message = _("Transfer %(transfer_id)s could not be found.")
 
 
+class NexentaException(NotFound):
+    message = _("Nexenta Cinder Driver exception.")
+
+
 class VolumeMigrationFailed(CinderException):
     message = _("Volume migration failed: %(reason)s")
 
@@ -710,15 +666,6 @@ class ManageExistingAlreadyManaged(CinderException):
                 "Volume %(volume_ref)s already managed.")
 
 
-class InvalidReplicationTarget(Invalid):
-    message = _("Invalid Replication Target: %(reason)s")
-
-
-class UnableToFailOver(CinderException):
-    message = _("Unable to failover to replication target:"
-                "%(reason)s).")
-
-
 class ReplicationError(CinderException):
     message = _("Volume %(volume_id)s replication "
                 "error: %(reason)s")
@@ -742,25 +689,12 @@ class EvaluatorParseException(Exception):
     message = _("Error during evaluator parsing: %(reason)s")
 
 
-class LockCreationFailed(CinderException):
-    message = _('Unable to create lock. Coordination backend not started.')
-
-
-class LockingFailed(CinderException):
-    message = _('Lock acquisition failed.')
-
-
 UnsupportedObjectError = obj_exc.UnsupportedObjectError
 OrphanedObjectError = obj_exc.OrphanedObjectError
 IncompatibleObjectVersion = obj_exc.IncompatibleObjectVersion
 ReadOnlyFieldError = obj_exc.ReadOnlyFieldError
 ObjectActionError = obj_exc.ObjectActionError
 ObjectFieldInvalid = obj_exc.ObjectFieldInvalid
-
-
-class CappedVersionUnknown(CinderException):
-    message = _('Unrecoverable Error: Versioned Objects in DB are capped to '
-                'unknown version %(version)s.')
 
 
 class VolumeGroupNotFound(CinderException):
@@ -811,11 +745,6 @@ class Invalid3PARDomain(VolumeDriverException):
 # RemoteFS drivers
 class RemoteFSException(VolumeDriverException):
     message = _("Unknown RemoteFS exception")
-
-
-class RemoteFSConcurrentRequest(RemoteFSException):
-    message = _("A concurrent, possibly contradictory, request "
-                "has been made.")
 
 
 class RemoteFSNoSharesMounted(RemoteFSException):
@@ -893,15 +822,11 @@ class FCSanLookupServiceException(CinderException):
 
 
 class BrocadeZoningCliException(CinderException):
-    message = _("Brocade Fibre Channel Zoning CLI error: %(reason)s")
-
-
-class BrocadeZoningHttpException(CinderException):
-    message = _("Brocade Fibre Channel Zoning HTTP error: %(reason)s")
+    message = _("Fibre Channel Zoning CLI error: %(reason)s")
 
 
 class CiscoZoningCliException(CinderException):
-    message = _("Cisco Fibre Channel Zoning CLI error: %(reason)s")
+    message = _("Fibre Channel Zoning CLI error: %(reason)s")
 
 
 class NetAppDriverException(VolumeDriverException):
@@ -910,11 +835,6 @@ class NetAppDriverException(VolumeDriverException):
 
 class EMCVnxCLICmdError(VolumeBackendAPIException):
     message = _("EMC VNX Cinder Driver CLI exception: %(cmd)s "
-                "(Return Code: %(rc)s) (Output: %(out)s).")
-
-
-class EMCSPUnavailableException(EMCVnxCLICmdError):
-    message = _("EMC VNX Cinder Driver SPUnavailableException: %(cmd)s "
                 "(Return Code: %(rc)s) (Output: %(out)s).")
 
 
@@ -1016,9 +936,9 @@ class ViolinBackendErrNotFound(CinderException):
 
 # ZFSSA NFS driver exception.
 class WebDAVClientError(CinderException):
-    message = _("The WebDAV request failed. Reason: %(msg)s, "
-                "Return code/reason: %(code)s, Source Volume: %(src)s, "
-                "Destination Volume: %(dst)s, Method: %(method)s.")
+        message = _("The WebDAV request failed. Reason: %(msg)s, "
+                    "Return code/reason: %(code)s, Source Volume: %(src)s, "
+                    "Destination Volume: %(dst)s, Method: %(method)s.")
 
 
 # XtremIO Drivers
@@ -1028,10 +948,6 @@ class XtremIOAlreadyMappedError(CinderException):
 
 class XtremIOArrayBusy(CinderException):
     message = _("System is busy, retry operation.")
-
-
-class XtremIOSnapshotsLimitExceeded(CinderException):
-    message = _("Exceeded the limit of snapshots per volume")
 
 
 # Infortrend EonStor DS Driver
@@ -1089,31 +1005,3 @@ class NotSupportedOperation(Invalid):
 # Hitachi HNAS drivers
 class HNASConnError(CinderException):
     message = _("%(message)s")
-
-
-# Coho drivers
-class CohoException(VolumeDriverException):
-    message = _("Coho Data Cinder driver failure: %(message)s")
-
-
-# Tegile Storage drivers
-class TegileAPIException(VolumeBackendAPIException):
-    message = _("Unexpected response from Tegile IntelliFlash API")
-
-
-# NexentaStor driver exception
-class NexentaException(VolumeDriverException):
-    message = _("%(message)s")
-
-
-# Google Cloud Storage(GCS) backup driver
-class GCSConnectionFailure(BackupDriverException):
-    message = _("Google Cloud Storage connection failure: %(reason)s")
-
-
-class GCSApiFailure(BackupDriverException):
-    message = _("Google Cloud Storage api failure: %(reason)s")
-
-
-class GCSOAuth2Failure(BackupDriverException):
-    message = _("Google Cloud Storage oauth2 failure: %(reason)s")

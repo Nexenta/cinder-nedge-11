@@ -63,7 +63,9 @@ class XIVDS8KDriver(san.SanDriver,
                     driver.ExtendVD,
                     driver.SnapshotVD,
                     driver.MigrateVD,
+                    driver.ReplicaVD,
                     driver.ConsistencyGroupVD,
+                    driver.CloneableVD,
                     driver.CloneableImageVD,
                     driver.TransferVD):
     """Unified IBM XIV and DS8K volume driver."""
@@ -76,8 +78,6 @@ class XIVDS8KDriver(san.SanDriver,
         self.configuration.append_config_values(xiv_ds8k_opts)
 
         proxy = importutils.import_class(self.configuration.xiv_ds8k_proxy)
-
-        active_backend_id = kwargs.get('active_backend_id', None)
 
         # NOTE: All Array specific configurations are prefixed with:
         # "xiv_ds8k_array_"
@@ -97,8 +97,7 @@ class XIVDS8KDriver(san.SanDriver,
             },
             LOG,
             exception,
-            driver=self,
-            active_backend_id=active_backend_id)
+            driver=self)
 
     def do_setup(self, context):
         """Setup and verify IBM XIV and DS8K Storage connection."""
@@ -219,26 +218,25 @@ class XIVDS8KDriver(san.SanDriver,
 
         return self.xiv_ds8k_proxy.unmanage_volume(volume)
 
-    def freeze_backend(self, context):
-        """Notify the backend that it's frozen. """
+    def reenable_replication(self, context, volume):
+        """Re-enable volume replication. """
 
-        return self.xiv_ds8k_proxy.freeze_backend(context)
-
-    def thaw_backend(self, context):
-        """Notify the backend that it's unfrozen/thawed. """
-
-        return self.xiv_ds8k_proxy.thaw_backend(context)
-
-    def failover_host(self, context, volumes, secondary_id=None):
-        """Failover a backend to a secondary replication target. """
-
-        return self.xiv_ds8k_proxy.failover_host(
-            context, volumes, secondary_id)
+        return self.xiv_ds8k_proxy.reenable_replication(context, volume)
 
     def get_replication_status(self, context, volume):
         """Return replication status."""
 
         return self.xiv_ds8k_proxy.get_replication_status(context, volume)
+
+    def promote_replica(self, context, volume):
+        """Promote the replica to be the primary volume."""
+
+        return self.xiv_ds8k_proxy.promote_replica(context, volume)
+
+    def create_replica_test_volume(self, volume, src_vref):
+        """Creates a test replica clone of the specified replicated volume."""
+
+        return self.xiv_ds8k_proxy.create_replica_test_volume(volume, src_vref)
 
     def retype(self, ctxt, volume, new_type, diff, host):
         """Convert the volume to be of the new type."""
@@ -250,36 +248,17 @@ class XIVDS8KDriver(san.SanDriver,
 
         return self.xiv_ds8k_proxy.create_consistencygroup(context, group)
 
-    def delete_consistencygroup(self, context, group, volumes):
+    def delete_consistencygroup(self, context, group):
         """Deletes a consistency group."""
 
-        return self.xiv_ds8k_proxy.delete_consistencygroup(
-            context, group, volumes)
+        return self.xiv_ds8k_proxy.delete_consistencygroup(context, group)
 
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def create_cgsnapshot(self, context, cgsnapshot):
         """Creates a consistency group snapshot."""
 
-        return self.xiv_ds8k_proxy.create_cgsnapshot(
-            context, cgsnapshot, snapshots)
+        return self.xiv_ds8k_proxy.create_cgsnapshot(context, cgsnapshot)
 
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def delete_cgsnapshot(self, context, cgsnapshot):
         """Deletes a consistency group snapshot."""
 
-        return self.xiv_ds8k_proxy.delete_cgsnapshot(
-            context, cgsnapshot, snapshots)
-
-    def update_consistencygroup(self, context, group,
-                                add_volumes, remove_volumes):
-        """Adds or removes volume(s) to/from an existing consistency group."""
-
-        return self.xiv_ds8k_proxy.update_consistencygroup(
-            context, group, add_volumes, remove_volumes)
-
-    def create_consistencygroup_from_src(
-            self, context, group, volumes, cgsnapshot, snapshots,
-            source_cg=None, source_vols=None):
-        """Creates a consistencygroup from source."""
-
-        return self.xiv_ds8k_proxy.create_consistencygroup_from_src(
-            context, group, volumes, cgsnapshot, snapshots,
-            source_cg, source_vols)
+        return self.xiv_ds8k_proxy.delete_cgsnapshot(context, cgsnapshot)

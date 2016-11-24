@@ -1,6 +1,5 @@
 # Copyright (c) 2014 Clinton Knight.  All rights reserved.
 # Copyright (c) 2015 Tom Barron.  All rights reserved.
-# Copyright (c) 2016 Michael Price.  All rights reserved.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -224,7 +223,7 @@ class NetAppDriverUtilsTestCase(test.TestCase):
 
         result = na_utils.map_qos_spec(qos_spec, fake.VOLUME)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
 
     def test_map_qos_spec_maxiops(self):
         qos_spec = {'maxIOPs': 33000}
@@ -239,19 +238,6 @@ class NetAppDriverUtilsTestCase(test.TestCase):
 
         self.assertEqual(expected, result)
 
-    def test_map_qos_spec_maxiopspergib(self):
-        qos_spec = {'maxIOPSperGiB': 1000}
-        mock_get_name = self.mock_object(na_utils, 'get_qos_policy_group_name')
-        mock_get_name.return_value = 'fake_qos_policy'
-        expected = {
-            'policy_name': 'fake_qos_policy',
-            'max_throughput': '42000iops',
-        }
-
-        result = na_utils.map_qos_spec(qos_spec, fake.VOLUME)
-
-        self.assertEqual(expected, result)
-
     def test_map_qos_spec_maxbps(self):
         qos_spec = {'maxBPS': 1000000}
         mock_get_name = self.mock_object(na_utils, 'get_qos_policy_group_name')
@@ -259,19 +245,6 @@ class NetAppDriverUtilsTestCase(test.TestCase):
         expected = {
             'policy_name': 'fake_qos_policy',
             'max_throughput': '1000000B/s',
-        }
-
-        result = na_utils.map_qos_spec(qos_spec, fake.VOLUME)
-
-        self.assertEqual(expected, result)
-
-    def test_map_qos_spec_maxbpspergib(self):
-        qos_spec = {'maxBPSperGiB': 100000}
-        mock_get_name = self.mock_object(na_utils, 'get_qos_policy_group_name')
-        mock_get_name.return_value = 'fake_qos_policy'
-        expected = {
-            'policy_name': 'fake_qos_policy',
-            'max_throughput': '4200000B/s',
         }
 
         result = na_utils.map_qos_spec(qos_spec, fake.VOLUME)
@@ -312,7 +285,7 @@ class NetAppDriverUtilsTestCase(test.TestCase):
 
         result = na_utils.get_qos_policy_group_name(volume)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
 
     def test_get_qos_policy_group_name_from_info(self):
         expected = 'openstack-%s' % fake.VOLUME_ID
@@ -325,7 +298,7 @@ class NetAppDriverUtilsTestCase(test.TestCase):
 
         result = na_utils.get_qos_policy_group_name_from_info(None)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
 
     def test_get_qos_policy_group_name_from_legacy_info(self):
         expected = fake.QOS_POLICY_GROUP_NAME
@@ -431,7 +404,7 @@ class NetAppDriverUtilsTestCase(test.TestCase):
         result = na_utils.get_valid_backend_qos_spec_from_volume_type(
             fake.VOLUME, fake.VOLUME_TYPE)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
         self.assertEqual(0, mock_validate.call_count)
 
     def test_get_valid_backend_qos_spec_from_volume_type(self):
@@ -453,7 +426,7 @@ class NetAppDriverUtilsTestCase(test.TestCase):
 
         result = na_utils.get_backend_qos_spec_from_volume_type(volume_type)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
         self.assertEqual(0, mock_get_context.call_count)
 
     def test_get_backend_qos_spec_from_volume_type_no_qos_spec(self):
@@ -464,7 +437,7 @@ class NetAppDriverUtilsTestCase(test.TestCase):
 
         result = na_utils.get_backend_qos_spec_from_volume_type(volume_type)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
 
     def test_get_backend_qos_spec_from_volume_type_with_frontend_spec(self):
         volume_type = fake.VOLUME_TYPE
@@ -474,7 +447,7 @@ class NetAppDriverUtilsTestCase(test.TestCase):
 
         result = na_utils.get_backend_qos_spec_from_volume_type(volume_type)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
 
     def test_get_backend_qos_spec_from_volume_type_with_backend_spec(self):
         volume_type = fake.VOLUME_TYPE
@@ -516,7 +489,7 @@ class NetAppDriverUtilsTestCase(test.TestCase):
 
         result = na_utils.get_legacy_qos_policy(extra_specs)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
 
 
 class OpenStackInfoTestCase(test.TestCase):
@@ -787,7 +760,7 @@ class FeaturesTestCase(test.TestCase):
 
         self.assertEqual(value, bool(self.features.FEATURE_2))
         self.assertEqual(value, self.features.FEATURE_2.supported)
-        self.assertIsNone(self.features.FEATURE_2.minimum_version)
+        self.assertEqual(None, self.features.FEATURE_2.minimum_version)
         self.assertIn('FEATURE_2', self.features.defined_features)
 
     @ddt.data((True, '1'), (False, 2), (False, None), (True, None))
@@ -811,92 +784,3 @@ class FeaturesTestCase(test.TestCase):
 
     def test_get_attr_missing(self):
         self.assertRaises(AttributeError, getattr, self.features, 'FEATURE_4')
-
-
-@ddt.ddt
-class BitSetTestCase(test.TestCase):
-
-    def setUp(self):
-        super(BitSetTestCase, self).setUp()
-
-    def test_default(self):
-        self.assertEqual(na_utils.BitSet(0), na_utils.BitSet())
-
-    def test_set(self):
-        bitset = na_utils.BitSet(0)
-        bitset.set(16)
-
-        self.assertEqual(na_utils.BitSet(1 << 16), bitset)
-
-    def test_unset(self):
-        bitset = na_utils.BitSet(1 << 16)
-        bitset.unset(16)
-
-        self.assertEqual(na_utils.BitSet(0), bitset)
-
-    def test_is_set(self):
-        bitset = na_utils.BitSet(1 << 16)
-
-        self.assertTrue(bitset.is_set(16))
-
-    def test_not_equal(self):
-        set1 = na_utils.BitSet(1 << 15)
-        set2 = na_utils.BitSet(1 << 16)
-
-        self.assertNotEqual(set1, set2)
-
-    def test_repr(self):
-        raw_val = 1 << 16
-        actual = repr(na_utils.BitSet(raw_val))
-        expected = str(raw_val)
-
-        self.assertEqual(actual, expected)
-
-    def test_str(self):
-        raw_val = 1 << 16
-        actual = str(na_utils.BitSet(raw_val))
-        expected = bin(raw_val)
-
-        self.assertEqual(actual, expected)
-
-    def test_int(self):
-        val = 1 << 16
-        actual = int(int(na_utils.BitSet(val)))
-
-        self.assertEqual(val, actual)
-
-    def test_and(self):
-        actual = na_utils.BitSet(1 << 16 | 1 << 15)
-        actual &= 1 << 16
-
-        self.assertEqual(na_utils.BitSet(1 << 16), actual)
-
-    def test_or(self):
-        actual = na_utils.BitSet()
-        actual |= 1 << 16
-
-        self.assertEqual(na_utils.BitSet(1 << 16), actual)
-
-    def test_invert(self):
-        actual = na_utils.BitSet(1 << 16)
-        actual = ~actual
-
-        self.assertEqual(~(1 << 16), actual)
-
-    def test_xor(self):
-        actual = na_utils.BitSet(1 << 16)
-        actual ^= 1 << 16
-
-        self.assertEqual(na_utils.BitSet(), actual)
-
-    def test_lshift(self):
-        actual = na_utils.BitSet(1)
-        actual <<= 16
-
-        self.assertEqual(na_utils.BitSet(1 << 16), actual)
-
-    def test_rshift(self):
-        actual = na_utils.BitSet(1 << 16)
-        actual >>= 16
-
-        self.assertEqual(na_utils.BitSet(1), actual)

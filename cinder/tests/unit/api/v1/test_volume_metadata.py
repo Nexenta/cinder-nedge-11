@@ -28,8 +28,6 @@ from cinder import exception
 from cinder import test
 from cinder.tests.unit.api import fakes
 from cinder.tests.unit.api.v1 import stubs
-from cinder.tests.unit import fake_volume
-from cinder import volume
 
 
 CONF = cfg.CONF
@@ -56,6 +54,9 @@ def return_create_volume_metadata_insensitive(context, snapshot_id,
 
 
 def return_volume_metadata(context, volume_id):
+    if not isinstance(volume_id, str) or not len(volume_id) == 36:
+        msg = 'id %s must be a uuid in return volume metadata' % volume_id
+        raise Exception(msg)
     return stub_volume_metadata()
 
 
@@ -107,18 +108,11 @@ def stub_max_volume_metadata():
     return metadata
 
 
-def get_volume(*args, **kwargs):
-    vol = {'id': args[1],
-           'size': 100,
-           'name': 'fake',
-           'host': 'fake-host',
-           'status': 'available',
-           'encryption_key_id': None,
-           'volume_type_id': None,
-           'migration_status': None,
-           'availability_zone': 'zone1:host1',
-           'attach_status': 'detached'}
-    return fake_volume.fake_volume_obj(args[0], **vol)
+def return_volume(context, volume_id):
+    return {'id': '0cc3346e-9fef-4445-abe6-5d2b2690ec64',
+            'name': 'fake',
+            'metadata': {},
+            'project_id': context.project_id}
 
 
 def return_volume_nonexistent(*args, **kwargs):
@@ -134,7 +128,7 @@ class volumeMetaDataTest(test.TestCase):
     def setUp(self):
         super(volumeMetaDataTest, self).setUp()
         self.volume_api = cinder.volume.api.API()
-        self.stubs.Set(volume.api.API, 'get', get_volume)
+        self.stubs.Set(cinder.db, 'volume_get', return_volume)
         self.stubs.Set(cinder.db, 'volume_metadata_get',
                        return_volume_metadata)
         self.stubs.Set(cinder.db, 'service_get_all_by_topic',
@@ -265,7 +259,7 @@ class volumeMetaDataTest(test.TestCase):
         body = {"metadata": {"key1": "value1",
                              "key2": "value2",
                              "key3": "value3", }}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.environ['cinder.context'] = fake_context
 
         with mock.patch.object(self.controller.volume_api,
@@ -298,7 +292,7 @@ class volumeMetaDataTest(test.TestCase):
                                  "key2": "value2",
                                  "key3": "value3",
                                  "KEY4": "value4"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.environ['cinder.context'] = fake_context
 
         with mock.patch.object(self.controller.volume_api,
@@ -323,7 +317,7 @@ class volumeMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {"": "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -335,7 +329,7 @@ class volumeMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {("a" * 260): "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -343,7 +337,8 @@ class volumeMetaDataTest(test.TestCase):
                           req, self.req_id, body)
 
     def test_create_nonexistent_volume(self):
-        self.stubs.Set(volume.api.API, 'get', return_volume_nonexistent)
+        self.stubs.Set(cinder.db, 'volume_get',
+                       return_volume_nonexistent)
         self.stubs.Set(cinder.db, 'volume_metadata_get',
                        return_volume_metadata)
         self.stubs.Set(cinder.db, 'volume_metadata_update',
@@ -353,7 +348,7 @@ class volumeMetaDataTest(test.TestCase):
         req.method = 'POST'
         req.content_type = "application/json"
         body = {"metadata": {"key9": "value9"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.create, req, self.req_id, body)
 
@@ -372,7 +367,7 @@ class volumeMetaDataTest(test.TestCase):
                 'KEY20': 'value20',
             },
         }
-        req.body = jsonutils.dump_as_bytes(expected)
+        req.body = jsonutils.dumps(expected)
         req.environ['cinder.context'] = fake_context
 
         with mock.patch.object(self.controller.volume_api,
@@ -409,7 +404,7 @@ class volumeMetaDataTest(test.TestCase):
                 'KEY20': 'value20',
             },
         }
-        req.body = jsonutils.dump_as_bytes(expected)
+        req.body = jsonutils.dumps(expected)
         req.environ['cinder.context'] = fake_context
 
         with mock.patch.object(self.controller.volume_api,
@@ -428,7 +423,7 @@ class volumeMetaDataTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = "application/json"
         expected = {'metadata': {}}
-        req.body = jsonutils.dump_as_bytes(expected)
+        req.body = jsonutils.dumps(expected)
         req.environ['cinder.context'] = fake_context
 
         with mock.patch.object(self.controller.volume_api,
@@ -446,7 +441,7 @@ class volumeMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {"key1": ("a" * 260)}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         req.environ['cinder.context'] = fake_context
 
@@ -466,7 +461,7 @@ class volumeMetaDataTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = "application/json"
         expected = {'meta': {}}
-        req.body = jsonutils.dump_as_bytes(expected)
+        req.body = jsonutils.dumps(expected)
 
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.update_all, req, self.req_id,
@@ -481,7 +476,7 @@ class volumeMetaDataTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = "application/json"
         expected = {'metadata': ['asdf']}
-        req.body = jsonutils.dump_as_bytes(expected)
+        req.body = jsonutils.dumps(expected)
         req.environ['cinder.context'] = fake_context
 
         with mock.patch.object(self.controller.volume_api,
@@ -497,7 +492,7 @@ class volumeMetaDataTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = "application/json"
         body = {'metadata': {'key10': 'value10'}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
 
         self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.update_all, req, '100', body)
@@ -510,7 +505,7 @@ class volumeMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {"key1": "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         req.environ['cinder.context'] = fake_context
 
@@ -528,7 +523,7 @@ class volumeMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank('/v1.1/fake/volumes/asdf/metadata/key1')
         req.method = 'PUT'
         body = {"meta": {"key1": "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPNotFound,
@@ -554,7 +549,7 @@ class volumeMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {"": "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         req.environ['cinder.context'] = fake_context
 
@@ -575,7 +570,7 @@ class volumeMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {("a" * 260): "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         req.environ['cinder.context'] = fake_context
 
@@ -594,7 +589,7 @@ class volumeMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {"key1": "value1", "key2": "value2"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -607,7 +602,7 @@ class volumeMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/bad')
         req.method = 'PUT'
         body = {"meta": {"key1": "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -625,7 +620,7 @@ class volumeMetaDataTest(test.TestCase):
 
         # test for long key
         data = {"metadata": {"a" * 260: "value1"}}
-        req.body = jsonutils.dump_as_bytes(data)
+        req.body = jsonutils.dumps(data)
         req.environ['cinder.context'] = fake_context
 
         with mock.patch.object(self.controller.volume_api,
@@ -636,7 +631,7 @@ class volumeMetaDataTest(test.TestCase):
 
         # test for long value
         data = {"metadata": {"key": "v" * 260}}
-        req.body = jsonutils.dump_as_bytes(data)
+        req.body = jsonutils.dumps(data)
         req.environ['cinder.context'] = fake_context
 
         with mock.patch.object(self.controller.volume_api,
@@ -647,7 +642,7 @@ class volumeMetaDataTest(test.TestCase):
 
         # test for empty key.
         data = {"metadata": {"": "value1"}}
-        req.body = jsonutils.dump_as_bytes(data)
+        req.body = jsonutils.dumps(data)
         req.environ['cinder.context'] = fake_context
 
         with mock.patch.object(self.controller.volume_api,

@@ -18,7 +18,6 @@ import six
 import webob
 
 from cinder.api.contrib import types_manage
-from cinder import context
 from cinder import exception
 from cinder import test
 from cinder.tests.unit.api import fakes
@@ -169,33 +168,6 @@ class VolumeTypesManageApiTest(test.TestCase):
         self.controller._delete(req, 1)
         self.assertEqual(1, len(self.notifier.notifications))
 
-    @mock.patch('cinder.volume.volume_types.destroy')
-    @mock.patch('cinder.volume.volume_types.get_volume_type')
-    @mock.patch('cinder.policy.enforce')
-    def test_volume_types_delete_with_non_admin(self, mock_policy_enforce,
-                                                mock_get, mock_destroy):
-
-        # allow policy authorized user to delete type
-        mock_policy_enforce.return_value = None
-        mock_get.return_value = \
-            {'extra_specs': {"key1": "value1"},
-             'id': 1,
-             'name': u'vol_type_1',
-             'description': u'vol_type_desc_1'}
-        mock_destroy.side_effect = return_volume_types_destroy
-
-        req = fakes.HTTPRequest.blank('/v2/fake/types/1',
-                                      use_admin_context=False)
-        self.assertEqual(0, len(self.notifier.notifications))
-        self.controller._delete(req, 1)
-        self.assertEqual(1, len(self.notifier.notifications))
-        # non policy authorized user fails to delete type
-        mock_policy_enforce.side_effect = (
-            exception.PolicyNotAuthorized(action='type_delete'))
-        self.assertRaises(exception.PolicyNotAuthorized,
-                          self.controller._delete,
-                          req, 1)
-
     def test_create(self):
         self.stubs.Set(volume_types, 'create',
                        return_volume_types_create)
@@ -289,41 +261,6 @@ class VolumeTypesManageApiTest(test.TestCase):
     def test_create_malformed_entity(self):
         body = {'volume_type': 'string'}
         self._create_volume_type_bad_body(body=body)
-
-    @mock.patch('cinder.volume.volume_types.create')
-    @mock.patch('cinder.volume.volume_types.get_volume_type_by_name')
-    @mock.patch('cinder.policy.enforce')
-    def test_create_with_none_admin(self, mock_policy_enforce,
-                                    mock_get_volume_type_by_name,
-                                    mock_create_type):
-
-        # allow policy authorized user to create type
-        mock_policy_enforce.return_value = None
-        mock_get_volume_type_by_name.return_value = \
-            {'extra_specs': {"key1": "value1"},
-             'id': 1,
-             'name': u'vol_type_1',
-             'description': u'vol_type_desc_1'}
-
-        body = {"volume_type": {"name": "vol_type_1",
-                                "os-volume-type-access:is_public": True,
-                                "extra_specs": {"key1": "value1"}}}
-        req = fakes.HTTPRequest.blank('/v2/fake/types',
-                                      use_admin_context=False)
-
-        self.assertEqual(0, len(self.notifier.notifications))
-        res_dict = self.controller._create(req, body)
-
-        self.assertEqual(1, len(self.notifier.notifications))
-        self._check_test_results(res_dict, {
-            'expected_name': 'vol_type_1', 'expected_desc': 'vol_type_desc_1'})
-
-        # non policy authorized user fails to create type
-        mock_policy_enforce.side_effect = (
-            exception.PolicyNotAuthorized(action='type_create'))
-        self.assertRaises(exception.PolicyNotAuthorized,
-                          self.controller._create,
-                          req, body)
 
     @mock.patch('cinder.volume.volume_types.update')
     @mock.patch('cinder.volume.volume_types.get_volume_type')
@@ -428,26 +365,19 @@ class VolumeTypesManageApiTest(test.TestCase):
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller._update, req, '1', body)
 
+    @mock.patch('cinder.volume.volume_types.update')
     @mock.patch('cinder.volume.volume_types.get_volume_type')
-    @mock.patch('cinder.db.volume_type_update')
-    @mock.patch('cinder.quota.VolumeTypeQuotaEngine.'
-                'update_quota_resource')
-    def test_update_only_name(self, mock_update_quota,
-                              mock_update, mock_get):
+    def test_update_only_name(self, mock_get, mock_update):
         mock_get.return_value = return_volume_types_get_volume_type_updated(
             '999')
 
-        ctxt = context.RequestContext('admin', 'fake', True)
-        body = {"volume_type": {"name": "vol_type_999"}}
+        body = {"volume_type": {"name": "vol_type_999_999"}}
         req = fakes.HTTPRequest.blank('/v2/fake/types/999')
         req.method = 'PUT'
-        req.environ['cinder.context'] = ctxt
 
         self.assertEqual(0, len(self.notifier.notifications))
         res_dict = self.controller._update(req, '999', body)
         self.assertEqual(1, len(self.notifier.notifications))
-        mock_update_quota.assert_called_once_with(ctxt, 'vol_type_999_999',
-                                                  'vol_type_999')
         self._check_test_results(res_dict,
                                  {'expected_name': 'vol_type_999_999',
                                   'expected_desc': 'vol_type_desc_999'})
@@ -468,25 +398,6 @@ class VolumeTypesManageApiTest(test.TestCase):
         self._check_test_results(res_dict,
                                  {'expected_name': 'vol_type_888',
                                   'expected_desc': 'vol_type_desc_888_888'})
-
-    @mock.patch('cinder.volume.volume_types.update')
-    @mock.patch('cinder.volume.volume_types.get_volume_type')
-    def test_update_only_is_public(self, mock_get, mock_update):
-        is_public = False
-        mock_get.return_value = return_volume_types_get_volume_type_updated(
-            '123', is_public=is_public)
-
-        body = {"volume_type": {"is_public": is_public}}
-        req = fakes.HTTPRequest.blank('/v2/fake/types/123')
-        req.method = 'PUT'
-
-        self.assertEqual(0, len(self.notifier.notifications))
-        res_dict = self.controller._update(req, '123', body)
-        self.assertEqual(1, len(self.notifier.notifications))
-        self._check_test_results(res_dict,
-                                 {'expected_name': 'vol_type_123_123',
-                                  'expected_desc': 'vol_type_desc_123_123',
-                                  'is_public': False})
 
     def test_update_invalid_is_public(self):
         body = {"volume_type": {"name": "test",
@@ -538,39 +449,6 @@ class VolumeTypesManageApiTest(test.TestCase):
                                  {'expected_name': 'vol_type_666',
                                   'expected_desc': 'vol_type_desc_666'})
         self.assertEqual(1, len(self.notifier.notifications))
-
-    @mock.patch('cinder.volume.volume_types.update')
-    @mock.patch('cinder.volume.volume_types.get_volume_type')
-    @mock.patch('cinder.policy.enforce')
-    def test_update_with_non_admin(self, mock_policy_enforce, mock_get,
-                                   mock_update):
-
-        # allow policy authorized user to update type
-        mock_policy_enforce.return_value = None
-        mock_get.return_value = return_volume_types_get_volume_type_updated(
-            '1', is_public=False)
-
-        body = {"volume_type": {"name": "vol_type_1_1",
-                                "description": "vol_type_desc_1_1",
-                                "is_public": False}}
-        req = fakes.HTTPRequest.blank('/v2/fake/types/1',
-                                      use_admin_context=False)
-        req.method = 'PUT'
-
-        self.assertEqual(0, len(self.notifier.notifications))
-        res_dict = self.controller._update(req, '1', body)
-        self.assertEqual(1, len(self.notifier.notifications))
-        self._check_test_results(res_dict,
-                                 {'expected_desc': 'vol_type_desc_1_1',
-                                  'expected_name': 'vol_type_1_1',
-                                  'is_public': False})
-
-        # non policy authorized user fails to update type
-        mock_policy_enforce.side_effect = (
-            exception.PolicyNotAuthorized(action='type_update'))
-        self.assertRaises(exception.PolicyNotAuthorized,
-                          self.controller._update,
-                          req, '1', body)
 
     def _check_test_results(self, results, expected_results):
         self.assertEqual(1, len(results))

@@ -35,7 +35,6 @@ from six.moves import http_client
 from cinder import exception
 from cinder.i18n import _, _LI, _LW, _LE
 from cinder import objects
-from cinder.objects import fields
 from cinder.volume import driver
 from cinder.volume.drivers.prophetstor import options
 from cinder.volume.drivers.san import san
@@ -174,6 +173,7 @@ class DPLCommand(object):
                        'expects': expected_status})
             if response.status == http_client.UNAUTHORIZED:
                 raise exception.NotAuthorized
+                retcode = errno.EACCES
             else:
                 retcode = errno.EIO
         elif retcode == 0 and response.status is http_client.NOT_FOUND:
@@ -698,7 +698,7 @@ class DPLVolume(object):
 
 
 class DPLCOMMONDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
-                      driver.CloneableImageVD,
+                      driver.CloneableVD, driver.CloneableImageVD,
                       driver.SnapshotVD, driver.LocalVD, driver.BaseVD):
     """Class of dpl storage adapter."""
     VERSION = '2.0.4'
@@ -784,6 +784,8 @@ class DPLCOMMONDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
                               '(%(status)s).'),
                           {'volume': eventid, 'status': e})
                 raise loopingcall.LoopingCallDone(retvalue=False)
+                status['state'] = 'error'
+                fExit = True
 
             if fExit is True:
                 break
@@ -869,7 +871,7 @@ class DPLCOMMONDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         LOG.info(_LI('Start to create consistency group: %(group_name)s '
                      'id: %(id)s'),
                  {'group_name': group['name'], 'id': group['id']})
-        model_update = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
+        model_update = {'status': 'available'}
         try:
             ret, output = self.dpl.create_vg(
                 self._conver_uuid2hex(group['id']),
@@ -888,7 +890,7 @@ class DPLCOMMONDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
                                                     'reason': six.text_type(e)}
             raise exception.VolumeBackendAPIException(data=msg)
 
-    def delete_consistencygroup(self, context, group, volumes):
+    def delete_consistencygroup(self, context, group):
         """Delete a consistency group."""
         ret = 0
         volumes = self.db.volume_get_all_by_group(
@@ -912,13 +914,12 @@ class DPLCOMMONDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
             except Exception:
                 ret = errno.EFAULT
                 volume_ref['status'] = 'error_deleting'
-                model_update['status'] = (
-                    fields.ConsistencyGroupStatus.ERROR_DELETING)
+                model_update['status'] = 'error_deleting'
         if ret == 0:
-            model_update['status'] = fields.ConsistencyGroupStatus.DELETED
+            model_update['status'] = 'deleted'
         return model_update, volumes
 
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def create_cgsnapshot(self, context, cgsnapshot):
         """Creates a cgsnapshot."""
         snapshots = objects.SnapshotList().get_all_for_cgsnapshot(
             context, cgsnapshot['id'])
@@ -945,7 +946,7 @@ class DPLCOMMONDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
 
         return model_update, snapshots
 
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def delete_cgsnapshot(self, context, cgsnapshot):
         """Deletes a cgsnapshot."""
         snapshots = objects.SnapshotList().get_all_for_cgsnapshot(
             context, cgsnapshot['id'])
@@ -976,7 +977,7 @@ class DPLCOMMONDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         removevollist = []
         cgid = group['id']
         vid = ''
-        model_update = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
+        model_update = {'status': 'available'}
         # Get current group info in backend storage.
         ret, output = self.dpl.get_vg(self._conver_uuid2hex(cgid))
         if ret == 0:
@@ -995,7 +996,7 @@ class DPLCOMMONDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
                 if self._conver_uuid2hex(vid) in group_members:
                     continue
                 self._join_volume_group(volume, cgid)
-        except Exception as e:
+        except exception as e:
             msg = _("Fexvisor failed to join the volume %(vol)s in the "
                     "group %(group)s due to "
                     "%(ret)s.") % {"vol": vid, "group": cgid,
@@ -1007,7 +1008,7 @@ class DPLCOMMONDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
                 vid = volume['id']
                 if self._conver_uuid2hex(vid) in group_members:
                     self._leave_volume_group(volume, cgid)
-        except Exception as e:
+        except exception as e:
             msg = _("Fexvisor failed to remove the volume %(vol)s in the "
                     "group %(group)s due to "
                     "%(ret)s.") % {"vol": vid, "group": cgid,

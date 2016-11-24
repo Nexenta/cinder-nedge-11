@@ -28,10 +28,6 @@
         users:
           tenants: 3
           users_per_tenant: 2
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -48,10 +44,6 @@
         users:
           tenants: 3
           users_per_tenant: 2
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -68,10 +60,6 @@
         users:
           tenants: 2
           users_per_tenant: 2
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -88,10 +76,6 @@
         users:
           tenants: 2
           users_per_tenant: 2
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -108,10 +92,6 @@
         users:
           tenants: 2
           users_per_tenant: 2
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -129,10 +109,6 @@
         users:
           tenants: 1
           users_per_tenant: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -150,10 +126,6 @@
         users:
           tenants: 1
           users_per_tenant: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -171,10 +143,6 @@
         users:
           tenants: 1
           users_per_tenant: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -194,10 +162,6 @@
         volumes:
           size: 1
           volumes_per_tenant: 2
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -214,10 +178,6 @@
         users:
           tenants: 2
           users_per_tenant: 2
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -234,10 +194,6 @@
         users:
           tenants: 2
           users_per_tenant: 2
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -254,10 +210,6 @@
         users:
           tenants: 2
           users_per_tenant: 2
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -275,10 +227,6 @@
         users:
           tenants: 1
           users_per_tenant: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -298,10 +246,6 @@
         users:
           tenants: 1
           users_per_tenant: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -322,10 +266,6 @@
         users:
           tenants: 2
           users_per_tenant: 2
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -351,10 +291,6 @@
           flavor:
             name: "m1.tiny"
           servers_per_tenant: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -379,10 +315,6 @@
           flavor:
             name: "m1.tiny"
           servers_per_tenant: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -401,10 +333,6 @@
           users_per_tenant: 1
         volumes:
           size: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -423,10 +351,6 @@
           users_per_tenant: 1
         volumes:
           size: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -445,10 +369,6 @@
           users_per_tenant: 2
         volumes:
           size: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -468,10 +388,6 @@
           users_per_tenant: 1
         volumes:
           size: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
       sla:
         failure_rate:
           max: 0
@@ -488,10 +404,86 @@
         users:
           tenants: 1
           users_per_tenant: 1
-        api_versions:
-          cinder:
-            version: 2
-            service_name: cinderv2
+      sla:
+        failure_rate:
+          max: 0
+
+  CinderVolumes.create_volume_backup:
+    -
+      args:
+        size: 1
+        do_delete: True
+        create_volume_kwargs: {}
+        create_backup_kwargs: {}
+      runner:
+        type: "constant"
+        times: 2
+        concurrency: 2
+      context:
+        users:
+          tenants: 1
+          users_per_tenant: 1
+        roles:
+          - "Member"
+      sla:
+        failure_rate:
+          max: 0
+    -
+      args:
+        size: 1
+        do_delete: False
+        create_volume_kwargs: {}
+        create_backup_kwargs: {}
+      runner:
+        type: "constant"
+        times: 2
+        concurrency: 2
+      context:
+        users:
+          tenants: 1
+          users_per_tenant: 1
+        roles:
+          - "Member"
+      sla:
+        failure_rate:
+          max: 0
+
+  CinderVolumes.create_and_restore_volume_backup:
+    -
+      args:
+        size: 1
+        do_delete: True
+        create_volume_kwargs: {}
+        create_backup_kwargs: {}
+      runner:
+        type: "constant"
+        times: 2
+        concurrency: 2
+      context:
+        users:
+          tenants: 1
+          users_per_tenant: 1
+        roles:
+          - "Member"
+      sla:
+        failure_rate:
+          max: 0
+    -
+      args:
+        size: 1
+        do_delete: False
+        create_volume_kwargs: {}
+        create_backup_kwargs: {}
+      runner:
+        type: "constant"
+        times: 2
+        concurrency: 2
+      context:
+        users:
+          tenants: 1
+          users_per_tenant: 1
+        roles:
+          - "Member"
       sla:
         failure_rate:
           max: 0

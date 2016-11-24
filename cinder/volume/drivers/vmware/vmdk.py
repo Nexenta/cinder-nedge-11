@@ -14,7 +14,7 @@
 #    under the License.
 
 """
-Volume driver for VMware vCenter managed datastores.
+Volume driver for VMware vCenter/ESX managed datastores.
 
 The volumes created by this driver are backed by VMDK (Virtual Machine
 Disk) files stored in datastores. For ease of managing the VMDKs, the
@@ -24,7 +24,6 @@ machine is never powered on and is often referred as the shadow VM.
 
 import contextlib
 import distutils.version as dist_version  # pylint: disable=E0611
-import math
 import os
 import tempfile
 
@@ -58,7 +57,6 @@ EAGER_ZEROED_THICK_VMDK_TYPE = 'eagerZeroedThick'
 CREATE_PARAM_ADAPTER_TYPE = 'adapter_type'
 CREATE_PARAM_DISK_LESS = 'disk_less'
 CREATE_PARAM_BACKING_NAME = 'name'
-CREATE_PARAM_DISK_SIZE = 'disk_size'
 
 TMP_IMAGES_DATASTORE_FOLDER_PATH = "cinder_temp/"
 
@@ -66,29 +64,30 @@ EXTRA_CONFIG_VOLUME_ID_KEY = "cinder.volume.id"
 
 vmdk_opts = [
     cfg.StrOpt('vmware_host_ip',
-               help='IP address for connecting to VMware vCenter server.'),
-    cfg.PortOpt('vmware_host_port',
-                default=443,
-                help='Port number for connecting to VMware vCenter server.'),
+               default=None,
+               help='IP address for connecting to VMware ESX/vCenter server.'),
     cfg.StrOpt('vmware_host_username',
-               help='Username for authenticating with VMware vCenter '
+               default=None,
+               help='Username for authenticating with VMware ESX/vCenter '
                     'server.'),
     cfg.StrOpt('vmware_host_password',
-               help='Password for authenticating with VMware vCenter '
+               default=None,
+               help='Password for authenticating with VMware ESX/vCenter '
                     'server.',
                secret=True),
     cfg.StrOpt('vmware_wsdl_location',
+               default=None,
                help='Optional VIM service WSDL Location '
                     'e.g http://<server>/vimService.wsdl. Optional over-ride '
                     'to default location for bug work-arounds.'),
     cfg.IntOpt('vmware_api_retry_count',
                default=10,
-               help='Number of times VMware vCenter server API must be '
+               help='Number of times VMware ESX/vCenter server API must be '
                     'retried upon connection related issues.'),
     cfg.FloatOpt('vmware_task_poll_interval',
                  default=0.5,
                  help='The interval (in seconds) for polling remote tasks '
-                      'invoked on VMware vCenter server.'),
+                      'invoked on VMware ESX/vCenter server.'),
     cfg.StrOpt('vmware_volume_folder',
                default='Volumes',
                help='Name of the vCenter inventory folder that will '
@@ -116,6 +115,7 @@ vmdk_opts = [
                help='Directory where virtual disks are stored during volume '
                     'backup and restore.'),
     cfg.StrOpt('vmware_ca_file',
+               default=None,
                help='CA bundle file to use in verifying the vCenter server '
                     'certificate.'),
     cfg.BoolOpt('vmware_insecure',
@@ -125,6 +125,7 @@ vmdk_opts = [
                      'used for verification. This option is ignored if '
                      '"vmware_ca_file" is set.'),
     cfg.MultiStrOpt('vmware_cluster_name',
+                    default=None,
                     help='Name of a vCenter compute cluster where volumes '
                          'should be created.'),
 ]
@@ -207,8 +208,8 @@ class ImageDiskType(object):
                                               extra_spec_disk_type)
 
 
-class VMwareVcVmdkDriver(driver.VolumeDriver):
-    """Manage volumes on VMware vCenter server."""
+class VMwareEsxVmdkDriver(driver.VolumeDriver):
+    """Manage volumes on VMware ESX server."""
 
     # 1.0 - initial version of driver
     # 1.1.0 - selection of datastore based on number of host mounts
@@ -216,25 +217,43 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
     # 1.3.0 - support for volume backup/restore
     # 1.4.0 - support for volume retype
     # 1.5.0 - restrict volume placement to specific vCenter clusters
-    # 1.6.0 - support for manage existing
-    VERSION = '1.6.0'
+    VERSION = '1.5.0'
 
-    # Minimum supported vCenter version.
-    MIN_SUPPORTED_VC_VERSION = dist_version.LooseVersion('5.1')
-
-    # PBM is enabled only for vCenter versions 5.5 and above
-    PBM_ENABLED_VC_VERSION = dist_version.LooseVersion('5.5')
+    def _do_deprecation_warning(self):
+        LOG.warning(_LW('The VMware ESX VMDK driver is now deprecated '
+                        'and will be removed in the Juno release. The VMware '
+                        'vCenter VMDK driver will remain and continue to be '
+                        'supported.'))
 
     def __init__(self, *args, **kwargs):
-        super(VMwareVcVmdkDriver, self).__init__(*args, **kwargs)
+        super(VMwareEsxVmdkDriver, self).__init__(*args, **kwargs)
+
+        self._do_deprecation_warning()
 
         self.configuration.append_config_values(vmdk_opts)
         self._session = None
         self._stats = None
         self._volumeops = None
+        # No storage policy based placement possible when connecting
+        # directly to ESX
         self._storage_policy_enabled = False
         self._ds_sel = None
         self._clusters = None
+
+    @property
+    def session(self):
+        if not self._session:
+            ip = self.configuration.vmware_host_ip
+            username = self.configuration.vmware_host_username
+            password = self.configuration.vmware_host_password
+            api_retry_count = self.configuration.vmware_api_retry_count
+            task_poll_interval = self.configuration.vmware_task_poll_interval
+            wsdl_loc = self.configuration.safe_get('vmware_wsdl_location')
+            self._session = api.VMwareAPISession(ip, username,
+                                                 password, api_retry_count,
+                                                 task_poll_interval,
+                                                 wsdl_loc=wsdl_loc)
+        return self._session
 
     @property
     def volumeops(self):
@@ -251,15 +270,30 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                                  self.session)
         return self._ds_sel
 
-    def _validate_params(self):
+    def do_setup(self, context):
+        """Perform validations and establish connection to server.
+
+        :param context: Context information
+        """
+
         # Throw error if required parameters are not set.
         required_params = ['vmware_host_ip',
                            'vmware_host_username',
                            'vmware_host_password']
         for param in required_params:
             if not getattr(self.configuration, param, None):
-                reason = _("%s not set.") % param
-                raise exception.InvalidInput(reason=reason)
+                raise exception.InvalidInput(_("%s not set.") % param)
+
+        # Create the session object for the first time for ESX driver
+        driver = self.__class__.__name__
+        if driver == 'VMwareEsxVmdkDriver':
+            max_objects = self.configuration.vmware_max_objects_retrieval
+            self._volumeops = volumeops.VMwareVolumeOps(self.session,
+                                                        max_objects)
+            LOG.info(_LI("Successfully setup driver: %(driver)s for "
+                         "server: %(ip)s."),
+                     {'driver': driver,
+                      'ip': self.configuration.vmware_host_ip})
 
     def check_for_setup_error(self):
         pass
@@ -333,6 +367,14 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         """
         self._delete_volume(volume)
 
+    def _get_volume_group_folder(self, datacenter):
+        """Return vmFolder of datacenter as we cannot create folder in ESX.
+
+        :param datacenter: Reference to the datacenter
+        :return: vmFolder reference of the datacenter
+        """
+        return self.volumeops.get_vmfolder(datacenter)
+
     def _get_extra_spec_storage_profile(self, type_id):
         """Get storage profile name in the given volume type's extra spec.
 
@@ -368,7 +410,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         :param volume: Volume object
         :return: Disk type
         """
-        return VMwareVcVmdkDriver._get_extra_spec_disk_type(
+        return VMwareEsxVmdkDriver._get_extra_spec_disk_type(
             volume['volume_type_id'])
 
     def _get_storage_profile_id(self, volume):
@@ -422,7 +464,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 extra_config=extra_config)
 
         # create a backing with single disk
-        disk_type = VMwareVcVmdkDriver._get_disk_type(volume)
+        disk_type = VMwareEsxVmdkDriver._get_disk_type(volume)
         size_kb = volume['size'] * units.Mi
         adapter_type = create_params.get(CREATE_PARAM_ADAPTER_TYPE,
                                          'lsiLogic')
@@ -439,6 +481,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         self.volumeops.update_backing_disk_uuid(backing, volume['id'])
         return backing
+
+    def _relocate_backing(self, volume, backing, host):
+        pass
 
     def _get_hosts(self, clusters):
         hosts = []
@@ -481,11 +526,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         :return: (host, resource_pool, folder, summary)
         """
         # Form requirements for datastore selection.
-        create_params = create_params or {}
-        size = create_params.get(CREATE_PARAM_DISK_SIZE, volume['size'])
-
         req = {}
-        req[hub.DatastoreSelector.SIZE_BYTES] = size * units.Gi
+        req[hub.DatastoreSelector.SIZE_BYTES] = (volume['size'] * units.Gi)
         req[hub.DatastoreSelector.PROFILE_NAME] = self._get_storage_profile(
             volume)
 
@@ -536,10 +578,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 # Create backing
                 backing = self._create_backing(volume)
 
-        # Set volume ID and backing moref value and name.
+        # Set volume's moref value and name
         connection_info['data'] = {'volume': backing.value,
-                                   'volume_id': volume['id'],
-                                   'name': volume['name']}
+                                   'volume_id': volume['id']}
 
         LOG.info(_LI("Returning connection_info: %(info)s for volume: "
                      "%(volume)s with connector: %(connector)s."),
@@ -641,6 +682,111 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         """
         self._delete_snapshot(snapshot)
 
+    def _create_backing_by_copying(self, volume, src_vmdk_path,
+                                   src_size_in_gb):
+        """Create volume backing.
+
+        Creates a backing for the input volume and replaces its VMDK file
+        with the input VMDK file copy.
+
+        :param volume: New Volume object
+        :param src_vmdk_path: VMDK file path of the source volume backing
+        :param src_size_in_gb: The size of the original volume to be cloned
+        in GB. The size of the target volume is saved in volume['size'].
+        This parameter is used to check if the size specified by the user is
+        greater than the original size. If so, the target volume should extend
+        its size.
+        """
+
+        # Create a backing
+        backing = self._create_backing(volume)
+        dest_vmdk_path = self.volumeops.get_vmdk_path(backing)
+        datacenter = self.volumeops.get_dc(backing)
+        # Deleting the current VMDK file
+        self.volumeops.delete_vmdk_file(dest_vmdk_path, datacenter)
+        # Copying the source VMDK file
+        self.volumeops.copy_vmdk_file(datacenter, src_vmdk_path,
+                                      dest_vmdk_path)
+        # If the target volume has a larger size than the source
+        # volume/snapshot, we need to resize/extend the size of the
+        # vmdk virtual disk to the value specified by the user.
+        if volume['size'] > src_size_in_gb:
+            self._extend_volumeops_virtual_disk(volume['size'], dest_vmdk_path,
+                                                datacenter)
+        LOG.info(_LI("Successfully cloned new backing: %(back)s from "
+                     "source VMDK file: %(vmdk)s."),
+                 {'back': backing, 'vmdk': src_vmdk_path})
+
+    def _create_cloned_volume(self, volume, src_vref):
+        """Creates volume clone.
+
+        If source volume's backing does not exist, then pass.
+        Creates a backing and replaces its VMDK file with a copy of the
+        source backing's VMDK file.
+
+        :param volume: New Volume object
+        :param src_vref: Volume object that must be cloned
+        """
+        self._verify_volume_creation(volume)
+        backing = self.volumeops.get_backing(src_vref['name'])
+        if not backing:
+            LOG.info(_LI("There is no backing for the source volume: "
+                         "%(svol)s. Not creating any backing for the "
+                         "volume: %(vol)s."),
+                     {'svol': src_vref['name'],
+                      'vol': volume['name']})
+            return
+        src_vmdk_path = self.volumeops.get_vmdk_path(backing)
+        self._create_backing_by_copying(volume, src_vmdk_path,
+                                        src_vref['size'])
+
+    def create_cloned_volume(self, volume, src_vref):
+        """Creates volume clone.
+
+        :param volume: New Volume object
+        :param src_vref: Volume object that must be cloned
+        """
+        self._create_cloned_volume(volume, src_vref)
+
+    def _create_volume_from_snapshot(self, volume, snapshot):
+        """Creates a volume from a snapshot.
+
+        If the snapshot does not exist or source volume's backing does not
+        exist, then pass.
+        Else creates clone of source volume backing by copying its VMDK file.
+
+        :param volume: Volume object
+        :param snapshot: Snapshot object
+        """
+        self._verify_volume_creation(volume)
+        backing = self.volumeops.get_backing(snapshot['volume_name'])
+        if not backing:
+            LOG.info(_LI("There is no backing for the source snapshot: "
+                         "%(snap)s. Not creating any backing for the "
+                         "volume: %(vol)s."),
+                     {'snap': snapshot['name'],
+                      'vol': volume['name']})
+            return
+        snapshot_moref = self.volumeops.get_snapshot(backing,
+                                                     snapshot['name'])
+        if not snapshot_moref:
+            LOG.info(_LI("There is no snapshot point for the snapshotted "
+                         "volume: %(snap)s. Not creating any backing for "
+                         "the volume: %(vol)s."),
+                     {'snap': snapshot['name'], 'vol': volume['name']})
+            return
+        src_vmdk_path = self.volumeops.get_vmdk_path(snapshot_moref)
+        self._create_backing_by_copying(volume, src_vmdk_path,
+                                        snapshot['volume_size'])
+
+    def create_volume_from_snapshot(self, volume, snapshot):
+        """Creates a volume from a snapshot.
+
+        :param volume: Volume object
+        :param snapshot: Snapshot object
+        """
+        self._create_volume_from_snapshot(volume, snapshot)
+
     def _get_ds_name_folder_path(self, backing):
         """Get datastore name and folder path of the given backing.
 
@@ -670,7 +816,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         timeout = self.configuration.vmware_image_transfer_timeout_secs
         host_ip = self.configuration.vmware_host_ip
-        port = self.configuration.vmware_host_port
         ca_file = self.configuration.vmware_ca_file
         insecure = self.configuration.vmware_insecure
         cookies = self.session.vim.client.options.transport.cookiejar
@@ -693,7 +838,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                            image_id,
                                            image_size=image_size_in_bytes,
                                            host=host_ip,
-                                           port=port,
+                                           port=443,
                                            data_center_name=dc_name,
                                            datastore_name=ds_name,
                                            cookies=cookies,
@@ -739,11 +884,10 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         # Form requirements for datastore selection.
         req = {}
         req[hub.DatastoreSelector.SIZE_BYTES] = image_size_in_bytes
-        # vSAN/VVOL datastores don't support virtual disk with
+        # vSAN datastores don't support virtual disk with
         # flat extent; skip such datastores.
         req[hub.DatastoreSelector.HARD_AFFINITY_DS_TYPE] = (
-            hub.DatastoreType.get_all_types() -
-            {hub.DatastoreType.VSAN, hub.DatastoreType.VVOL})
+            hub.DatastoreType.get_all_types() - {hub.DatastoreType.VSAN})
 
         # Select datastore satisfying the requirements.
         (host_ref, _resource_pool, summary) = self._select_datastore(req)
@@ -890,7 +1034,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         """
         # We should use the disk type in volume type for backing's virtual
         # disk.
-        disk_type = VMwareVcVmdkDriver._get_disk_type(volume)
+        disk_type = VMwareEsxVmdkDriver._get_disk_type(volume)
 
         # First, create a disk-less backing.
         create_params = {CREATE_PARAM_DISK_LESS: True}
@@ -938,18 +1082,14 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                       {'path': vmdk_path.get_descriptor_ds_file_path(),
                        'backing': backing})
 
-            profile_id = self._get_storage_profile_id(volume)
             self.volumeops.attach_disk_to_backing(
-                backing,
-                image_size_in_bytes / units.Ki, disk_type,
-                adapter_type,
-                profile_id,
-                vmdk_path.get_descriptor_ds_file_path())
+                backing, image_size_in_bytes / units.Ki, disk_type,
+                adapter_type, vmdk_path.get_descriptor_ds_file_path())
             attached = True
 
             if disk_conversion:
                 # Clone the temporary backing for disk type conversion.
-                (host, rp, folder, summary) = self._select_ds_for_volume(
+                (host, rp, _folder, summary) = self._select_ds_for_volume(
                     volume)
                 datastore = summary.datastore
                 LOG.debug("Cloning temporary backing: %s for disk type "
@@ -959,10 +1099,9 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                                      None,
                                                      volumeops.FULL_CLONE_TYPE,
                                                      datastore,
-                                                     disk_type=disk_type,
-                                                     host=host,
-                                                     resource_pool=rp,
-                                                     folder=folder)
+                                                     disk_type,
+                                                     host,
+                                                     rp)
                 self._delete_temp_backing(backing)
                 backing = clone
             self.volumeops.update_backing_disk_uuid(backing, volume['id'])
@@ -985,7 +1124,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         """Creates volume from image using HttpNfc VM import.
 
         Uses Nfc API to download the VMDK file from Glance. Nfc creates the
-        backing VM that wraps the VMDK in the vCenter inventory.
+        backing VM that wraps the VMDK in the ESX/vCenter inventory.
         This method assumes glance image is VMDK disk format and its
         vmware_disktype is 'streamOptimized'.
         """
@@ -1003,7 +1142,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         # prepare create spec for backing vm
         profile_id = self._get_storage_profile_id(volume)
-        disk_type = VMwareVcVmdkDriver._get_disk_type(volume)
+        disk_type = VMwareEsxVmdkDriver._get_disk_type(volume)
 
         # The size of stream optimized glance image is often suspect,
         # so better let vCenter figure out the disk capacity during import.
@@ -1014,7 +1153,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             dummy_disk_size,
             disk_type,
             summary.name,
-            profile_id=profile_id,
+            profileId=profile_id,
             adapter_type=adapter_type,
             extra_config=extra_config)
         # convert vm_create_spec to vm_import_spec
@@ -1026,7 +1165,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             # fetching image from glance will also create the backing
             timeout = self.configuration.vmware_image_transfer_timeout_secs
             host_ip = self.configuration.vmware_host_ip
-            port = self.configuration.vmware_host_port
             LOG.debug("Fetching glance image: %(id)s to server: %(host)s.",
                       {'id': image_id, 'host': host_ip})
             backing = image_transfer.download_stream_optimized_image(
@@ -1036,7 +1174,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 image_id,
                 session=self.session,
                 host=host_ip,
-                port=port,
+                port=443,
                 resource_pool=rp,
                 vm_folder=folder,
                 vm_import_spec=vm_import_spec,
@@ -1056,16 +1194,39 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         LOG.info(_LI("Done copying image: %(id)s to volume: %(vol)s."),
                  {'id': image_id, 'vol': volume['name']})
 
-    def _extend_backing(self, backing, new_size_in_gb):
-        """Extend volume backing's virtual disk.
+    def _extend_vmdk_virtual_disk(self, name, new_size_in_gb):
+        """Extend the size of the vmdk virtual disk to the new size.
 
-        :param backing: volume backing
-        :param new_size_in_gb: new size of virtual disk
+        :param name: the name of the volume
+        :param new_size_in_gb: the new size the vmdk virtual disk extends to
         """
-        root_vmdk_path = self.volumeops.get_vmdk_path(backing)
-        datacenter = self.volumeops.get_dc(backing)
-        self.volumeops.extend_virtual_disk(new_size_in_gb, root_vmdk_path,
-                                           datacenter)
+        backing = self.volumeops.get_backing(name)
+        if not backing:
+            LOG.info(_LI("The backing is not found, so there is no need "
+                         "to extend the vmdk virtual disk for the volume "
+                         "%s."), name)
+        else:
+            root_vmdk_path = self.volumeops.get_vmdk_path(backing)
+            datacenter = self.volumeops.get_dc(backing)
+            self._extend_volumeops_virtual_disk(new_size_in_gb, root_vmdk_path,
+                                                datacenter)
+
+    def _extend_volumeops_virtual_disk(self, new_size_in_gb, root_vmdk_path,
+                                       datacenter):
+        """Call the ExtendVirtualDisk_Task.
+
+        :param new_size_in_gb: the new size the vmdk virtual disk extends to
+        :param root_vmdk_path: the path for the vmdk file
+        :param datacenter: reference to the datacenter
+        """
+        try:
+            self.volumeops.extend_virtual_disk(new_size_in_gb,
+                                               root_vmdk_path, datacenter)
+        except exceptions.VimException:
+            with excutils.save_and_reraise_exception():
+                LOG.exception(_LE("Unable to extend the size of the "
+                                  "vmdk virtual disk at the path %s."),
+                              root_vmdk_path)
 
     def copy_image_to_volume(self, context, volume, image_service, image_id):
         """Creates volume from image.
@@ -1073,7 +1234,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         This method only supports Glance image of VMDK disk format.
         Uses flat vmdk file copy for "sparse" and "preallocated" disk types
         Uses HttpNfc import API for "streamOptimized" disk types. This API
-        creates a backing VM that wraps the VMDK in the vCenter inventory.
+        creates a backing VM that wraps the VMDK in the ESX/vCenter inventory.
 
         :param context: context
         :param volume: Volume object
@@ -1084,7 +1245,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         # Verify glance image is vmdk disk format
         metadata = image_service.show(context, image_id)
-        VMwareVcVmdkDriver._validate_disk_format(metadata['disk_format'])
+        VMwareEsxVmdkDriver._validate_disk_format(metadata['disk_format'])
 
         # Validate container format; only 'bare' is supported currently.
         container_format = metadata.get('container_format')
@@ -1142,7 +1303,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                       {'name': volume['name'],
                        'vol_size': volume_size,
                        'disk_size': disk_size})
-            self._extend_backing(backing, volume['size'])
+            self._extend_vmdk_virtual_disk(volume['name'], volume['size'])
         # TODO(vbala): handle volume_size < disk_size case.
 
     def copy_volume_to_image(self, context, volume, image_service, image_meta):
@@ -1167,7 +1328,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         # validate disk format is vmdk
         LOG.debug("Copy Volume: %s to new image.", volume['name'])
-        VMwareVcVmdkDriver._validate_disk_format(image_meta['disk_format'])
+        VMwareEsxVmdkDriver._validate_disk_format(image_meta['disk_format'])
 
         # get backing vm of volume and its vmdk path
         backing = self.volumeops.get_backing(volume['name'])
@@ -1180,7 +1341,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         # Upload image from vmdk
         timeout = self.configuration.vmware_image_transfer_timeout_secs
         host_ip = self.configuration.vmware_host_ip
-        port = self.configuration.vmware_host_port
 
         image_transfer.upload_image(context,
                                     timeout,
@@ -1189,7 +1349,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                     volume['project_id'],
                                     session=self.session,
                                     host=host_ip,
-                                    port=port,
+                                    port=443,
                                     vm=backing,
                                     vmdk_file_path=vmdk_file_path,
                                     vmdk_size=volume['size'] * units.Gi,
@@ -1238,8 +1398,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
             return True
 
         # Check whether we need disk type conversion.
-        disk_type = VMwareVcVmdkDriver._get_disk_type(volume)
-        new_disk_type = VMwareVcVmdkDriver._get_extra_spec_disk_type(
+        disk_type = VMwareEsxVmdkDriver._get_disk_type(volume)
+        new_disk_type = VMwareEsxVmdkDriver._get_extra_spec_disk_type(
             new_type['id'])
         need_disk_type_conversion = disk_type != new_disk_type
 
@@ -1301,8 +1461,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 return False
 
             (host, rp, summary) = best_candidate
-            dc = self.volumeops.get_dc(rp)
-            folder = self._get_volume_group_folder(dc, volume['project_id'])
             new_datastore = summary.datastore
             if datastore.value != new_datastore.value:
                 # Datastore changed; relocate the backing.
@@ -1310,6 +1468,10 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                           backing)
                 self.volumeops.relocate_backing(
                     backing, new_datastore, rp, host, new_disk_type)
+
+                dc = self.volumeops.get_dc(rp)
+                folder = self._get_volume_group_folder(dc,
+                                                       volume['project_id'])
                 self.volumeops.move_backing_to_folder(backing, folder)
             elif need_disk_type_conversion:
                 # Same datastore, but clone is needed for disk type conversion.
@@ -1325,9 +1487,8 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
                     new_backing = self.volumeops.clone_backing(
                         volume['name'], backing, None,
-                        volumeops.FULL_CLONE_TYPE, datastore,
-                        disk_type=new_disk_type, host=host,
-                        resource_pool=rp, folder=folder)
+                        volumeops.FULL_CLONE_TYPE, datastore, new_disk_type,
+                        host, rp)
                     self.volumeops.update_backing_disk_uuid(new_backing,
                                                             volume['id'])
                     self._delete_temp_backing(backing)
@@ -1373,58 +1534,50 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         return True
 
     def extend_volume(self, volume, new_size):
-        """Extend volume to new size.
+        """Extend vmdk to new_size.
 
-        Extends the volume backing's virtual disk to new size. First, try to
-        extend in place on the same datastore. If that fails due to
-        insufficient disk space, then try to relocate the volume to a different
-        datastore that can accommodate the backing with new size and retry
-        extend.
+        Extends the vmdk backing to new volume size. First try to extend in
+        place on the same datastore. If that fails, try to relocate the volume
+        to a different datastore that can accommodate the new_size'd volume.
 
         :param volume: dictionary describing the existing 'available' volume
         :param new_size: new size in GB to extend this volume to
         """
         vol_name = volume['name']
-        backing = self.volumeops.get_backing(vol_name)
-        if not backing:
-            LOG.info(_LI("There is no backing for volume: %s; no need to "
-                         "extend the virtual disk."), vol_name)
-            return
-
         # try extending vmdk in place
         try:
-            self._extend_backing(backing, new_size)
-            LOG.info(_LI("Successfully extended volume: %(vol)s to size: "
-                         "%(size)s GB."),
+            self._extend_vmdk_virtual_disk(vol_name, new_size)
+            LOG.info(_LI("Done extending volume %(vol)s "
+                         "to size %(size)s GB."),
                      {'vol': vol_name, 'size': new_size})
             return
-        except exceptions.NoDiskSpaceException:
-            LOG.warning(_LW("Unable to extend volume: %(vol)s to size: "
-                            "%(size)s on current datastore due to insufficient"
-                            " space."),
-                        {'vol': vol_name, 'size': new_size})
-
-        # Insufficient disk space; relocate the volume to a different datastore
-        # and retry extend.
-        LOG.info(_LI("Relocating volume: %s to a different datastore due to "
-                     "insufficient disk space on current datastore."),
-                 vol_name)
+        except exceptions.VimFaultException:
+            LOG.info(_LI("Relocating volume %s vmdk to a different "
+                         "datastore since trying to extend vmdk file "
+                         "in place failed."), vol_name)
+        # If in place extend fails, then try to relocate the volume
         try:
-            create_params = {CREATE_PARAM_DISK_SIZE: new_size}
-            (host, rp, folder, summary) = self._select_ds_for_volume(
-                volume, create_params=create_params)
+            (host, rp, folder, summary) = self._select_ds_for_volume(new_size)
+        except exceptions.VimException:
+            with excutils.save_and_reraise_exception():
+                LOG.exception(_LE("Not able to find a different datastore to "
+                                  "place the extended volume %s."), vol_name)
+
+        LOG.info(_LI("Selected datastore %(ds)s to place extended volume of "
+                     "size %(size)s GB."), {'ds': summary.name,
+                                            'size': new_size})
+
+        try:
+            backing = self.volumeops.get_backing(vol_name)
             self.volumeops.relocate_backing(backing, summary.datastore, rp,
                                             host)
+            self._extend_vmdk_virtual_disk(vol_name, new_size)
             self.volumeops.move_backing_to_folder(backing, folder)
-            self._extend_backing(backing, new_size)
-        except exceptions.VMwareDriverException:
+        except exceptions.VimException:
             with excutils.save_and_reraise_exception():
-                LOG.error(_LE("Failed to extend volume: %(vol)s to size: "
-                              "%(size)s GB."),
-                          {'vol': vol_name, 'size': new_size})
-
-        LOG.info(_LI("Successfully extended volume: %(vol)s to size: "
-                     "%(size)s GB."),
+                LOG.exception(_LE("Not able to relocate volume %s for "
+                                  "extending."), vol_name)
+        LOG.info(_LI("Done extending volume %(vol)s to size %(size)s GB."),
                  {'vol': vol_name, 'size': new_size})
 
     @contextlib.contextmanager
@@ -1444,7 +1597,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         """Download virtual disk in streamOptimized format."""
         timeout = self.configuration.vmware_image_transfer_timeout_secs
         host_ip = self.configuration.vmware_host_ip
-        port = self.configuration.vmware_host_port
         vmdk_ds_file_path = self.volumeops.get_vmdk_path(backing)
 
         with open(tmp_file_path, "wb") as tmp_file:
@@ -1454,7 +1606,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                 tmp_file,
                 session=self.session,
                 host=host_ip,
-                port=port,
+                port=443,
                 vm=backing,
                 vmdk_file_path=vmdk_ds_file_path,
                 vmdk_size=volume['size'] * units.Gi)
@@ -1482,13 +1634,13 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                        'backup_id': backup['id']})
             self._download_vmdk(context, volume, backing, tmp_file_path)
             with open(tmp_file_path, "rb") as tmp_file:
-                LOG.debug("Calling backup service to backup file: %s.",
-                          tmp_file_path)
-                backup_service.backup(backup, tmp_file)
-                LOG.debug("Created backup: %(backup_id)s for volume: "
-                          "%(name)s.",
-                          {'backup_id': backup['id'],
-                           'name': volume['name']})
+                    LOG.debug("Calling backup service to backup file: %s.",
+                              tmp_file_path)
+                    backup_service.backup(backup, tmp_file)
+                    LOG.debug("Created backup: %(backup_id)s for volume: "
+                              "%(name)s.",
+                              {'backup_id': backup['id'],
+                               'name': volume['name']})
 
     def _create_backing_from_stream_optimized_file(
             self, context, name, volume, tmp_file_path, file_size_bytes):
@@ -1507,7 +1659,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         vm_import_spec = cf.create('ns0:VirtualMachineImportSpec')
 
         profile_id = self._get_storage_profile_id(volume)
-        disk_type = VMwareVcVmdkDriver._get_disk_type(volume)
+        disk_type = VMwareEsxVmdkDriver._get_disk_type(volume)
         extra_config = self._get_extra_config(volume)
         # We cannot determine the size of a virtual disk created from
         # streamOptimized disk image. Set size to 0 and let vCenter
@@ -1519,7 +1671,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
         timeout = self.configuration.vmware_image_transfer_timeout_secs
         host_ip = self.configuration.vmware_host_ip
-        port = self.configuration.vmware_host_port
         try:
             with open(tmp_file_path, "rb") as tmp_file:
                 vm_ref = image_transfer.download_stream_optimized_data(
@@ -1528,7 +1679,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                     tmp_file,
                     session=self.session,
                     host=host_ip,
-                    port=port,
+                    port=443,
                     resource_pool=rp,
                     vm_folder=folder,
                     vm_import_spec=vm_import_spec,
@@ -1569,15 +1720,13 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         renamed = False
         try:
             # Find datastore for clone.
-            (host, rp, folder, summary) = self._select_ds_for_volume(volume)
+            (host, rp, _folder, summary) = self._select_ds_for_volume(volume)
             datastore = summary.datastore
 
-            disk_type = VMwareVcVmdkDriver._get_disk_type(volume)
+            disk_type = VMwareEsxVmdkDriver._get_disk_type(volume)
             dest = self.volumeops.clone_backing(dest_name, src, None,
                                                 volumeops.FULL_CLONE_TYPE,
-                                                datastore, disk_type=disk_type,
-                                                host=host, resource_pool=rp,
-                                                folder=folder)
+                                                datastore, disk_type, host, rp)
             self.volumeops.update_backing_disk_uuid(dest, volume['id'])
             if new_backing:
                 LOG.debug("Created new backing: %s for restoring backup.",
@@ -1638,125 +1787,58 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         tmp_vmdk_name = uuidutils.generate_uuid()
         with self._temporary_file(suffix=".vmdk",
                                   prefix=tmp_vmdk_name) as tmp_file_path:
-            LOG.debug("Using temporary file: %(tmp_path)s for restoring "
-                      "backup: %(backup_id)s.",
-                      {'tmp_path': tmp_file_path,
-                       'backup_id': backup['id']})
-            with open(tmp_file_path, "wb") as tmp_file:
-                LOG.debug("Calling backup service to restore backup: "
-                          "%(backup_id)s to file: %(tmp_path)s.",
+                LOG.debug("Using temporary file: %(tmp_path)s for restoring "
+                          "backup: %(backup_id)s.",
+                          {'tmp_path': tmp_file_path,
+                           'backup_id': backup['id']})
+                with open(tmp_file_path, "wb") as tmp_file:
+                    LOG.debug("Calling backup service to restore backup: "
+                              "%(backup_id)s to file: %(tmp_path)s.",
+                              {'backup_id': backup['id'],
+                               'tmp_path': tmp_file_path})
+                    backup_service.restore(backup, volume['id'], tmp_file)
+                    LOG.debug("Backup: %(backup_id)s restored to file: "
+                              "%(tmp_path)s.",
+                              {'backup_id': backup['id'],
+                               'tmp_path': tmp_file_path})
+                self._restore_backing(context, volume, backing, tmp_file_path,
+                                      backup['size'] * units.Gi)
+
+                if backup['size'] < volume['size']:
+                    # Current backing size is backup size.
+                    LOG.debug("Backup size: %(backup_size)d is less than "
+                              "volume size: %(vol_size)d; extending volume.",
+                              {'backup_size': backup['size'],
+                               'vol_size': volume['size']})
+                    self.extend_volume(volume, volume['size'])
+
+                LOG.debug("Backup: %(backup_id)s restored to volume: "
+                          "%(name)s.",
                           {'backup_id': backup['id'],
-                           'tmp_path': tmp_file_path})
-                backup_service.restore(backup, volume['id'], tmp_file)
-                LOG.debug("Backup: %(backup_id)s restored to file: "
-                          "%(tmp_path)s.",
-                          {'backup_id': backup['id'],
-                           'tmp_path': tmp_file_path})
-            self._restore_backing(context, volume, backing, tmp_file_path,
-                                  backup['size'] * units.Gi)
+                           'name': volume['name']})
 
-            if backup['size'] < volume['size']:
-                # Current backing size is backup size.
-                LOG.debug("Backup size: %(backup_size)d is less than "
-                          "volume size: %(vol_size)d; extending volume.",
-                          {'backup_size': backup['size'],
-                           'vol_size': volume['size']})
-                self.extend_volume(volume, volume['size'])
 
-            LOG.debug("Backup: %(backup_id)s restored to volume: "
-                      "%(name)s.",
-                      {'backup_id': backup['id'],
-                       'name': volume['name']})
+class VMwareVcVmdkDriver(VMwareEsxVmdkDriver):
+    """Manage volumes on VMware vCenter server."""
 
-    def _get_disk_device(self, vmdk_path, vm_inv_path):
-        # Get the VM that corresponds to the given inventory path.
-        vm = self.volumeops.get_entity_by_inventory_path(vm_inv_path)
-        if vm:
-            # Get the disk device that corresponds to the given vmdk path.
-            disk_device = self.volumeops.get_disk_device(vm, vmdk_path)
-            if disk_device:
-                return (vm, disk_device)
+    # Minimum supported vCenter version.
+    MIN_SUPPORTED_VC_VERSION = dist_version.LooseVersion('5.1')
 
-    def _get_existing(self, existing_ref):
-        src_name = existing_ref.get('source-name')
-        if not src_name:
-            raise exception.InvalidInput(
-                reason=_("source-name cannot be empty."))
+    # PBM is enabled only for vCenter versions 5.5 and above
+    PBM_ENABLED_VC_VERSION = dist_version.LooseVersion('5.5')
 
-        # source-name format: vmdk_path@vm_inventory_path
-        parts = src_name.split('@')
-        if len(parts) != 2:
-            raise exception.InvalidInput(
-                reason=_("source-name format should be: "
-                         "'vmdk_path@vm_inventory_path'."))
+    def _do_deprecation_warning(self):
+        # no deprecation warning for vCenter vmdk driver
+        pass
 
-        (vmdk_path, vm_inv_path) = parts
-        existing = self._get_disk_device(vmdk_path, vm_inv_path)
-        if not existing:
-            reason = _("%s does not exist.") % src_name
-            raise exception.ManageExistingInvalidReference(
-                existing_ref=existing_ref, reason=reason)
-
-        return existing
-
-    def manage_existing_get_size(self, volume, existing_ref):
-        """Return size of the volume to be managed by manage_existing.
-
-        When calculating the size, round up to the next GB.
-
-        :param volume: Cinder volume to manage
-        :param existing_ref: Driver-specific information used to identify a
-        volume
-        """
-        (_vm, disk) = self._get_existing(existing_ref)
-        return int(math.ceil(disk.capacityInKB * units.Ki / float(units.Gi)))
-
-    def manage_existing(self, volume, existing_ref):
-        """Brings an existing virtual disk under Cinder management.
-
-        Detaches the virtual disk identified by existing_ref and attaches
-        it to a volume backing.
-
-        :param volume: Cinder volume to manage
-        :param existing_ref: Driver-specific information used to identify a
-        volume
-        """
-        (vm, disk) = self._get_existing(existing_ref)
-
-        # Create a backing for the volume.
-        create_params = {CREATE_PARAM_DISK_LESS: True}
-        backing = self._create_backing(volume, create_params=create_params)
-
-        # Detach the disk to be managed from the source VM.
-        self.volumeops.detach_disk_from_backing(vm, disk)
-
-        # Move the disk to the datastore folder of volume backing.
-        src_dc = self.volumeops.get_dc(vm)
-        dest_dc = self.volumeops.get_dc(backing)
-        (ds_name, folder_path) = self._get_ds_name_folder_path(backing)
-        dest_path = volumeops.VirtualDiskPath(
-            ds_name, folder_path, volume['name'])
-        self.volumeops.move_vmdk_file(src_dc,
-                                      disk.backing.fileName,
-                                      dest_path.get_descriptor_ds_file_path(),
-                                      dest_dc_ref=dest_dc)
-
-        # Attach the disk to be managed to volume backing.
-        profile_id = self._get_storage_profile_id(volume)
-        self.volumeops.attach_disk_to_backing(
-            backing,
-            disk.capacityInKB,
-            VMwareVcVmdkDriver._get_disk_type(volume),
-            'lsiLogic',
-            profile_id,
-            dest_path.get_descriptor_ds_file_path())
-        self.volumeops.update_backing_disk_uuid(backing, volume['id'])
+    def __init__(self, *args, **kwargs):
+        super(VMwareVcVmdkDriver, self).__init__(*args, **kwargs)
+        self._session = None
 
     @property
     def session(self):
         if not self._session:
             ip = self.configuration.vmware_host_ip
-            port = self.configuration.vmware_host_port
             username = self.configuration.vmware_host_username
             password = self.configuration.vmware_host_password
             api_retry_count = self.configuration.vmware_api_retry_count
@@ -1770,7 +1852,6 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
                                                  task_poll_interval,
                                                  wsdl_loc=wsdl_loc,
                                                  pbm_wsdl_loc=pbm_wsdl,
-                                                 port=port,
                                                  cacert=ca_file,
                                                  insecure=insecure)
         return self._session
@@ -1800,14 +1881,18 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
 
     def _validate_vcenter_version(self, vc_version):
         if vc_version < self.MIN_SUPPORTED_VC_VERSION:
-            msg = _('Running Cinder with a VMware vCenter version less than '
-                    '%s is not allowed.') % self.MIN_SUPPORTED_VC_VERSION
-            LOG.error(msg)
-            raise exceptions.VMwareDriverException(message=msg)
+            # TODO(vbala): enforce vCenter version in M release.
+            LOG.warning(
+                _LW('Running Cinder with a VMware vCenter version less than '
+                    '%(min_version)s is deprecated. The minimum required '
+                    'version of vCenter server will be raised to '
+                    '%(min_version)s in the 8.0.0 release.'),
+                {'min_version': self.MIN_SUPPORTED_VC_VERSION})
 
     def do_setup(self, context):
         """Any initialization the volume driver does while starting."""
-        self._validate_params()
+        super(VMwareVcVmdkDriver, self).do_setup(context)
+        # vCenter specific setup is done here
 
         # Validate vCenter version.
         vc_version = self._get_vc_version()
@@ -1918,22 +2003,11 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         :return: Clone type from the extra spec if present, else return
                  default 'full' clone type
         """
-        clone_type = _get_volume_type_extra_spec(
-            volume['volume_type_id'],
-            'clone_type',
-            default_value=volumeops.FULL_CLONE_TYPE)
-
-        if (clone_type != volumeops.FULL_CLONE_TYPE
-                and clone_type != volumeops.LINKED_CLONE_TYPE):
-            msg = (_("Clone type '%(clone_type)s' is invalid; valid values"
-                     " are: '%(full_clone)s' and '%(linked_clone)s'.") %
-                   {'clone_type': clone_type,
-                    'full_clone': volumeops.FULL_CLONE_TYPE,
-                    'linked_clone': volumeops.LINKED_CLONE_TYPE})
-            LOG.error(msg)
-            raise exception.Invalid(message=msg)
-
-        return clone_type
+        return _get_volume_type_extra_spec(volume['volume_type_id'],
+                                           'clone_type',
+                                           (volumeops.FULL_CLONE_TYPE,
+                                            volumeops.LINKED_CLONE_TYPE),
+                                           volumeops.FULL_CLONE_TYPE)
 
     def _clone_backing(self, volume, backing, snapshot, clone_type, src_vsize):
         """Clone the backing.
@@ -1947,17 +2021,15 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         datastore = None
         host = None
         rp = None
-        folder = None
         if not clone_type == volumeops.LINKED_CLONE_TYPE:
             # Pick a datastore where to create the full clone under any host
-            (host, rp, folder, summary) = self._select_ds_for_volume(volume)
+            (host, rp, _folder, summary) = self._select_ds_for_volume(volume)
             datastore = summary.datastore
         extra_config = self._get_extra_config(volume)
         clone = self.volumeops.clone_backing(volume['name'], backing,
                                              snapshot, clone_type, datastore,
                                              host=host, resource_pool=rp,
-                                             extra_config=extra_config,
-                                             folder=folder)
+                                             extra_config=extra_config)
         self.volumeops.update_backing_disk_uuid(clone, volume['id'])
         # If the volume size specified by the user is greater than
         # the size of the source volume, the newly created volume will
@@ -1967,7 +2039,7 @@ class VMwareVcVmdkDriver(driver.VolumeDriver):
         # we need to extend/resize the capacity of the vmdk virtual disk from
         # the size of the source volume to the volume size.
         if volume['size'] > src_vsize:
-            self._extend_backing(clone, volume['size'])
+            self._extend_vmdk_virtual_disk(volume['name'], volume['size'])
         LOG.info(_LI("Successfully created clone: %s."), clone)
 
     def _create_volume_from_snapshot(self, volume, snapshot):

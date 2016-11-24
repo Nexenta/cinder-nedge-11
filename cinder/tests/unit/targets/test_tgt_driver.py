@@ -121,11 +121,11 @@ class TestTgtAdmDriver(tf.TargetDriverFixture):
 
         # Test the failure case
         mock_execute.side_effect = putils.ProcessExecutionError
-        self.assertIsNone(
-            self.target._recreate_backing_lun(self.test_vol,
-                                              '1',
-                                              self.testvol['name'],
-                                              self.testvol_path))
+        self.assertFalse(self.target._recreate_backing_lun(
+            self.test_vol,
+            '1',
+            self.testvol['name'],
+            self.testvol_path))
 
     def test_get_iscsi_target(self):
         ctxt = context.get_admin_context()
@@ -141,6 +141,39 @@ class TestTgtAdmDriver(tf.TargetDriverFixture):
         expected = (iscsi_target, lun)
         self.assertEqual(expected,
                          self.target._get_target_and_lun(ctxt, self.testvol))
+
+    def test_get_target_chap_auth(self):
+        persist_file =\
+            '<target iqn.2010-10.org.openstack:volume-%(id)s>\n'\
+            '    backing-store %(bspath)s\n'\
+            '    driver iscsi\n'\
+            '    incominguser otzL 234Z\n'\
+            '    write-cache on\n'\
+            '</target>' % {'id': self.VOLUME_ID,
+                           'bspath': self.testvol_path}
+        with open(os.path.join(self.fake_volumes_dir,
+                               self.test_vol.split(':')[1]),
+                  'w') as tmp_file:
+            tmp_file.write(persist_file)
+        ctxt = context.get_admin_context()
+        expected = ('otzL', '234Z')
+        self.assertEqual(expected,
+                         self.target._get_target_chap_auth(ctxt,
+                                                           self.test_vol))
+
+    def test_get_target_chap_auth_negative(self):
+        with mock.patch('six.moves.builtins.open') as mock_open:
+            e = IOError()
+            e.errno = 123
+            mock_open.side_effect = e
+            ctxt = context.get_admin_context()
+            self.assertRaises(IOError,
+                              self.target._get_target_chap_auth,
+                              ctxt, self.test_vol)
+            mock_open.side_effect = ZeroDivisionError()
+            self.assertRaises(ZeroDivisionError,
+                              self.target._get_target_chap_auth,
+                              ctxt, self.test_vol)
 
     def test_create_iscsi_target(self):
         with mock.patch('cinder.utils.execute', return_value=('', '')),\
@@ -177,6 +210,20 @@ class TestTgtAdmDriver(tf.TargetDriverFixture):
                     0,
                     self.testvol_path,
                     chap_auth=('chap_foo', 'chap_bar')))
+
+        mock_open.assert_called_once_with(
+            os.path.join(self.fake_volumes_dir, self.test_vol.split(':')[1]),
+            'w+')
+        expected = ('\n<target iqn.2010-10.org.openstack:volume-%(id)s>\n'
+                    '    backing-store %(bspath)s\n'
+                    '    driver iscsi\n'
+                    '    incominguser chap_foo chap_bar\n'
+                    '    bsoflags foo\n'
+                    '    write-cache bar\n'
+                    '</target>\n' % {'id': self.VOLUME_ID,
+                                     'bspath': self.testvol_path})
+        self.assertEqual(expected,
+                         mock_open.return_value.write.call_args[0][0])
 
     def test_create_iscsi_target_already_exists(self):
         def _fake_execute(*args, **kwargs):
@@ -228,11 +275,13 @@ class TestTgtAdmDriver(tf.TargetDriverFixture):
         mock_exec.side_effect = _fake_execute
 
         with mock.patch.object(self.target, '_get_target', return_value=False):
-            self.assertIsNone(self.target.remove_iscsi_target(
-                1,
-                0,
-                self.VOLUME_ID,
-                self.VOLUME_NAME))
+            self.assertEqual(
+                None,
+                self.target.remove_iscsi_target(
+                    1,
+                    0,
+                    self.VOLUME_ID,
+                    self.VOLUME_NAME))
 
             mock_exec.side_effect = _fake_execute_wrong_message
             self.assertRaises(exception.ISCSITargetRemoveFailed,
@@ -268,11 +317,13 @@ class TestTgtAdmDriver(tf.TargetDriverFixture):
         mock_exec.side_effect = _fake_execute
 
         with mock.patch.object(self.target, '_get_target', return_value=False):
-            self.assertIsNone(self.target.remove_iscsi_target(
-                1,
-                0,
-                self.VOLUME_ID,
-                self.VOLUME_NAME))
+            self.assertEqual(
+                None,
+                self.target.remove_iscsi_target(
+                    1,
+                    0,
+                    self.VOLUME_ID,
+                    self.VOLUME_NAME))
 
             mock_exec.side_effect = _fake_execute_wrong_message
             self.assertRaises(exception.ISCSITargetRemoveFailed,
@@ -309,11 +360,12 @@ class TestTgtAdmDriver(tf.TargetDriverFixture):
 
         # Test the failure case: path does not exist
         mock_path_exists.return_value = None
-        self.assertIsNone(self.target.remove_iscsi_target(
-            0,
-            1,
-                          self.testvol['id'],
-                          self.testvol['name']))
+        self.assertEqual(None,
+                         self.target.remove_iscsi_target(
+                             0,
+                             1,
+                             self.testvol['id'],
+                             self.testvol['name']))
 
         # Test the normal case
         mock_path_exists.return_value = True

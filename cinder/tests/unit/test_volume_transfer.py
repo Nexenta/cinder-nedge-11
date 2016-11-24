@@ -17,11 +17,10 @@ import datetime
 import mock
 
 from cinder import context
+from cinder import db
 from cinder import exception
-from cinder import objects
 from cinder import quota
 from cinder import test
-from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import utils
 from cinder.transfer import api as transfer_api
 
@@ -33,16 +32,17 @@ class VolumeTransferTestCase(test.TestCase):
     """Test cases for volume transfer code."""
     def setUp(self):
         super(VolumeTransferTestCase, self).setUp()
-        self.ctxt = context.RequestContext(user_id=fake.user_id,
-                                           project_id=fake.project_id)
+        self.ctxt = context.RequestContext(user_id='user_id',
+                                           project_id='project_id')
         self.updated_at = datetime.datetime(1, 1, 1, 1, 1, 1)
 
     @mock.patch('cinder.volume.utils.notify_about_volume_usage')
     def test_transfer_volume_create_delete(self, mock_notify):
         tx_api = transfer_api.API()
-        volume = utils.create_volume(self.ctxt, updated_at=self.updated_at)
-        response = tx_api.create(self.ctxt, volume.id, 'Description')
-        volume = objects.Volume.get_by_id(self.ctxt, volume.id)
+        utils.create_volume(self.ctxt, id='1',
+                            updated_at=self.updated_at)
+        response = tx_api.create(self.ctxt, '1', 'Description')
+        volume = db.volume_get(self.ctxt, '1')
         self.assertEqual('awaiting-transfer', volume['status'],
                          'Unexpected state')
         calls = [mock.call(self.ctxt, mock.ANY, "transfer.create.start"),
@@ -51,7 +51,7 @@ class VolumeTransferTestCase(test.TestCase):
         self.assertEqual(2, mock_notify.call_count)
 
         tx_api.delete(self.ctxt, response['id'])
-        volume = objects.Volume.get_by_id(self.ctxt, volume.id)
+        volume = db.volume_get(self.ctxt, '1')
         self.assertEqual('available', volume['status'], 'Unexpected state')
         calls = [mock.call(self.ctxt, mock.ANY, "transfer.delete.start"),
                  mock.call(self.ctxt, mock.ANY, "transfer.delete.end")]
@@ -60,12 +60,12 @@ class VolumeTransferTestCase(test.TestCase):
 
     def test_transfer_invalid_volume(self):
         tx_api = transfer_api.API()
-        volume = utils.create_volume(self.ctxt, status='in-use',
-                                     updated_at=self.updated_at)
+        utils.create_volume(self.ctxt, id='1', status='in-use',
+                            updated_at=self.updated_at)
         self.assertRaises(exception.InvalidVolume,
                           tx_api.create,
-                          self.ctxt, volume.id, 'Description')
-        volume = objects.Volume.get_by_id(self.ctxt, volume.id)
+                          self.ctxt, '1', 'Description')
+        volume = db.volume_get(self.ctxt, '1')
         self.assertEqual('in-use', volume['status'], 'Unexpected state')
 
     @mock.patch('cinder.volume.utils.notify_about_volume_usage')
@@ -73,9 +73,10 @@ class VolumeTransferTestCase(test.TestCase):
         svc = self.start_service('volume', host='test_host')
         self.addCleanup(svc.stop)
         tx_api = transfer_api.API()
-        volume = utils.create_volume(self.ctxt, updated_at=self.updated_at)
-        transfer = tx_api.create(self.ctxt, volume.id, 'Description')
-        volume = objects.Volume.get_by_id(self.ctxt, volume.id)
+        utils.create_volume(self.ctxt, id='1',
+                            updated_at=self.updated_at)
+        transfer = tx_api.create(self.ctxt, '1', 'Description')
+        volume = db.volume_get(self.ctxt, '1')
         self.assertEqual('awaiting-transfer', volume['status'],
                          'Unexpected state')
 
@@ -92,9 +93,11 @@ class VolumeTransferTestCase(test.TestCase):
         svc = self.start_service('volume', host='test_host')
         self.addCleanup(svc.stop)
         tx_api = transfer_api.API()
-        volume = utils.create_volume(self.ctxt, updated_at=self.updated_at)
-        transfer = tx_api.create(self.ctxt, volume.id, 'Description')
-        volume = objects.Volume.get_by_id(self.ctxt, volume.id)
+
+        utils.create_volume(self.ctxt, id='1',
+                            updated_at=self.updated_at)
+        transfer = tx_api.create(self.ctxt, '1', 'Description')
+        volume = db.volume_get(self.ctxt, '1')
         self.assertEqual('awaiting-transfer', volume['status'],
                          'Unexpected state')
 
@@ -103,35 +106,17 @@ class VolumeTransferTestCase(test.TestCase):
         mock_notify.assert_has_calls(calls)
         self.assertEqual(2, mock_notify.call_count)
 
-        volume.status = 'wrong'
-        volume.save()
+        db.volume_update(self.ctxt, '1', {'status': 'wrong'})
         self.assertRaises(exception.InvalidVolume,
                           tx_api.accept,
                           self.ctxt, transfer['id'], transfer['auth_key'])
-        volume.status = 'awaiting-transfer'
-        volume.save()
+        db.volume_update(self.ctxt, '1', {'status': 'awaiting-transfer'})
 
         # Because the InvalidVolume exception is raised in tx_api, so there is
         # only transfer.accept.start called and missing transfer.accept.end.
         calls = [mock.call(self.ctxt, mock.ANY, "transfer.accept.start")]
         mock_notify.assert_has_calls(calls)
         self.assertEqual(3, mock_notify.call_count)
-
-    @mock.patch('cinder.volume.utils.notify_about_volume_usage')
-    def test_transfer_accept_volume_in_consistencygroup(self, mock_notify):
-        svc = self.start_service('volume', host='test_host')
-        self.addCleanup(svc.stop)
-        tx_api = transfer_api.API()
-        consistencygroup = utils.create_consistencygroup(self.ctxt)
-        volume = utils.create_volume(self.ctxt,
-                                     updated_at=self.updated_at,
-                                     consistencygroup_id=
-                                     consistencygroup.id)
-        transfer = tx_api.create(self.ctxt, volume.id, 'Description')
-
-        self.assertRaises(exception.InvalidVolume,
-                          tx_api.accept,
-                          self.ctxt, transfer['id'], transfer['auth_key'])
 
     @mock.patch.object(QUOTAS, "reserve")
     @mock.patch.object(QUOTAS, "add_volume_type_opts")
@@ -141,23 +126,24 @@ class VolumeTransferTestCase(test.TestCase):
         svc = self.start_service('volume', host='test_host')
         self.addCleanup(svc.stop)
         tx_api = transfer_api.API()
-        volume = utils.create_volume(self.ctxt,
-                                     volume_type_id=fake.volume_type_id,
+        volume = utils.create_volume(self.ctxt, id='1', volume_type_id='12345',
                                      updated_at=self.updated_at)
-        transfer = tx_api.create(self.ctxt, volume.id, 'Description')
+        transfer = tx_api.create(self.ctxt, '1', 'Description')
 
-        self.ctxt.user_id = fake.user2_id
-        self.ctxt.project_id = fake.project2_id
+        self.ctxt.user_id = 'new_user_id'
+        self.ctxt.project_id = 'new_project_id'
         response = tx_api.accept(self.ctxt,
                                  transfer['id'],
                                  transfer['auth_key'])
-        volume = objects.Volume.get_by_id(self.ctxt, volume.id)
-        self.assertEqual(fake.project2_id, volume.project_id)
-        self.assertEqual(fake.user2_id, volume.user_id)
+        volume = db.volume_get(self.ctxt, '1')
+        self.assertEqual('new_project_id', volume['project_id'],
+                         'Unexpected project id')
+        self.assertEqual('new_user_id', volume['user_id'],
+                         'Unexpected user id')
 
-        self.assertEqual(response['volume_id'], volume.id,
+        self.assertEqual(volume['id'], response['volume_id'],
                          'Unexpected volume id in response.')
-        self.assertEqual(response['id'], transfer['id'],
+        self.assertEqual(transfer['id'], response['id'],
                          'Unexpected transfer id in response.')
 
         calls = [mock.call(self.ctxt, mock.ANY, "transfer.accept.start"),
@@ -171,50 +157,19 @@ class VolumeTransferTestCase(test.TestCase):
         # QUOTAS.add_volume_type_opts
         reserve_opt = {'volumes': 1, 'gigabytes': 1}
         release_opt = {'volumes': -1, 'gigabytes': -1}
-        calls = [mock.call(self.ctxt, reserve_opt, fake.volume_type_id),
-                 mock.call(self.ctxt, release_opt, fake.volume_type_id)]
+        calls = [mock.call(self.ctxt, reserve_opt, '12345'),
+                 mock.call(self.ctxt, release_opt, '12345')]
         mock_quota_voltype.assert_has_calls(calls)
 
         # QUOTAS.reserve
         calls = [mock.call(mock.ANY, **reserve_opt),
-                 mock.call(mock.ANY, project_id=fake.project_id,
-                           **release_opt)]
+                 mock.call(mock.ANY, project_id='project_id', **release_opt)]
         mock_quota_reserve.assert_has_calls(calls)
-
-    @mock.patch.object(QUOTAS, "reserve")
-    @mock.patch.object(QUOTAS, "add_volume_type_opts")
-    @mock.patch('cinder.volume.utils.notify_about_volume_usage')
-    def test_transfer_accept_over_quota(self, mock_notify, mock_quota_voltype,
-                                        mock_quota_reserve):
-        svc = self.start_service('volume', host='test_host')
-        self.addCleanup(svc.stop)
-        tx_api = transfer_api.API()
-        volume = utils.create_volume(self.ctxt,
-                                     volume_type_id=fake.volume_type_id,
-                                     updated_at=self.updated_at)
-        transfer = tx_api.create(self.ctxt, volume.id, 'Description')
-        fake_overs = ['volumes_lvmdriver-3']
-        fake_quotas = {'gigabytes_lvmdriver-3': 1,
-                       'volumes_lvmdriver-3': 10}
-        fake_usages = {'gigabytes_lvmdriver-3': {'reserved': 0, 'in_use': 1},
-                       'volumes_lvmdriver-3': {'reserved': 0, 'in_use': 1}}
-
-        mock_quota_reserve.side_effect = exception.OverQuota(
-            overs=fake_overs,
-            quotas=fake_quotas,
-            usages=fake_usages)
-
-        self.ctxt.user_id = fake.user2_id
-        self.ctxt.project_id = fake.project2_id
-        self.assertRaises(exception.VolumeLimitExceeded,
-                          tx_api.accept,
-                          self.ctxt,
-                          transfer['id'],
-                          transfer['auth_key'])
 
     def test_transfer_get(self):
         tx_api = transfer_api.API()
-        volume = utils.create_volume(self.ctxt, updated_at=self.updated_at)
+        volume = utils.create_volume(self.ctxt, id='1',
+                                     updated_at=self.updated_at)
         transfer = tx_api.create(self.ctxt, volume['id'], 'Description')
         t = tx_api.get(self.ctxt, transfer['id'])
         self.assertEqual(t['id'], transfer['id'], 'Unexpected transfer id')
@@ -222,9 +177,9 @@ class VolumeTransferTestCase(test.TestCase):
         ts = tx_api.get_all(self.ctxt)
         self.assertEqual(1, len(ts), 'Unexpected number of transfers.')
 
-        nctxt = context.RequestContext(user_id=fake.user2_id,
-                                       project_id=fake.project2_id)
-        utils.create_volume(nctxt, updated_at=self.updated_at)
+        nctxt = context.RequestContext(user_id='new_user_id',
+                                       project_id='new_project_id')
+        utils.create_volume(nctxt, id='2', updated_at=self.updated_at)
         self.assertRaises(exception.TransferNotFound,
                           tx_api.get,
                           nctxt,
@@ -236,7 +191,8 @@ class VolumeTransferTestCase(test.TestCase):
     @mock.patch('cinder.volume.utils.notify_about_volume_usage')
     def test_delete_transfer_with_deleted_volume(self, mock_notify):
         # create a volume
-        volume = utils.create_volume(self.ctxt, updated_at=self.updated_at)
+        volume = utils.create_volume(self.ctxt, id='1',
+                                     updated_at=self.updated_at)
         # create a transfer
         tx_api = transfer_api.API()
         transfer = tx_api.create(self.ctxt, volume['id'], 'Description')
@@ -248,7 +204,7 @@ class VolumeTransferTestCase(test.TestCase):
         mock_notify.assert_has_calls(calls)
         self.assertEqual(2, mock_notify.call_count)
         # force delete volume
-        volume.destroy()
+        db.volume_destroy(context.get_admin_context(), volume['id'])
         # Make sure transfer has been deleted.
         self.assertRaises(exception.TransferNotFound,
                           tx_api.get,

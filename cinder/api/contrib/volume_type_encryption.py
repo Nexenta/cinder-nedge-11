@@ -24,7 +24,6 @@ from cinder import db
 from cinder import exception
 from cinder.i18n import _
 from cinder import rpc
-from cinder import utils
 from cinder.volume import volume_types
 
 authorize = extensions.extension_authorizer('volume',
@@ -47,7 +46,7 @@ class VolumeTypeEncryptionController(wsgi.Controller):
         encryption_specs = {}
         if not encryption_ref:
             return encryption_specs
-        for key, value in encryption_ref.items():
+        for key, value in encryption_ref.iteritems():
             encryption_specs[key] = value
         return encryption_specs
 
@@ -59,7 +58,7 @@ class VolumeTypeEncryptionController(wsgi.Controller):
 
     def _check_encryption_input(self, encryption, create=True):
         if encryption.get('key_size') is not None:
-            encryption['key_size'] = utils.validate_integer(
+            encryption['key_size'] = self.validate_integer(
                 encryption['key_size'], 'key_size',
                 min_value=0, max_value=db.MAX_INT)
 

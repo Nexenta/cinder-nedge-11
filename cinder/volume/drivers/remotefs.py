@@ -49,9 +49,10 @@ nas_opts = [
                default='',
                help='Password to connect to NAS system.',
                secret=True),
-    cfg.PortOpt('nas_ssh_port',
-                default=22,
-                help='SSH port to use to connect to NAS system.'),
+    cfg.IntOpt('nas_ssh_port',
+               default=22,
+               min=1, max=65535,
+               help='SSH port to use to connect to NAS system.'),
     cfg.StrOpt('nas_private_key',
                default='',
                help='Filename of private key to use for SSH authentication.'),
@@ -80,6 +81,7 @@ nas_opts = [
                      'For example:  "/srv/export1" for an NFS server export '
                      'available at 10.0.5.10:/srv/export1 .')),
     cfg.StrOpt('nas_mount_options',
+               default=None,
                help=('Options used to mount the storage backend file system '
                      'where Cinder volumes are stored.')),
 ]
@@ -1024,7 +1026,7 @@ class RemoteFSSnapDriver(RemoteFSDriver, driver.SnapshotVD):
             #      T0       |        T1         |
             #     base      |   snapshot_file   | None
             # (guaranteed to|  (being deleted,  |
-            #    exist)     |  committed down)  |
+            #    exist)     |   commited down)  |
 
             self._img_commit(snapshot_path)
             # Active file has changed
@@ -1033,7 +1035,7 @@ class RemoteFSSnapDriver(RemoteFSDriver, driver.SnapshotVD):
             #      T0        |      T1         |     T2         |      T3
             #     base       |  snapshot_file  |  higher_file   | highest_file
             # (guaranteed to | (being deleted, | (guaranteed to |  (may exist)
-            #   exist, not   | committed down) |  exist, needs  |
+            #   exist, not   |  commited down) |  exist, needs  |
             #   used here)   |                 |   ptr update)  |
 
             backing_chain = self._get_backing_chain_for_path(
@@ -1287,10 +1289,6 @@ class RemoteFSSnapDriver(RemoteFSDriver, driver.SnapshotVD):
         while True:
             s = db.snapshot_get(context, snapshot['id'])
 
-            LOG.debug('Status of snapshot %(id)s is now %(status)s',
-                      {'id': snapshot['id'],
-                       'status': s['status']})
-
             if s['status'] == 'creating':
                 if s['progress'] == '90%':
                     # Nova tasks completed successfully
@@ -1304,12 +1302,9 @@ class RemoteFSSnapDriver(RemoteFSDriver, driver.SnapshotVD):
                         'while creating snapshot.')
                 raise exception.RemoteFSException(msg)
 
-            elif s['status'] == 'deleting' or s['status'] == 'error_deleting':
-                msg = _('Snapshot %(id)s has been asked to be deleted while '
-                        'waiting for it to become available. Perhaps a '
-                        'concurrent request was made.') % {'id':
-                                                           snapshot['id']}
-                raise exception.RemoteFSConcurrentRequest(msg)
+            LOG.debug('Status of snapshot %(id)s is now %(status)s',
+                      {'id': snapshot['id'],
+                       'status': s['status']})
 
             if 10 < seconds_elapsed <= 20:
                 increment = 2

@@ -63,16 +63,12 @@ def _has_type_access(type_id, project_id):
     for access in ACCESS_LIST:
         if access['volume_type_id'] == type_id and \
            access['project_id'] == project_id:
-            return True
+                return True
     return False
 
 
-def fake_volume_type_get_all(context, inactive=False, filters=None,
-                             marker=None, limit=None, sort_keys=None,
-                             sort_dirs=None, offset=None, list_result=False):
+def fake_volume_type_get_all(context, inactive=False, filters=None):
     if filters is None or filters['is_public'] is None:
-        if list_result:
-            return list(VOLUME_TYPES.values())
         return VOLUME_TYPES
     res = {}
     for k, v in VOLUME_TYPES.items():
@@ -81,8 +77,6 @@ def fake_volume_type_get_all(context, inactive=False, filters=None,
             continue
         if v['is_public'] == filters['is_public']:
             res.update({k: v})
-    if list_result:
-        return list(res.values())
     return res
 
 

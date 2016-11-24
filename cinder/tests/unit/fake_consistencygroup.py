@@ -15,16 +15,14 @@
 from oslo_versionedobjects import fields
 
 from cinder import objects
-from cinder.tests.unit import fake_constants as fake
 
 
 def fake_db_consistencygroup(**updates):
     db_values = {
-        'id': fake.consistency_group_id,
-        'user_id': fake.user_id,
-        'project_id': fake.project_id,
+        'id': 1,
+        'user_id': 2,
+        'project_id': 3,
         'host': 'FakeHost',
-        'volumes': [],
     }
     for name, field in objects.ConsistencyGroup.fields.items():
         if name in db_values:

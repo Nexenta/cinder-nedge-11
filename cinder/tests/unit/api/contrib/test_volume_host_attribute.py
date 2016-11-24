@@ -12,23 +12,21 @@
 #   License for the specific language governing permissions and limitations
 #   under the License.
 
+import json
 import uuid
 
 from lxml import etree
-from oslo_serialization import jsonutils
 from oslo_utils import timeutils
 import webob
 
 from cinder import context
 from cinder import db
-from cinder import objects
 from cinder import test
 from cinder.tests.unit.api import fakes
-from cinder.tests.unit import fake_volume
 from cinder import volume
 
 
-def fake_db_volume_get(*args, **kwargs):
+def fake_volume_get(*args, **kwargs):
     return {
         'id': 'fake',
         'host': 'host001',
@@ -36,6 +34,7 @@ def fake_db_volume_get(*args, **kwargs):
         'size': 5,
         'availability_zone': 'somewhere',
         'created_at': timeutils.utcnow(),
+        'attach_status': None,
         'display_name': 'anothervolume',
         'display_description': 'Just another volume!',
         'volume_type_id': None,
@@ -43,18 +42,11 @@ def fake_db_volume_get(*args, **kwargs):
         'project_id': 'fake',
         'migration_status': None,
         '_name_id': 'fake2',
-        'attach_status': 'detached',
     }
 
 
-def fake_volume_api_get(*args, **kwargs):
-    ctx = context.RequestContext('admin', 'fake', True)
-    db_volume = fake_db_volume_get()
-    return fake_volume.fake_volume_obj(ctx, **db_volume)
-
-
 def fake_volume_get_all(*args, **kwargs):
-    return objects.VolumeList(objects=[fake_volume_api_get()])
+    return [fake_volume_get()]
 
 
 def app():
@@ -69,9 +61,9 @@ class VolumeHostAttributeTest(test.TestCase):
 
     def setUp(self):
         super(VolumeHostAttributeTest, self).setUp()
-        self.stubs.Set(volume.api.API, 'get', fake_volume_api_get)
+        self.stubs.Set(volume.api.API, 'get', fake_volume_get)
         self.stubs.Set(volume.api.API, 'get_all', fake_volume_get_all)
-        self.stubs.Set(db, 'volume_get', fake_db_volume_get)
+        self.stubs.Set(db, 'volume_get', fake_volume_get)
 
         self.UUID = uuid.uuid4()
 
@@ -81,7 +73,7 @@ class VolumeHostAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volume']
+        vol = json.loads(res.body)['volume']
         self.assertEqual('host001', vol['os-vol-host-attr:host'])
 
     def test_get_volume_unallowed(self):
@@ -90,7 +82,7 @@ class VolumeHostAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volume']
+        vol = json.loads(res.body)['volume']
         self.assertNotIn('os-vol-host-attr:host', vol)
 
     def test_list_detail_volumes_allowed(self):
@@ -99,7 +91,7 @@ class VolumeHostAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volumes']
+        vol = json.loads(res.body)['volumes']
         self.assertEqual('host001', vol[0]['os-vol-host-attr:host'])
 
     def test_list_detail_volumes_unallowed(self):
@@ -108,7 +100,7 @@ class VolumeHostAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volumes']
+        vol = json.loads(res.body)['volumes']
         self.assertNotIn('os-vol-host-attr:host', vol[0])
 
     def test_list_simple_volumes_no_host(self):
@@ -117,7 +109,7 @@ class VolumeHostAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volumes']
+        vol = json.loads(res.body)['volumes']
         self.assertNotIn('os-vol-host-attr:host', vol[0])
 
     def test_get_volume_xml(self):

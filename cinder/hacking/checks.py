@@ -32,15 +32,14 @@ Guidelines for writing new hacking checks
 """
 
 # NOTE(thangp): Ignore N323 pep8 error caused by importing cinder objects
-UNDERSCORE_IMPORT_FILES = ['cinder/objects/__init__.py']
+UNDERSCORE_IMPORT_FILES = ['./cinder/objects/__init__.py']
 
 translated_log = re.compile(
     r"(.)*LOG\.(audit|error|info|warn|warning|critical|exception)"
     "\(\s*_\(\s*('|\")")
 string_translation = re.compile(r"(.)*_\(\s*('|\")")
 vi_header_re = re.compile(r"^#\s+vim?:.+")
-underscore_import_check = re.compile(r"(.)*i18n\s+import(.)* _$")
-underscore_import_check_multi = re.compile(r"(.)*i18n\s+import(.)* _, (.)*")
+underscore_import_check = re.compile(r"(.)*i18n\s+import\s+_(.)*")
 # We need this for cases where they have created their own _ function.
 custom_underscore_check = re.compile(r"(.)*_\s*=\s*(.)*")
 no_audit_log = re.compile(r"(.)*LOG\.audit(.)*")
@@ -61,11 +60,6 @@ log_translation_LW = re.compile(
     r"(.)*LOG\.(warning|warn)\(\s*(_\(|'|\")")
 logging_instance = re.compile(
     r"(.)*LOG\.(warning|info|debug|error|exception)\(")
-
-assert_None = re.compile(
-    r".*assertEqual\(None, .*\)")
-assert_True = re.compile(
-    r".*assertEqual\(True, .*\)")
 
 
 class BaseASTChecker(ast.NodeVisitor):
@@ -162,12 +156,10 @@ def check_explicit_underscore_import(logical_line, filename):
 
     # Build a list of the files that have _ imported.  No further
     # checking needed once it is found.
-    for file in UNDERSCORE_IMPORT_FILES:
-        if file in filename:
-            return
-    if (underscore_import_check.match(logical_line) or
-            underscore_import_check_multi.match(logical_line) or
-            custom_underscore_check.match(logical_line)):
+    if filename in UNDERSCORE_IMPORT_FILES:
+        pass
+    elif (underscore_import_check.match(logical_line) or
+          custom_underscore_check.match(logical_line)):
         UNDERSCORE_IMPORT_FILES.append(filename)
     elif(translated_log.match(logical_line) or
          string_translation.match(logical_line)):
@@ -192,7 +184,6 @@ class CheckForStrUnicodeExc(BaseASTChecker):
         self.name = []
         self.already_checked = []
 
-    # Python 2
     def visit_TryExcept(self, node):
         for handler in node.handlers:
             if handler.name:
@@ -201,15 +192,6 @@ class CheckForStrUnicodeExc(BaseASTChecker):
                 self.name = self.name[:-1]
             else:
                 super(CheckForStrUnicodeExc, self).generic_visit(node)
-
-    # Python 3
-    def visit_ExceptHandler(self, node):
-        if node.name:
-            self.name.append(node.name)
-            super(CheckForStrUnicodeExc, self).generic_visit(node)
-            self.name = self.name[:-1]
-        else:
-            super(CheckForStrUnicodeExc, self).generic_visit(node)
 
     def visit_Call(self, node):
         if self._check_call_names(node, ['str', 'unicode']):
@@ -286,84 +268,6 @@ class CheckLoggingFormatArgs(BaseASTChecker):
         return super(CheckLoggingFormatArgs, self).generic_visit(node)
 
 
-class CheckOptRegistrationArgs(BaseASTChecker):
-    """Verifying the registration of options are well formed
-
-    This class creates a check for single opt or list/tuple of
-    opts when register_opt() or register_opts() are being called.
-    """
-
-    CHECK_DESC = ('C311: Arguments being passed to register_opt/register_opts '
-                  'must be a single option or list/tuple of options '
-                  'respectively. Options must also end with _opt or _opts '
-                  'respectively.')
-
-    singular_method = 'register_opt'
-    plural_method = 'register_opts'
-
-    register_methods = [
-        singular_method,
-        plural_method,
-    ]
-
-    def _find_name(self, node):
-        """Return the fully qualified name or a Name or Attribute."""
-        if isinstance(node, ast.Name):
-            return node.id
-        elif (isinstance(node, ast.Attribute)
-                and isinstance(node.value, (ast.Name, ast.Attribute))):
-            method_name = node.attr
-            obj_name = self._find_name(node.value)
-            if obj_name is None:
-                return None
-            return obj_name + '.' + method_name
-        elif isinstance(node, six.string_types):
-            return node
-        else:  # could be Subscript, Call or many more
-            return None
-
-    def _is_list_or_tuple(self, obj):
-        return isinstance(obj, ast.List) or isinstance(obj, ast.Tuple)
-
-    def visit_Call(self, node):
-        """Look for the register_opt/register_opts calls."""
-        # extract the obj_name and method_name
-        if isinstance(node.func, ast.Attribute):
-            if not isinstance(node.func.value, ast.Name):
-                return (super(CheckOptRegistrationArgs,
-                              self).generic_visit(node))
-
-            method_name = node.func.attr
-
-            # obj must be instance of register_opt() or register_opts()
-            if method_name not in self.register_methods:
-                return (super(CheckOptRegistrationArgs,
-                              self).generic_visit(node))
-
-            if len(node.args) > 0:
-                argument_name = self._find_name(node.args[0])
-                if argument_name:
-                    if (method_name == self.singular_method and
-                            not argument_name.lower().endswith('opt')):
-                        self.add_error(node.args[0])
-                    elif (method_name == self.plural_method and
-                            not argument_name.lower().endswith('opts')):
-                        self.add_error(node.args[0])
-                else:
-                    # This covers instances of register_opt()/register_opts()
-                    # that are registering the objects directly and not
-                    # passing in a variable referencing the options being
-                    # registered.
-                    if (method_name == self.singular_method and
-                            self._is_list_or_tuple(node.args[0])):
-                        self.add_error(node.args[0])
-                    elif (method_name == self.plural_method and not
-                            self._is_list_or_tuple(node.args[0])):
-                        self.add_error(node.args[0])
-
-        return super(CheckOptRegistrationArgs, self).generic_visit(node)
-
-
 def validate_log_translations(logical_line, filename):
     # Translations are not required in the test directory.
     # This will not catch all instances of violations, just direct
@@ -400,16 +304,13 @@ def check_datetime_now(logical_line, noqa):
         yield(0, msg)
 
 
-_UNICODE_USAGE_REGEX = re.compile(r'\bunicode *\(')
-
-
 def check_unicode_usage(logical_line, noqa):
     if noqa:
         return
 
     msg = "C302: Found unicode() call. Please use six.text_type()."
 
-    if _UNICODE_USAGE_REGEX.search(logical_line):
+    if 'unicode(' in logical_line:
         yield(0, msg)
 
 
@@ -485,20 +386,6 @@ def no_test_log(logical_line, filename, noqa):
         yield (0, msg)
 
 
-def validate_assertIsNone(logical_line):
-    if re.match(assert_None, logical_line):
-        msg = ("C312: Unit tests should use assertIsNone(value) instead"
-               " of using assertEqual(None, value).")
-        yield(0, msg)
-
-
-def validate_assertTrue(logical_line):
-    if re.match(assert_True, logical_line):
-        msg = ("C313: Unit tests should use assertTrue(value) instead"
-               " of using assertEqual(True, value).")
-        yield(0, msg)
-
-
 def factory(register):
     register(no_vi_headers)
     register(no_translate_debug_logs)
@@ -506,7 +393,6 @@ def factory(register):
     register(check_explicit_underscore_import)
     register(CheckForStrUnicodeExc)
     register(CheckLoggingFormatArgs)
-    register(CheckOptRegistrationArgs)
     register(check_oslo_namespace_imports)
     register(check_datetime_now)
     register(check_timeutils_strtime)
@@ -519,5 +405,3 @@ def factory(register):
     register(no_log_warn)
     register(dict_constructor_with_list_copy)
     register(no_test_log)
-    register(validate_assertIsNone)
-    register(validate_assertTrue)

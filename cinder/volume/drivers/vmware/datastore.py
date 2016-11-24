@@ -35,9 +35,8 @@ class DatastoreType(object):
     NFS = "nfs"
     VMFS = "vmfs"
     VSAN = "vsan"
-    VVOL = "vvol"
 
-    _ALL_TYPES = {NFS, VMFS, VSAN, VVOL}
+    _ALL_TYPES = {NFS, VMFS, VSAN}
 
     @staticmethod
     def get_all_types():
@@ -114,11 +113,12 @@ class DatastoreSelector(object):
         filtered_summaries = [self._vops.get_summary(ds) for ds in
                               filtered_datastores]
 
-        return [summary for summary in filtered_summaries
-                if (summary.freeSpace > size_bytes and
-                    summary.type.lower() in DatastoreType.get_all_types() and
+        def _filter(summary):
+            return (summary.freeSpace > size_bytes and
                     (hard_affinity_ds_types is None or
-                     summary.type.lower() in hard_affinity_ds_types))]
+                     summary.type.lower() in hard_affinity_ds_types))
+
+        return filter(_filter, filtered_summaries)
 
     def _get_all_hosts(self):
         """Get all ESX hosts managed by vCenter."""

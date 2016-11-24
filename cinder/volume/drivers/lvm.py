@@ -31,7 +31,6 @@ from cinder.brick.local_dev import lvm as lvm
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
 from cinder.image import image_utils
-from cinder import objects
 from cinder import utils
 from cinder.volume import driver
 from cinder.volume import utils as volutils
@@ -60,15 +59,7 @@ volume_opts = [
                help='LVM conf file to use for the LVM driver in Cinder; '
                     'this setting is ignored if the specified file does '
                     'not exist (You can also specify \'None\' to not use '
-                    'a conf file even if one exists).'),
-    cfg.FloatOpt('lvm_max_over_subscription_ratio',
-                 # This option exists to provide a default value for the
-                 # LVM driver which is different than the global default.
-                 default=1.0,
-                 help='max_over_subscription_ratio setting for the LVM '
-                      'driver.  If set, this takes precedence over the '
-                      'general max_over_subscription_ratio option.  If '
-                      'None, the general option is used.')
+                    'a conf file even if one exists).')
 ]
 
 CONF = cfg.CONF
@@ -107,11 +98,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
             db=self.db,
             executor=self._execute)
         self.protocol = self.target_driver.protocol
-        self._sparse_copy_volume = False
-
-        if self.configuration.lvm_max_over_subscription_ratio is not None:
-            self.configuration.max_over_subscription_ratio = \
-                self.configuration.lvm_max_over_subscription_ratio
+        self.sparse_copy_volume = False
 
     def _sizestr(self, size_in_g):
         return '%sg' % size_in_g
@@ -152,8 +139,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
-        size_in_g = (volume.get('volume_size') if is_snapshot
-                     else volume.get('size'))
+        size_in_g = volume.get('volume_size') or volume.get('size')
         if size_in_g is None:
             msg = (_("Size for volume: %s not found, cannot secure delete.")
                    % volume['id'])
@@ -262,7 +248,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
         data["pools"].append(single_pool)
 
         # Check availability of sparse volume copy.
-        data['sparse_copy_volume'] = self._sparse_copy_volume
+        data['sparse_copy_volume'] = self.configuration.lvm_type == 'thin'
 
         self._stats = data
 
@@ -334,7 +320,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
                         data=exception_message)
 
             # Enable sparse copy since lvm_type is 'thin'
-            self._sparse_copy_volume = True
+            self.sparse_copy_volume = True
 
     def create_volume(self, volume):
         """Creates a logical volume."""
@@ -359,7 +345,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
         :param new_volume: The migration volume object that was created on
                            this backend as part of the migration process
         :param original_volume_status: The status of the original volume
-        :returns: model_update to update DB with any needed changes
+        :return model_update to update DB with any needed changes
         """
         name_id = None
         provider_location = None
@@ -400,7 +386,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
                              snapshot['volume_size'] * units.Ki,
                              self.configuration.volume_dd_blocksize,
                              execute=self._execute,
-                             sparse=self._sparse_copy_volume)
+                             sparse=self.sparse_copy_volume)
 
     def delete_volume(self, volume):
         """Deletes a logical volume."""
@@ -507,7 +493,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
                 src_vref['size'] * units.Ki,
                 self.configuration.volume_dd_blocksize,
                 execute=self._execute,
-                sparse=self._sparse_copy_volume)
+                sparse=self.sparse_copy_volume)
         finally:
             self.delete_snapshot(temp_snapshot)
 
@@ -519,28 +505,15 @@ class LVMVolumeDriver(driver.VolumeDriver):
     def backup_volume(self, context, backup, backup_service):
         """Create a new backup from an existing volume."""
         volume = self.db.volume_get(context, backup.volume_id)
-        snapshot = None
-        if backup.snapshot_id:
-            snapshot = objects.Snapshot.get_by_id(context, backup.snapshot_id)
         temp_snapshot = None
-        # NOTE(xyang): If it is to backup from snapshot, back it up
-        # directly. No need to clean it up.
-        if snapshot:
-            volume_path = self.local_path(snapshot)
+        previous_status = volume['previous_status']
+        if previous_status == 'in-use':
+            temp_snapshot = self._create_temp_snapshot(context, volume)
+            backup.temp_snapshot_id = temp_snapshot.id
+            backup.save()
+            volume_path = self.local_path(temp_snapshot)
         else:
-            # NOTE(xyang): If it is not to backup from snapshot, check volume
-            # status. If the volume status is 'in-use', create a temp snapshot
-            # from the source volume, backup the temp snapshot, and then clean
-            # up the temp snapshot; if the volume status is 'available', just
-            # backup the volume.
-            previous_status = volume.get('previous_status', None)
-            if previous_status == "in-use":
-                temp_snapshot = self._create_temp_snapshot(context, volume)
-                backup.temp_snapshot_id = temp_snapshot.id
-                backup.save()
-                volume_path = self.local_path(temp_snapshot)
-            else:
-                volume_path = self.local_path(volume)
+            volume_path = self.local_path(volume)
 
         try:
             with utils.temporary_chown(volume_path):
@@ -652,14 +625,6 @@ class LVMVolumeDriver(driver.VolumeDriver):
             existing_ref = {"source-name": existing_ref}
         return self.manage_existing(snapshot_temp, existing_ref)
 
-    def retype(self, context, volume, new_type, diff, host):
-        """Retypes a volume, allow QoS and extra_specs change."""
-
-        LOG.debug('LVM retype called for volume %s. No action '
-                  'required for LVM volumes.',
-                  volume['id'])
-        return True
-
     def migrate_volume(self, ctxt, volume, host, thin=False, mirror_count=0):
         """Optimize the migration if the destination is on the same server.
 
@@ -717,7 +682,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
                                      size_in_mb,
                                      self.configuration.volume_dd_blocksize,
                                      execute=self._execute,
-                                     sparse=self._sparse_copy_volume)
+                                     sparse=self.sparse_copy_volume)
             except Exception as e:
                 with excutils.save_and_reraise_exception():
                     LOG.error(_LE("Volume migration failed due to "
@@ -732,7 +697,7 @@ class LVMVolumeDriver(driver.VolumeDriver):
                          "check your configuration because source and "
                          "destination are the same Volume Group: %(name)s.") %
                        {'id': volume['id'], 'name': self.vg.vg_name})
-            LOG.error(message)
+            LOG.exception(message)
             raise exception.VolumeBackendAPIException(data=message)
 
     def get_pool(self, volume):
@@ -773,3 +738,46 @@ class LVMVolumeDriver(driver.VolumeDriver):
     def terminate_connection(self, volume, connector, **kwargs):
         return self.target_driver.terminate_connection(volume, connector,
                                                        **kwargs)
+
+
+class LVMISCSIDriver(LVMVolumeDriver):
+    """Empty class designation for LVMISCSI.
+
+    Since we've decoupled the inheritance of iSCSI and LVM we
+    don't really need this class any longer.  We do however want
+    to keep it (at least for now) for back compat in driver naming.
+
+    """
+    def __init__(self, *args, **kwargs):
+        super(LVMISCSIDriver, self).__init__(*args, **kwargs)
+        LOG.warning(_LW('LVMISCSIDriver is deprecated, you should '
+                        'now just use LVMVolumeDriver and specify '
+                        'iscsi_helper for the target driver you '
+                        'wish to use.'))
+
+
+class LVMISERDriver(LVMVolumeDriver):
+    """Empty class designation for LVMISER.
+
+    Since we've decoupled the inheritance of data path in LVM we
+    don't really need this class any longer.  We do however want
+    to keep it (at least for now) for back compat in driver naming.
+
+    """
+    def __init__(self, *args, **kwargs):
+        super(LVMISERDriver, self).__init__(*args, **kwargs)
+
+        LOG.warning(_LW('LVMISERDriver is deprecated, you should '
+                        'now just use LVMVolumeDriver and specify '
+                        'iscsi_helper for the target driver you '
+                        'wish to use. In order to enable iser, please '
+                        'set iscsi_protocol with the value iser.'))
+
+        LOG.debug('Attempting to initialize LVM driver with the '
+                  'following target_driver: '
+                  'cinder.volume.targets.iser.ISERTgtAdm')
+        self.target_driver = importutils.import_object(
+            'cinder.volume.targets.iser.ISERTgtAdm',
+            configuration=self.configuration,
+            db=self.db,
+            executor=self._execute)

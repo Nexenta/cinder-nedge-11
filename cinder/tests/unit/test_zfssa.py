@@ -1,4 +1,4 @@
-# Copyright (c) 2014, 2016, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -23,10 +23,8 @@ import six
 
 from cinder import context
 from cinder import exception
-from cinder.image import image_utils
 from cinder import test
 from cinder.tests.unit import fake_utils
-from cinder.tests.unit import utils
 from cinder.volume import configuration as conf
 from cinder.volume import driver
 from cinder.volume.drivers import remotefs
@@ -50,14 +48,14 @@ no_virtsize_img = {
 small_img = {
     'id': 'small_id1234',
     'size': 654321,
-    'virtual_size': 2361393152,
+    'properties': {'virtual_size': 2361393152},
     'updated_at': date(2015, 1, 1),
 }
 
 large_img = {
     'id': 'large_id5678',
     'size': 50000000,
-    'virtual_size': 11806965760,
+    'properties': {'virtual_size': 11806965760},
     'updated_at': date(2015, 2, 2),
 }
 
@@ -81,11 +79,6 @@ img_props_nfs = {
 fakecontext = 'fakecontext'
 img_service = 'fakeimgservice'
 img_location = 'fakeimglocation'
-
-
-class ImgInfo(object):
-    def __init__(self, vsize):
-        self.virtual_size = vsize
 
 
 class FakeResponse(object):
@@ -169,7 +162,6 @@ class TestZFSSAISCSIDriver(test.TestCase):
         self.configuration.zfssa_cache_project = zfssa_cache_dir
         self.configuration.safe_get = self.fake_safe_get
         self.configuration.zfssa_replication_ip = '1.1.1.1'
-        self.configuration.zfssa_manage_policy = 'loose'
 
     def _util_migrate_volume_exceptions(self):
         self.drv.zfssa.get_lun.return_value = (
@@ -467,27 +459,14 @@ class TestZFSSAISCSIDriver(test.TestCase):
             self.test_vol['name'],
             '')
 
-    def test_volume_attach_detach_negative(self):
-        self.drv.zfssa.get_initiator_initiatorgroup.return_value = []
-
-        connector = dict(initiator='iqn.1-0.org.deb:01:d7')
-        self.assertRaises(exception.VolumeBackendAPIException,
-                          self.drv.initialize_connection,
-                          self.test_vol,
-                          connector)
-
     def test_get_volume_stats(self):
         self.drv.zfssa.get_project_stats.return_value = 2 * units.Gi,\
             3 * units.Gi
-        self.drv.zfssa.get_pool_details.return_value = \
-            {"profile": "mirror:log_stripe"}
         lcfg = self.configuration
         stats = self.drv.get_volume_stats(refresh=True)
         self.drv.zfssa.get_project_stats.assert_called_once_with(
             lcfg.zfssa_pool,
             lcfg.zfssa_project)
-        self.drv.zfssa.get_pool_details.assert_called_once_with(
-            lcfg.zfssa_pool)
         self.assertEqual('Oracle', stats['vendor_name'])
         self.assertEqual(self.configuration.volume_backend_name,
                          stats['volume_backend_name'])
@@ -497,15 +476,6 @@ class TestZFSSAISCSIDriver(test.TestCase):
         self.assertFalse(stats['QoS_support'])
         self.assertEqual(3, stats['total_capacity_gb'])
         self.assertEqual(2, stats['free_capacity_gb'])
-        self.assertEqual('mirror:log_stripe', stats['zfssa_poolprofile'])
-        self.assertEqual('8k', stats['zfssa_volblocksize'])
-        self.assertEqual('false', stats['zfssa_sparse'])
-        self.assertEqual('off', stats['zfssa_compression'])
-        self.assertEqual('latency', stats['zfssa_logbias'])
-
-        self.drv.zfssa.get_pool_details.return_value = {"profile": "raidz2"}
-        stats = self.drv.get_volume_stats(refresh=True)
-        self.assertEqual('raidz2', stats['zfssa_poolprofile'])
 
     def test_extend_volume(self):
         lcfg = self.configuration
@@ -542,15 +512,11 @@ class TestZFSSAISCSIDriver(test.TestCase):
             val = None
         return val
 
-    @mock.patch.object(image_utils, 'qemu_img_info')
-    @mock.patch.object(image_utils.TemporaryImages, 'fetch')
     @mock.patch.object(iscsi.ZFSSAISCSIDriver, '_verify_cache_volume')
-    def test_clone_image_negative(self, _verify_cache_volume, _fetch, _info):
+    def test_clone_image_negative(self, _verify_cache_volume):
         # Disabling local cache feature:
         self.configuration.zfssa_enable_local_cache = False
 
-        _fetch.return_value = mock.MagicMock(spec=utils.get_file_spec())
-        _info.return_value = ImgInfo(small_img['virtual_size'])
         self.assertEqual((None, False),
                          self.drv.clone_image(fakecontext, self.test_vol,
                                               img_location,
@@ -559,15 +525,20 @@ class TestZFSSAISCSIDriver(test.TestCase):
 
         self.configuration.zfssa_enable_local_cache = True
         # Creating a volume smaller than image:
-        _info.return_value = ImgInfo(large_img['virtual_size'])
         self.assertEqual((None, False),
                          self.drv.clone_image(fakecontext, self.test_vol,
                                               img_location,
                                               large_img,
                                               img_service))
 
+        # The image does not have virtual_size property:
+        self.assertEqual((None, False),
+                         self.drv.clone_image(fakecontext, self.test_vol,
+                                              img_location,
+                                              no_virtsize_img,
+                                              img_service))
+
         # Exception raised in _verify_cache_image
-        _info.return_value = ImgInfo(small_img['virtual_size'])
         self.drv._verify_cache_volume.side_effect = (
             exception.VolumeBackendAPIException('fakeerror'))
         self.assertEqual((None, False),
@@ -576,21 +547,15 @@ class TestZFSSAISCSIDriver(test.TestCase):
                                               small_img,
                                               img_service))
 
-    @mock.patch.object(image_utils, 'qemu_img_info')
-    @mock.patch.object(image_utils.TemporaryImages, 'fetch')
     @mock.patch.object(iscsi.ZFSSAISCSIDriver, '_get_voltype_specs')
     @mock.patch.object(iscsi.ZFSSAISCSIDriver, '_verify_cache_volume')
     @mock.patch.object(iscsi.ZFSSAISCSIDriver, 'extend_volume')
-    def test_clone_image(self, _extend_vol, _verify_cache, _get_specs,
-                         _fetch, _info):
+    def test_clone_image(self, _extend_vol, _verify_cache, _get_specs):
         lcfg = self.configuration
         cache_vol = 'os-cache-vol-%s' % small_img['id']
         cache_snap = 'image-%s' % small_img['id']
         self.drv._get_voltype_specs.return_value = fakespecs.copy()
         self.drv._verify_cache_volume.return_value = cache_vol, cache_snap
-        _fetch.return_value = mock.MagicMock(spec=utils.get_file_spec())
-        _info.return_value = ImgInfo(small_img['virtual_size'])
-
         model, cloned = self.drv.clone_image(fakecontext, self.test_vol2,
                                              img_location,
                                              small_img,
@@ -671,7 +636,7 @@ class TestZFSSAISCSIDriver(test.TestCase):
     @mock.patch.object(driver.BaseVD, 'copy_image_to_volume')
     def test_create_cache_volume(self, _copy_image):
         lcfg = self.configuration
-        virtual_size = int(small_img['virtual_size'])
+        virtual_size = int(small_img['properties'].get('virtual_size'))
         volsize = math.ceil(float(virtual_size) / units.Gi)
         lunsize = "%sg" % six.text_type(int(volsize))
         volname = 'os-cache-vol-%s' % small_img['id']
@@ -740,120 +705,6 @@ class TestZFSSAISCSIDriver(test.TestCase):
             lcfg.zfssa_cache_project,
             volname)
 
-    @mock.patch.object(iscsi.ZFSSAISCSIDriver, '_get_existing_vol')
-    @mock.patch.object(iscsi.ZFSSAISCSIDriver, '_verify_volume_to_manage')
-    def test_volume_manage(self, _get_existing_vol, _verify_volume_to_manage):
-        lcfg = self.configuration
-        lcfg.zfssa_manage_policy = 'loose'
-        test_vol = self.test_vol
-        self.drv._get_existing_vol.return_value = test_vol
-        self.drv._verify_volume_to_manage.return_value = None
-        self.drv.zfssa.set_lun_props.return_value = True
-        self.assertIsNone(self.drv.manage_existing({'name': 'volume-123'},
-                                                   {'source-name':
-                                                       'volume-567'}))
-        self.drv._get_existing_vol.assert_called_once_with({'source-name':
-                                                            'volume-567'})
-        self.drv._verify_volume_to_manage.assert_called_once_with(test_vol)
-        self.drv.zfssa.set_lun_props.assert_called_once_with(
-            lcfg.zfssa_pool,
-            lcfg.zfssa_project,
-            test_vol['name'],
-            name='volume-123',
-            schema={"custom:cinder_managed": True})
-
-        # Case when zfssa_manage_policy is 'loose' and 'cinder_managed' is
-        # set to true.
-        test_vol.update({'cinder_managed': False})
-        self.assertIsNone(self.drv.manage_existing({'name': 'volume-123'},
-                                                   {'source-name':
-                                                       'volume-567'}))
-
-        # Another case is when the zfssa_manage_policy is set to 'strict'
-        lcfg.zfssa_manage_policy = 'strict'
-        test_vol.update({'cinder_managed': False})
-        self.assertIsNone(self.drv.manage_existing({'name': 'volume-123'},
-                                                   {'source-name':
-                                                       'volume-567'}))
-
-    def test_volume_manage_negative(self):
-        lcfg = self.configuration
-        lcfg.zfssa_manage_policy = 'strict'
-        test_vol = self.test_vol
-
-        if 'cinder_managed' in test_vol:
-            del test_vol['cinder_managed']
-
-        self.drv.zfssa.get_lun.return_value = test_vol
-        self.assertRaises(exception.InvalidInput,
-                          self.drv.manage_existing, {'name': 'cindervol'},
-                          {'source-name': 'volume-567'})
-
-        test_vol.update({'cinder_managed': True})
-        self.drv.zfssa.get_lun.return_value = test_vol
-        self.assertRaises(exception.ManageExistingAlreadyManaged,
-                          self.drv.manage_existing, {'name': 'cindervol'},
-                          {'source-name': 'volume-567'})
-
-        test_vol.update({'cinder_managed': False})
-        self.drv.zfssa.get_lun.return_value = test_vol
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.drv.manage_existing, {'name': 'cindervol'},
-                          {'source-id': 'volume-567'})
-
-        lcfg.zfssa_manage_policy = 'loose'
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.drv.manage_existing, {'name': 'cindervol'},
-                          {'source-id': 'volume-567'})
-
-    @mock.patch.object(iscsi.ZFSSAISCSIDriver, '_verify_volume_to_manage')
-    def test_volume_manage_negative_api_exception(self,
-                                                  _verify_volume_to_manage):
-        lcfg = self.configuration
-        lcfg.zfssa_manage_policy = 'loose'
-        self.drv.zfssa.get_lun.return_value = self.test_vol
-        self.drv._verify_volume_to_manage.return_value = None
-        self.drv.zfssa.set_lun_props.side_effect = \
-            exception.VolumeBackendAPIException(data='fake exception')
-        self.assertRaises(exception.VolumeBackendAPIException,
-                          self.drv.manage_existing, {'name': 'volume-123'},
-                          {'source-name': 'volume-567'})
-
-    def test_volume_unmanage(self):
-        lcfg = self.configuration
-        self.drv.zfssa.set_lun_props.return_value = True
-        self.assertIsNone(self.drv.unmanage({'name': 'volume-123'}))
-        self.drv.zfssa.set_lun_props.assert_called_once_with(
-            lcfg.zfssa_pool,
-            lcfg.zfssa_project,
-            'volume-123',
-            name='unmanaged-volume-123',
-            schema={"custom:cinder_managed": False})
-
-    def test_volume_unmanage_negative(self):
-        self.drv.zfssa.set_lun_props.side_effect = \
-            exception.VolumeBackendAPIException(data='fake exception')
-        self.assertRaises(exception.VolumeBackendAPIException,
-                          self.drv.unmanage, {'name': 'volume-123'})
-
-    @mock.patch.object(iscsi.ZFSSAISCSIDriver, '_get_existing_vol')
-    def test_manage_existing_get_size(self, _get_existing_vol):
-        test_vol = self.test_vol
-        test_vol['size'] = 3 * units.Gi
-        self.drv._get_existing_vol.return_value = test_vol
-        self.assertEqual(3, self.drv.manage_existing_get_size(
-                         {'name': 'volume-123'},
-                         {'source-name': 'volume-567'}))
-
-    @mock.patch.object(iscsi.ZFSSAISCSIDriver, '_get_existing_vol')
-    def test_manage_existing_get_size_negative(self, _get_existing_vol):
-        self.drv._get_existing_vol.side_effect = \
-            exception.VolumeNotFound(volume_id='123')
-        self.assertRaises(exception.VolumeNotFound,
-                          self.drv.manage_existing_get_size,
-                          {'name': 'volume-123'},
-                          {'source-name': 'volume-567'})
-
 
 class TestZFSSANFSDriver(test.TestCase):
 
@@ -903,10 +754,10 @@ class TestZFSSANFSDriver(test.TestCase):
         self.configuration.zfssa_nfs_share_compression = nfs_compression
         self.configuration.zfssa_nfs_mount_options = ''
         self.configuration.zfssa_rest_timeout = '30'
+        self.configuration.nfs_oversub_ratio = 1
+        self.configuration.nfs_used_ratio = 1
         self.configuration.zfssa_enable_local_cache = True
         self.configuration.zfssa_cache_directory = zfssa_cache_dir
-        self.configuration.nfs_sparsed_volumes = 'true'
-        self.configuration.zfssa_manage_policy = 'strict'
 
     def test_migrate_volume(self):
         self.drv.zfssa.get_asn.return_value = (
@@ -996,38 +847,15 @@ class TestZFSSANFSDriver(test.TestCase):
                                     method='COPY')
 
     def test_get_volume_stats(self):
-        lcfg = self.configuration
         self.drv._mounted_shares = ['nfs_share']
         with mock.patch.object(self.drv, '_ensure_shares_mounted'):
             with mock.patch.object(self.drv, '_get_share_capacity_info') as \
                     mock_get_share_capacity_info:
                 mock_get_share_capacity_info.return_value = (1073741824,
                                                              9663676416)
-                self.drv.zfssa.get_pool_details.return_value = \
-                    {"profile": "mirror:log_stripe"}
-                self.drv.zfssa.get_share.return_value = {"compression": "lzjb",
-                                                         "encryption": "off",
-                                                         "logbias": "latency"}
                 stats = self.drv.get_volume_stats(refresh=True)
-                self.drv.zfssa.get_pool_details.assert_called_once_with(
-                    lcfg.zfssa_nfs_pool)
-                self.drv.zfssa.get_share.assert_called_with(
-                    lcfg.zfssa_nfs_pool, lcfg.zfssa_nfs_project,
-                    lcfg.zfssa_nfs_share)
-
                 self.assertEqual(1, stats['free_capacity_gb'])
                 self.assertEqual(10, stats['total_capacity_gb'])
-                self.assertEqual('mirror:log_stripe',
-                                 stats['zfssa_poolprofile'])
-                self.assertEqual('lzjb', stats['zfssa_compression'])
-                self.assertEqual('true', stats['zfssa_sparse'])
-                self.assertEqual('off', stats['zfssa_encryption'])
-                self.assertEqual('latency', stats['zfssa_logbias'])
-
-                self.drv.zfssa.get_pool_details.return_value = \
-                    {"profile": "mirror3"}
-                stats = self.drv.get_volume_stats(refresh=True)
-                self.assertEqual('mirror3', stats['zfssa_poolprofile'])
 
     def tearDown(self):
         super(TestZFSSANFSDriver, self).tearDown()
@@ -1054,15 +882,9 @@ class TestZFSSANFSDriver(test.TestCase):
         self.drv.zfssa.delete_file.assert_called_once_with(
             img_props_nfs['name'])
 
-    @mock.patch.object(image_utils, 'qemu_img_info')
-    @mock.patch.object(image_utils.TemporaryImages, 'fetch')
     @mock.patch.object(zfssanfs.ZFSSANFSDriver, '_verify_cache_volume')
     @mock.patch.object(zfssanfs.ZFSSANFSDriver, 'create_cloned_volume')
-    def test_clone_image_negative(self, _create_clone, _verify_cache_volume,
-                                  _fetch, _info):
-        _fetch.return_value = mock.MagicMock(spec=utils.get_file_spec())
-        _info.return_value = ImgInfo(small_img['virtual_size'])
-
+    def test_clone_image_negative(self, _create_clone, _verify_cache_volume):
         # Disabling local cache feature:
         self.configuration.zfssa_enable_local_cache = False
         self.assertEqual((None, False),
@@ -1074,15 +896,20 @@ class TestZFSSANFSDriver(test.TestCase):
         self.configuration.zfssa_enable_local_cache = True
 
         # Creating a volume smaller than image:
-        _info.return_value = ImgInfo(large_img['virtual_size'])
         self.assertEqual((None, False),
                          self.drv.clone_image(fakecontext, self.test_vol,
                                               img_location,
                                               large_img,
                                               img_service))
 
+        # The image does not have virtual_size property:
+        self.assertEqual((None, False),
+                         self.drv.clone_image(fakecontext, self.test_vol,
+                                              img_location,
+                                              no_virtsize_img,
+                                              img_service))
+
         # Exception raised in _verify_cache_image
-        _info.return_value = ImgInfo(small_img['virtual_size'])
         self.drv._verify_cache_volume.side_effect = (
             exception.VolumeBackendAPIException('fakeerror'))
         self.assertEqual((None, False),
@@ -1091,15 +918,10 @@ class TestZFSSANFSDriver(test.TestCase):
                                               small_img,
                                               img_service))
 
-    @mock.patch.object(image_utils, 'qemu_img_info')
-    @mock.patch.object(image_utils.TemporaryImages, 'fetch')
     @mock.patch.object(zfssanfs.ZFSSANFSDriver, 'create_cloned_volume')
     @mock.patch.object(zfssanfs.ZFSSANFSDriver, '_verify_cache_volume')
     @mock.patch.object(zfssanfs.ZFSSANFSDriver, 'extend_volume')
-    def test_clone_image(self, _extend_vol, _verify_cache, _create_clone,
-                         _fetch, _info):
-        _fetch.return_value = mock.MagicMock(spec=utils.get_file_spec())
-        _info.return_value = ImgInfo(small_img['virtual_size'])
+    def test_clone_image(self, _extend_vol, _verify_cache, _create_clone):
         self.drv._verify_cache_volume.return_value = img_props_nfs['name']
         prov_loc = {'provider_location': self.test_vol['provider_location']}
         self.drv.create_cloned_volume.return_value = prov_loc
@@ -1168,7 +990,7 @@ class TestZFSSANFSDriver(test.TestCase):
     @mock.patch.object(remotefs.RemoteFSDriver, 'copy_image_to_volume')
     @mock.patch.object(remotefs.RemoteFSDriver, 'create_volume')
     def test_create_cache_volume(self, _create_vol, _copy_image):
-        virtual_size = int(small_img['virtual_size'])
+        virtual_size = int(small_img['properties'].get('virtual_size'))
         volsize = math.ceil(float(virtual_size) / units.Gi)
         cache_vol = {
             'name': img_props_nfs['name'],
@@ -1197,152 +1019,6 @@ class TestZFSSANFSDriver(test.TestCase):
                           img_props_nfs)
         self.drv.zfssa.delete_file.assert_called_once_with(
             img_props_nfs['name'])
-
-    def test_volume_manage(self):
-        lcfg = self.configuration
-        lcfg.zfssa_manage_policy = 'loose'
-        test_vol = self.test_vol
-
-        self.drv.zfssa.get_volume.return_value = test_vol
-        self.drv.zfssa.rename_volume.return_value = None
-        self.drv.zfssa.set_file_props.return_value = None
-        self.drv.mount_path = lcfg.zfssa_data_ip + ':' + 'fake_mountpoint'
-        self.assertEqual({'provider_location': self.drv.mount_path},
-                         self.drv.manage_existing({'name': 'volume-123'},
-                                                  {'source-name':
-                                                      'volume-567'}))
-
-        self.drv.zfssa.get_volume.assert_called_once_with('volume-567')
-        self.drv.zfssa.rename_volume.assert_called_once_with('volume-567',
-                                                             'volume-123')
-        self.drv.zfssa.set_file_props.assert_called_once_with(
-            'volume-123', {'cinder_managed': 'True'})
-        # Test when 'zfssa_manage_policy' is set to 'strict'.
-        lcfg.zfssa_manage_policy = 'strict'
-        test_vol.update({'cinder_managed': 'False'})
-        self.drv.zfssa.get_volume.return_value = test_vol
-        self.assertEqual({'provider_location': self.drv.mount_path},
-                         self.drv.manage_existing({'name': 'volume-123'},
-                                                  {'source-name':
-                                                      'volume-567'}))
-
-    def test_volume_manage_negative_no_source_name(self):
-        self.assertRaises(exception.ManageExistingInvalidReference,
-                          self.drv.manage_existing,
-                          {'name': 'volume-123'},
-                          {'source-id': 'volume-567'})
-
-    def test_volume_manage_negative_backend_exception(self):
-        self.drv.zfssa.get_volume.side_effect = \
-            exception.VolumeNotFound(volume_id='volume-567')
-        self.assertRaises(exception.InvalidInput,
-                          self.drv.manage_existing,
-                          {'name': 'volume-123'},
-                          {'source-name': 'volume-567'})
-
-    def test_volume_manage_negative_verify_fail(self):
-        lcfg = self.configuration
-        lcfg.zfssa_manage_policy = 'strict'
-        test_vol = self.test_vol
-        test_vol['cinder_managed'] = ''
-
-        self.drv.zfssa.get_volume.return_value = test_vol
-        self.assertRaises(exception.InvalidInput,
-                          self.drv.manage_existing,
-                          {'name': 'volume-123'},
-                          {'source-name': 'volume-567'})
-
-        test_vol.update({'cinder_managed': 'True'})
-        self.drv.zfssa.get_volume.return_value = test_vol
-        self.assertRaises(exception.ManageExistingAlreadyManaged,
-                          self.drv.manage_existing,
-                          {'name': 'volume-123'},
-                          {'source-name': 'volume-567'})
-
-    @mock.patch.object(zfssanfs.ZFSSANFSDriver, '_verify_volume_to_manage')
-    def test_volume_manage_negative_rename_fail(self,
-                                                _verify_volume_to_manage):
-        test_vol = self.test_vol
-        test_vol.update({'cinder_managed': 'False'})
-        self.drv.zfssa.get_volume.return_value = test_vol
-        self.drv._verify_volume_to_manage.return_value = None
-        self.drv.zfssa.rename_volume.side_effect = \
-            exception.VolumeBackendAPIException(data="fake exception")
-        self.assertRaises(exception.VolumeBackendAPIException,
-                          self.drv.manage_existing, {'name': 'volume-123'},
-                          {'source-name': 'volume-567'})
-
-    @mock.patch.object(zfssanfs.ZFSSANFSDriver, '_verify_volume_to_manage')
-    def test_volume_manage_negative_set_prop_fail(self,
-                                                  _verify_volume_to_manage):
-        test_vol = self.test_vol
-        test_vol.update({'cinder_managed': 'False'})
-        self.drv.zfssa.get_volume.return_value = test_vol
-        self.drv._verify_volume_to_manage.return_value = None
-        self.drv.zfssa.rename_volume.return_value = None
-        self.drv.zfssa.set_file_props.side_effect = \
-            exception.VolumeBackendAPIException(data="fake exception")
-        self.assertRaises(exception.VolumeBackendAPIException,
-                          self.drv.manage_existing, {'name': 'volume-123'},
-                          {'source-name': 'volume-567'})
-
-    def test_volume_unmanage(self):
-        test_vol = self.test_vol
-        test_vol.update({'cinder_managed': 'True'})
-        self.drv.zfssa.rename_volume.return_value = None
-        self.drv.zfssa.set_file_props.return_value = None
-        self.assertIsNone(self.drv.unmanage(test_vol))
-        new_vol_name = 'unmanaged-' + test_vol['name']
-        self.drv.zfssa.rename_volume.assert_called_once_with(test_vol['name'],
-                                                             new_vol_name)
-        self.drv.zfssa.set_file_props.assert_called_once_with(
-            new_vol_name, {'cinder_managed': 'False'})
-
-    def test_volume_unmanage_negative_rename_fail(self):
-        test_vol = self.test_vol
-        test_vol.update({'cinder_managed': 'True'})
-        self.drv.zfssa.rename_volume.side_effect = \
-            exception.VolumeBackendAPIException(data="fake exception")
-        self.drv.zfssa.set_file_props.return_value = None
-        self.assertRaises(exception.VolumeBackendAPIException,
-                          self.drv.unmanage, test_vol)
-
-    def test_volume_unmanage_negative_set_prop_fail(self):
-        test_vol = self.test_vol
-        test_vol.update({'cinder_managed': 'True'})
-        self.drv.zfssa.rename_volume.return_value = None
-        self.drv.zfssa.set_file_props.side_effect = \
-            exception.VolumeBackendAPIException(data="fake exception")
-        self.assertRaises(exception.VolumeBackendAPIException,
-                          self.drv.unmanage, test_vol)
-
-    @mock.patch.object(zfssanfs.ZFSSANFSDriver, '_get_mount_point_for_share')
-    def test_manage_existing_get_size(self, _get_mount_point_for_share):
-        self.drv._get_mount_point_for_share.return_value = \
-            '/fake/mnt/fake_share/'
-        self.drv._mounted_shares = []
-        self.drv._mounted_shares.append('fake_share')
-        file = mock.Mock(st_size=123 * units.Gi)
-        with mock.patch('os.path.isfile', return_value=True):
-            with mock.patch('os.stat', return_value=file):
-                self.assertEqual(float(file.st_size / units.Gi),
-                                 self.drv.manage_existing_get_size(
-                                     {'name': 'volume-123'},
-                                     {'source-name': 'volume-567'}))
-
-    @mock.patch.object(zfssanfs.ZFSSANFSDriver, '_get_mount_point_for_share')
-    def test_manage_existing_get_size_negative(self,
-                                               _get_mount_point_for_share):
-        self.drv._get_mount_point_for_share.return_value = \
-            '/fake/mnt/fake_share/'
-        self.drv._mounted_shares = []
-        self.drv._mounted_shares.append('fake_share')
-        with mock.patch('os.path.isfile', return_value=True):
-            with mock.patch('os.stat', side_effect=OSError):
-                self.assertRaises(exception.VolumeBackendAPIException,
-                                  self.drv.manage_existing_get_size,
-                                  {'name': 'volume-123'},
-                                  {'source-name': 'volume-567'})
 
 
 class TestZFSSAApi(test.TestCase):

@@ -152,6 +152,7 @@ class V7000FCPDriver(driver.FibreChannelDriver):
         properties['target_discovered'] = True
         properties['target_wwn'] = target_wwns
         properties['target_lun'] = lun_id
+        properties['access_mode'] = 'rw'
         properties['initiator_target_map'] = init_targ_map
 
         LOG.debug("Return FC data for zone addition: %(properties)s.",
@@ -268,8 +269,8 @@ class V7000FCPDriver(driver.FibreChannelDriver):
 
         for x in all_devices:
             if socket.getfqdn(x['owner']) == array_name:
-                total_gb += x['size_mb'] // 1024
-                free_gb += x['availsize_mb'] // 1024
+                total_gb += x['size_mb'] / 1024
+                free_gb += x['availsize_mb'] / 1024
 
         backend_name = self.configuration.volume_backend_name
         data['volume_backend_name'] = backend_name or self.__class__.__name__
@@ -296,7 +297,7 @@ class V7000FCPDriver(driver.FibreChannelDriver):
         active_gw_fcp_wwns = []
 
         fc_info = v.adapter.get_fc_info()
-        for x in fc_info.values():
+        for x in fc_info.itervalues():
             active_gw_fcp_wwns.append(x[0])
 
         return active_gw_fcp_wwns

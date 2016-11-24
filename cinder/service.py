@@ -29,12 +29,10 @@ from oslo_log import log as logging
 import oslo_messaging as messaging
 from oslo_service import loopingcall
 from oslo_service import service
-from oslo_service import wsgi
 from oslo_utils import importutils
-osprofiler_notifier = importutils.try_import('osprofiler.notifier')
-profiler = importutils.try_import('osprofiler.profiler')
-osprofiler_web = importutils.try_import('osprofiler.web')
-profiler_opts = importutils.try_import('osprofiler.opts')
+import osprofiler.notifier
+from osprofiler import profiler
+import osprofiler.web
 
 from cinder import context
 from cinder import exception
@@ -43,7 +41,8 @@ from cinder import objects
 from cinder.objects import base as objects_base
 from cinder import rpc
 from cinder import version
-
+from cinder.wsgi import common as wsgi_common
+from cinder.wsgi import eventlet_server as wsgi
 
 LOG = logging.getLogger(__name__)
 
@@ -63,38 +62,36 @@ service_opts = [
     cfg.StrOpt('osapi_volume_listen',
                default="0.0.0.0",
                help='IP address on which OpenStack Volume API listens'),
-    cfg.PortOpt('osapi_volume_listen_port',
-                default=8776,
-                help='Port on which OpenStack Volume API listens'),
+    cfg.IntOpt('osapi_volume_listen_port',
+               default=8776,
+               min=1, max=65535,
+               help='Port on which OpenStack Volume API listens'),
     cfg.IntOpt('osapi_volume_workers',
                help='Number of workers for OpenStack Volume API service. '
                     'The default is equal to the number of CPUs available.'), ]
 
+profiler_opts = [
+    cfg.BoolOpt("profiler_enabled", default=False,
+                help=_('If False fully disable profiling feature.')),
+    cfg.BoolOpt("trace_sqlalchemy", default=False,
+                help=_("If False doesn't trace SQL requests."))
+]
 
 CONF = cfg.CONF
 CONF.register_opts(service_opts)
-if profiler_opts:
-    profiler_opts.set_defaults(CONF)
+CONF.register_opts(profiler_opts, group="profiler")
 
 
 def setup_profiler(binary, host):
-    if (osprofiler_notifier is None or
-            profiler is None or
-            osprofiler_web is None or
-            profiler_opts is None):
-        LOG.debug('osprofiler is not present')
-        return
-
-    if CONF.profiler.enabled:
-        _notifier = osprofiler_notifier.create(
+    if CONF.profiler.profiler_enabled:
+        _notifier = osprofiler.notifier.create(
             "Messaging", messaging, context.get_admin_context().to_dict(),
             rpc.TRANSPORT, "cinder", binary, host)
-        osprofiler_notifier.set(_notifier)
-        osprofiler_web.enable(CONF.profiler.hmac_keys)
+        osprofiler.notifier.set(_notifier)
         LOG.warning(
             _LW("OSProfiler is enabled.\nIt means that person who knows "
                 "any of hmac_keys that are specified in "
-                "/etc/cinder/cinder.conf can trace his requests. \n"
+                "/etc/cinder/api-paste.ini can trace his requests. \n"
                 "In real life only operator can read this file so there "
                 "is no security issue. Note that even if person can "
                 "trigger profiler, only admin user can retrieve trace "
@@ -102,7 +99,7 @@ def setup_profiler(binary, host):
                 "To disable OSprofiler set in cinder.conf:\n"
                 "[profiler]\nenabled=false"))
     else:
-        osprofiler_web.disable()
+        osprofiler.web.disable()
 
 
 class Service(service.Service):
@@ -126,24 +123,7 @@ class Service(service.Service):
         self.topic = topic
         self.manager_class_name = manager
         manager_class = importutils.import_class(self.manager_class_name)
-        if CONF.profiler.enabled:
-            manager_class = profiler.trace_cls("rpc")(manager_class)
-
-        # NOTE(geguileo): We need to create the Service DB entry before we
-        # create the manager, otherwise capped versions for serializer and rpc
-        # client would used existing DB entries not including us, which could
-        # result in us using None (if it's the first time the service is run)
-        # or an old version (if this is a normal upgrade of a single service).
-        ctxt = context.get_admin_context()
-        try:
-            service_ref = objects.Service.get_by_args(ctxt, host, binary)
-            service_ref.rpc_current_version = manager_class.RPC_API_VERSION
-            obj_version = objects_base.OBJ_VERSIONS.get_current()
-            service_ref.object_current_version = obj_version
-            service_ref.save()
-            self.service_id = service_ref.id
-        except exception.NotFound:
-            self._create_service_ref(ctxt, manager_class.RPC_API_VERSION)
+        manager_class = profiler.trace_cls("rpc")(manager_class)
 
         self.manager = manager_class(host=self.host,
                                      service_name=service_name,
@@ -164,6 +144,13 @@ class Service(service.Service):
                  {'topic': self.topic, 'version_string': version_string})
         self.model_disconnected = False
         self.manager.init_host()
+        ctxt = context.get_admin_context()
+        try:
+            service_ref = objects.Service.get_by_args(
+                ctxt, self.host, self.binary)
+            self.service_id = service_ref.id
+        except exception.NotFound:
+            self._create_service_ref(ctxt)
 
         LOG.debug("Creating RPC server for service %s", self.topic)
 
@@ -212,17 +199,13 @@ class Service(service.Service):
                      'new_down_time': new_down_time})
                 CONF.set_override('service_down_time', new_down_time)
 
-    def _create_service_ref(self, context, rpc_version=None):
+    def _create_service_ref(self, context):
         zone = CONF.storage_availability_zone
-        kwargs = {
-            'host': self.host,
-            'binary': self.binary,
-            'topic': self.topic,
-            'report_count': 0,
-            'availability_zone': zone,
-            'rpc_current_version': rpc_version or self.manager.RPC_API_VERSION,
-            'object_current_version': objects_base.OBJ_VERSIONS.get_current(),
-        }
+        kwargs = {'host': self.host,
+                  'binary': self.binary,
+                  'topic': self.topic,
+                  'report_count': 0,
+                  'availability_zone': zone}
         service_ref = objects.Service(context=context, **kwargs)
         service_ref.create()
         self.service_id = service_ref.id
@@ -269,6 +252,16 @@ class Service(service.Service):
 
         return service_obj
 
+    def kill(self):
+        """Destroy the service object in the datastore."""
+        self.stop()
+        try:
+            service_ref = objects.Service.get_by_id(
+                context.get_admin_context(), self.service_id)
+            service_ref.destroy()
+        except exception.NotFound:
+            LOG.warning(_LW('Service killed that has no database entry'))
+
     def stop(self):
         # Try to shut the connection down, but if we get any sort of
         # errors, go ahead and ignore them.. as we're shutting down anyway
@@ -276,26 +269,22 @@ class Service(service.Service):
             self.rpcserver.stop()
         except Exception:
             pass
-
-        self.timers_skip = []
         for x in self.timers:
             try:
                 x.stop()
             except Exception:
-                self.timers_skip.append(x)
-        super(Service, self).stop(graceful=True)
+                pass
+        self.timers = []
+        super(Service, self).stop()
 
     def wait(self):
-        skip = getattr(self, 'timers_skip', [])
         for x in self.timers:
-            if x not in skip:
-                try:
-                    x.wait()
-                except Exception:
-                    pass
+            try:
+                x.wait()
+            except Exception:
+                pass
         if self.rpcserver:
             self.rpcserver.wait()
-        super(Service, self).wait()
 
     def periodic_tasks(self, raise_on_error=False):
         """Tasks to be run at a periodic interval."""
@@ -353,10 +342,6 @@ class Service(service.Service):
                 self.model_disconnected = True
                 LOG.exception(_LE('Exception encountered: '))
 
-    def reset(self):
-        self.manager.reset()
-        super(Service, self).reset()
-
 
 class WSGIService(service.ServiceBase):
     """Provides ability to launch API from a 'paste' configuration."""
@@ -371,7 +356,7 @@ class WSGIService(service.ServiceBase):
         """
         self.name = name
         self.manager = self._get_manager()
-        self.loader = loader or wsgi.Loader(CONF)
+        self.loader = loader or wsgi_common.Loader()
         self.app = self.loader.load_app(name)
         self.host = getattr(CONF, '%s_listen' % name, "0.0.0.0")
         self.port = getattr(CONF, '%s_listen_port' % name, 0)
@@ -386,8 +371,7 @@ class WSGIService(service.ServiceBase):
             raise exception.InvalidInput(msg)
         setup_profiler(name, self.host)
 
-        self.server = wsgi.Server(CONF,
-                                  name,
+        self.server = wsgi.Server(name,
                                   self.app,
                                   host=self.host,
                                   port=self.port)

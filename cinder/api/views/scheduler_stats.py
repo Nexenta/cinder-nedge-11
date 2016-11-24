@@ -26,7 +26,7 @@ class ViewBuilder(common.ViewBuilder):
         super(ViewBuilder, self).__init__()
 
     def summary(self, request, pool):
-        """Summary view of a single pool."""
+        """Detailed view of a single pool."""
         return {
             'pool': {
                 'name': pool.get('name'),
@@ -43,7 +43,7 @@ class ViewBuilder(common.ViewBuilder):
         }
 
     def pools(self, request, pools, detail):
-        """Detailed/Summary view of a list of pools seen by scheduler."""
+        """Detailed view of a list of pools seen by scheduler."""
         if detail:
             plist = [self.detail(request, pool)['pool'] for pool in pools]
         else:

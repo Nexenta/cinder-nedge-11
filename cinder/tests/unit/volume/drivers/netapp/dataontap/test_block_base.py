@@ -3,8 +3,6 @@
 # Copyright (c) 2014 Andrew Kerr.  All rights reserved.
 # Copyright (c) 2015 Tom Barron.  All rights reserved.
 # Copyright (c) 2015 Goutham Pacha Ravi. All rights reserved.
-# Copyright (c) 2015 Dustin Schoenbrun. All rights reserved.
-# Copyright (c) 2016 Chuck Fouts. All rights reserved.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -28,7 +26,6 @@ import uuid
 import mock
 from oslo_log import versionutils
 from oslo_utils import units
-import six
 
 from cinder import exception
 from cinder.i18n import _, _LW
@@ -102,14 +99,14 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
                        mock.Mock(return_value=None))
     def test_get_pool_no_metadata(self):
         pool = self.library.get_pool({'name': 'volume-fake-uuid'})
-        self.assertIsNone(pool)
+        self.assertEqual(None, pool)
 
     @mock.patch.object(block_base.NetAppBlockStorageLibrary,
                        '_get_lun_attr',
                        mock.Mock(return_value=dict()))
     def test_get_pool_volume_unknown(self):
         pool = self.library.get_pool({'name': 'volume-fake-uuid'})
-        self.assertIsNone(pool)
+        self.assertEqual(None, pool)
 
     def test_create_volume(self):
         volume_size_in_bytes = int(fake.SIZE) * units.Gi
@@ -531,27 +528,6 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
         target_info = self.library.initialize_connection_iscsi(volume,
                                                                connector)
 
-        self.assertEqual(
-            fake.ISCSI_CONNECTION_PROPERTIES['data']['auth_method'],
-            target_info['data']['auth_method'])
-        self.assertEqual(
-            fake.ISCSI_CONNECTION_PROPERTIES['data']['auth_password'],
-            target_info['data']['auth_password'])
-        self.assertTrue('auth_password' in target_info['data'])
-
-        self.assertEqual(
-            fake.ISCSI_CONNECTION_PROPERTIES['data']['discovery_auth_method'],
-            target_info['data']['discovery_auth_method'])
-        self.assertEqual(
-            fake.ISCSI_CONNECTION_PROPERTIES['data']
-            ['discovery_auth_password'],
-            target_info['data']['discovery_auth_password'])
-        self.assertTrue('auth_password' in target_info['data'])
-        self.assertEqual(
-            fake.ISCSI_CONNECTION_PROPERTIES['data']
-            ['discovery_auth_username'],
-            target_info['data']['discovery_auth_username'])
-
         self.assertEqual(fake.ISCSI_CONNECTION_PROPERTIES, target_info)
         block_base.NetAppBlockStorageLibrary._map_lun.assert_called_once_with(
             fake.ISCSI_VOLUME['name'], [fake.ISCSI_CONNECTOR['initiator']],
@@ -646,7 +622,7 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
         result = self.library._get_preferred_target_from_list(
             target_details_list)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
 
     def test_get_preferred_target_from_list_with_one_interface_disabled(self):
         target_details_list = copy.deepcopy(fake.ISCSI_TARGET_DETAILS_LIST)
@@ -694,10 +670,8 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
         self.library.configuration.netapp_lun_ostype = 'linux'
         self.library.configuration.netapp_host_type = 'future_os'
         self.library.do_setup(mock.Mock())
-
         self.assertRaises(exception.NetAppDriverException,
                           self.library.check_for_setup_error)
-
         msg = _("Invalid value for NetApp configuration"
                 " option netapp_host_type.")
         block_base.LOG.error.assert_called_once_with(msg)
@@ -725,31 +699,24 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
             ['lun1'])
 
     def test_delete_volume(self):
-        mock_delete_lun = self.mock_object(self.library, '_delete_lun')
-
-        self.library.delete_volume(fake.VOLUME)
-
-        mock_delete_lun.assert_called_once_with(fake.LUN_NAME)
-
-    def test_delete_lun(self):
         mock_get_lun_attr = self.mock_object(self.library, '_get_lun_attr')
         mock_get_lun_attr.return_value = fake.LUN_METADATA
         self.library.zapi_client = mock.Mock()
         self.library.lun_table = fake.LUN_TABLE
 
-        self.library._delete_lun(fake.LUN_NAME)
+        self.library.delete_volume(fake.VOLUME)
 
         mock_get_lun_attr.assert_called_once_with(
             fake.LUN_NAME, 'metadata')
         self.library.zapi_client.destroy_lun.assert_called_once_with(fake.PATH)
 
-    def test_delete_lun_no_metadata(self):
+    def test_delete_volume_no_metadata(self):
         self.mock_object(self.library, '_get_lun_attr', mock.Mock(
             return_value=None))
         self.library.zapi_client = mock.Mock()
         self.mock_object(self.library, 'zapi_client')
 
-        self.library._delete_lun(fake.LUN_NAME)
+        self.library.delete_volume(fake.VOLUME)
 
         self.library._get_lun_attr.assert_called_once_with(
             fake.LUN_NAME, 'metadata')
@@ -758,20 +725,13 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
                          self.zapi_client.
                          mark_qos_policy_group_for_deletion.call_count)
 
-    def test_delete_snapshot(self):
-        mock_delete_lun = self.mock_object(self.library, '_delete_lun')
-
-        self.library.delete_snapshot(fake.SNAPSHOT)
-
-        mock_delete_lun.assert_called_once_with(fake.SNAPSHOT_NAME)
-
     def test_clone_source_to_destination(self):
         self.mock_object(na_utils, 'get_volume_extra_specs', mock.Mock(
             return_value=fake.EXTRA_SPECS))
         self.mock_object(self.library, '_setup_qos_for_volume', mock.Mock(
             return_value=fake.QOS_POLICY_GROUP_INFO))
         self.mock_object(self.library, '_clone_lun')
-        self.mock_object(self.library, '_extend_volume')
+        self.mock_object(self.library, 'extend_volume')
         self.mock_object(self.library, 'delete_volume')
         self.mock_object(self.library, '_mark_qos_policy_group_for_deletion')
         self.library.lun_space_reservation = 'false'
@@ -787,9 +747,9 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
             fake.CLONE_SOURCE_NAME, fake.CLONE_DESTINATION_NAME,
             space_reserved='false',
             qos_policy_group_name=fake.QOS_POLICY_GROUP_NAME)
-        self.library._extend_volume.assert_called_once_with(
+        self.library.extend_volume.assert_called_once_with(
             fake.CLONE_DESTINATION, fake.CLONE_DESTINATION_SIZE,
-            fake.QOS_POLICY_GROUP_NAME)
+            qos_policy_group_name=fake.QOS_POLICY_GROUP_NAME)
         self.assertEqual(0, self.library.delete_volume.call_count)
         self.assertEqual(0, self.library.
                          _mark_qos_policy_group_for_deletion.call_count)
@@ -800,7 +760,7 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
         self.mock_object(self.library, '_setup_qos_for_volume', mock.Mock(
             return_value=fake.QOS_POLICY_GROUP_INFO))
         self.mock_object(self.library, '_clone_lun')
-        self.mock_object(self.library, '_extend_volume', mock.Mock(
+        self.mock_object(self.library, 'extend_volume', mock.Mock(
             side_effect=Exception))
         self.mock_object(self.library, 'delete_volume')
         self.mock_object(self.library, '_mark_qos_policy_group_for_deletion')
@@ -818,9 +778,9 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
             fake.CLONE_SOURCE_NAME, fake.CLONE_DESTINATION_NAME,
             space_reserved='true',
             qos_policy_group_name=fake.QOS_POLICY_GROUP_NAME)
-        self.library._extend_volume.assert_called_once_with(
+        self.library.extend_volume.assert_called_once_with(
             fake.CLONE_DESTINATION, fake.CLONE_DESTINATION_SIZE,
-            fake.QOS_POLICY_GROUP_NAME)
+            qos_policy_group_name=fake.QOS_POLICY_GROUP_NAME)
         self.assertEqual(1, self.library.delete_volume.call_count)
         self.assertEqual(1, self.library.
                          _mark_qos_policy_group_for_deletion.call_count)
@@ -864,552 +824,3 @@ class NetAppBlockStorageLibraryTestCase(test.TestCase):
 
         mock_do_clone.assert_has_calls([
             mock.call(source, fake.VOLUME)])
-
-    def test_extend_volume(self):
-
-        new_size = 100
-        volume_copy = copy.copy(fake.VOLUME)
-        volume_copy['size'] = new_size
-
-        mock_get_volume_extra_specs = self.mock_object(
-            na_utils, 'get_volume_extra_specs',
-            mock.Mock(return_value=fake.EXTRA_SPECS))
-        mock_setup_qos_for_volume = self.mock_object(
-            self.library, '_setup_qos_for_volume',
-            mock.Mock(return_value=fake.QOS_POLICY_GROUP_INFO))
-        mock_extend_volume = self.mock_object(self.library, '_extend_volume')
-
-        self.library.extend_volume(fake.VOLUME, new_size)
-
-        mock_get_volume_extra_specs.assert_called_once_with(fake.VOLUME)
-        mock_setup_qos_for_volume.assert_called_once_with(volume_copy,
-                                                          fake.EXTRA_SPECS)
-        mock_extend_volume.assert_called_once_with(fake.VOLUME,
-                                                   new_size,
-                                                   fake.QOS_POLICY_GROUP_NAME)
-
-    def test_extend_volume_api_error(self):
-
-        new_size = 100
-        volume_copy = copy.copy(fake.VOLUME)
-        volume_copy['size'] = new_size
-
-        mock_get_volume_extra_specs = self.mock_object(
-            na_utils, 'get_volume_extra_specs',
-            mock.Mock(return_value=fake.EXTRA_SPECS))
-        mock_setup_qos_for_volume = self.mock_object(
-            self.library, '_setup_qos_for_volume',
-            mock.Mock(return_value=fake.QOS_POLICY_GROUP_INFO))
-        mock_extend_volume = self.mock_object(
-            self.library, '_extend_volume',
-            mock.Mock(side_effect=netapp_api.NaApiError))
-
-        self.assertRaises(netapp_api.NaApiError,
-                          self.library.extend_volume,
-                          fake.VOLUME,
-                          new_size)
-
-        mock_get_volume_extra_specs.assert_called_once_with(fake.VOLUME)
-        mock_setup_qos_for_volume.assert_has_calls([
-            mock.call(volume_copy, fake.EXTRA_SPECS),
-            mock.call(fake.VOLUME, fake.EXTRA_SPECS)])
-        mock_extend_volume.assert_called_once_with(
-            fake.VOLUME, new_size, fake.QOS_POLICY_GROUP_NAME)
-
-    def test__extend_volume_direct(self):
-
-        current_size = fake.LUN_SIZE
-        current_size_bytes = current_size * units.Gi
-        new_size = fake.LUN_SIZE * 2
-        new_size_bytes = new_size * units.Gi
-        max_size = fake.LUN_SIZE * 10
-        max_size_bytes = max_size * units.Gi
-        fake_volume = copy.copy(fake.VOLUME)
-        fake_volume['size'] = new_size
-
-        fake_lun = block_base.NetAppLun(fake.LUN_HANDLE,
-                                        fake.LUN_ID,
-                                        current_size_bytes,
-                                        fake.LUN_METADATA)
-        mock_get_lun_from_table = self.mock_object(
-            self.library, '_get_lun_from_table',
-            mock.Mock(return_value=fake_lun))
-        fake_lun_geometry = {'max_resize': six.text_type(max_size_bytes)}
-        mock_get_lun_geometry = self.mock_object(
-            self.library.zapi_client, 'get_lun_geometry',
-            mock.Mock(return_value=fake_lun_geometry))
-        mock_do_direct_resize = self.mock_object(self.library.zapi_client,
-                                                 'do_direct_resize')
-        mock_do_sub_clone_resize = self.mock_object(self.library,
-                                                    '_do_sub_clone_resize')
-        self.library.lun_table = {fake.VOLUME['name']: fake_lun}
-
-        self.library._extend_volume(fake.VOLUME, new_size, 'fake_qos_policy')
-
-        mock_get_lun_from_table.assert_called_once_with(fake.VOLUME['name'])
-        mock_get_lun_geometry.assert_called_once_with(
-            fake.LUN_METADATA['Path'])
-        mock_do_direct_resize.assert_called_once_with(
-            fake.LUN_METADATA['Path'], six.text_type(new_size_bytes))
-        self.assertFalse(mock_do_sub_clone_resize.called)
-        self.assertEqual(six.text_type(new_size_bytes),
-                         self.library.lun_table[fake.VOLUME['name']].size)
-
-    def test__extend_volume_clone(self):
-
-        current_size = fake.LUN_SIZE
-        current_size_bytes = current_size * units.Gi
-        new_size = fake.LUN_SIZE * 20
-        new_size_bytes = new_size * units.Gi
-        max_size = fake.LUN_SIZE * 10
-        max_size_bytes = max_size * units.Gi
-        fake_volume = copy.copy(fake.VOLUME)
-        fake_volume['size'] = new_size
-
-        fake_lun = block_base.NetAppLun(fake.LUN_HANDLE,
-                                        fake.LUN_ID,
-                                        current_size_bytes,
-                                        fake.LUN_METADATA)
-        mock_get_lun_from_table = self.mock_object(
-            self.library, '_get_lun_from_table',
-            mock.Mock(return_value=fake_lun))
-        fake_lun_geometry = {'max_resize': six.text_type(max_size_bytes)}
-        mock_get_lun_geometry = self.mock_object(
-            self.library.zapi_client, 'get_lun_geometry',
-            mock.Mock(return_value=fake_lun_geometry))
-        mock_do_direct_resize = self.mock_object(self.library.zapi_client,
-                                                 'do_direct_resize')
-        mock_do_sub_clone_resize = self.mock_object(self.library,
-                                                    '_do_sub_clone_resize')
-        self.library.lun_table = {fake.VOLUME['name']: fake_lun}
-
-        self.library._extend_volume(fake.VOLUME, new_size, 'fake_qos_policy')
-
-        mock_get_lun_from_table.assert_called_once_with(fake.VOLUME['name'])
-        mock_get_lun_geometry.assert_called_once_with(
-            fake.LUN_METADATA['Path'])
-        self.assertFalse(mock_do_direct_resize.called)
-        mock_do_sub_clone_resize.assert_called_once_with(
-            fake.LUN_METADATA['Path'], six.text_type(new_size_bytes),
-            qos_policy_group_name='fake_qos_policy')
-        self.assertEqual(six.text_type(new_size_bytes),
-                         self.library.lun_table[fake.VOLUME['name']].size)
-
-    def test__extend_volume_no_change(self):
-
-        current_size = fake.LUN_SIZE
-        current_size_bytes = current_size * units.Gi
-        new_size = fake.LUN_SIZE
-        max_size = fake.LUN_SIZE * 10
-        max_size_bytes = max_size * units.Gi
-        fake_volume = copy.copy(fake.VOLUME)
-        fake_volume['size'] = new_size
-
-        fake_lun = block_base.NetAppLun(fake.LUN_HANDLE,
-                                        fake.LUN_ID,
-                                        current_size_bytes,
-                                        fake.LUN_METADATA)
-        mock_get_lun_from_table = self.mock_object(
-            self.library, '_get_lun_from_table',
-            mock.Mock(return_value=fake_lun))
-        fake_lun_geometry = {'max_resize': six.text_type(max_size_bytes)}
-        mock_get_lun_geometry = self.mock_object(
-            self.library.zapi_client, 'get_lun_geometry',
-            mock.Mock(return_value=fake_lun_geometry))
-        mock_do_direct_resize = self.mock_object(self.library.zapi_client,
-                                                 'do_direct_resize')
-        mock_do_sub_clone_resize = self.mock_object(self.library,
-                                                    '_do_sub_clone_resize')
-        self.library.lun_table = {fake_volume['name']: fake_lun}
-
-        self.library._extend_volume(fake_volume, new_size, 'fake_qos_policy')
-
-        mock_get_lun_from_table.assert_called_once_with(fake_volume['name'])
-        self.assertFalse(mock_get_lun_geometry.called)
-        self.assertFalse(mock_do_direct_resize.called)
-        self.assertFalse(mock_do_sub_clone_resize.called)
-
-    def test_do_sub_clone_resize(self):
-
-        fake_lun = block_base.NetAppLun(fake.LUN_HANDLE,
-                                        fake.LUN_ID,
-                                        fake.LUN_SIZE,
-                                        fake.LUN_METADATA)
-        new_lun_size = fake.LUN_SIZE * 10
-        new_lun_name = 'new-%s' % fake.LUN_NAME
-        block_count = fake.LUN_SIZE * units.Gi / 512
-
-        mock_get_lun_from_table = self.mock_object(
-            self.library, '_get_lun_from_table',
-            mock.Mock(return_value=fake_lun))
-        mock_get_vol_option = self.mock_object(
-            self.library, '_get_vol_option', mock.Mock(return_value='off'))
-        mock_get_lun_block_count = self.mock_object(
-            self.library, '_get_lun_block_count',
-            mock.Mock(return_value=block_count))
-        mock_create_lun = self.mock_object(
-            self.library.zapi_client, 'create_lun')
-        mock_clone_lun = self.mock_object(self.library, '_clone_lun')
-        mock_post_sub_clone_resize = self.mock_object(
-            self.library, '_post_sub_clone_resize')
-        mock_destroy_lun = self.mock_object(
-            self.library.zapi_client, 'destroy_lun')
-
-        self.library._do_sub_clone_resize(fake.LUN_PATH,
-                                          new_lun_size,
-                                          fake.QOS_POLICY_GROUP_NAME)
-
-        mock_get_lun_from_table.assert_called_once_with(fake.LUN_NAME)
-        mock_get_vol_option.assert_called_once_with('vol0', 'compression')
-        mock_get_lun_block_count.assert_called_once_with(fake.LUN_PATH)
-        mock_create_lun.assert_called_once_with(
-            'vol0', new_lun_name, new_lun_size, fake.LUN_METADATA,
-            qos_policy_group_name=fake.QOS_POLICY_GROUP_NAME)
-        mock_clone_lun.assert_called_once_with(
-            fake.LUN_NAME, new_lun_name, block_count=block_count)
-        mock_post_sub_clone_resize.assert_called_once_with(fake.LUN_PATH)
-        self.assertFalse(mock_destroy_lun.called)
-
-    def test_do_sub_clone_resize_compression_on(self):
-
-        fake_lun = block_base.NetAppLun(fake.LUN_HANDLE,
-                                        fake.LUN_ID,
-                                        fake.LUN_SIZE,
-                                        fake.LUN_METADATA)
-        new_lun_size = fake.LUN_SIZE * 10
-        block_count = fake.LUN_SIZE * units.Gi / 512
-
-        mock_get_lun_from_table = self.mock_object(
-            self.library, '_get_lun_from_table',
-            mock.Mock(return_value=fake_lun))
-        mock_get_vol_option = self.mock_object(
-            self.library, '_get_vol_option', mock.Mock(return_value='on'))
-        mock_get_lun_block_count = self.mock_object(
-            self.library, '_get_lun_block_count',
-            mock.Mock(return_value=block_count))
-        mock_create_lun = self.mock_object(
-            self.library.zapi_client, 'create_lun')
-        mock_clone_lun = self.mock_object(self.library, '_clone_lun')
-        mock_post_sub_clone_resize = self.mock_object(
-            self.library, '_post_sub_clone_resize')
-        mock_destroy_lun = self.mock_object(
-            self.library.zapi_client, 'destroy_lun')
-
-        self.assertRaises(exception.VolumeBackendAPIException,
-                          self.library._do_sub_clone_resize,
-                          fake.LUN_PATH,
-                          new_lun_size,
-                          fake.QOS_POLICY_GROUP_NAME)
-
-        mock_get_lun_from_table.assert_called_once_with(fake.LUN_NAME)
-        mock_get_vol_option.assert_called_once_with('vol0', 'compression')
-        self.assertFalse(mock_get_lun_block_count.called)
-        self.assertFalse(mock_create_lun.called)
-        self.assertFalse(mock_clone_lun.called)
-        self.assertFalse(mock_post_sub_clone_resize.called)
-        self.assertFalse(mock_destroy_lun.called)
-
-    def test_do_sub_clone_resize_no_blocks(self):
-
-        fake_lun = block_base.NetAppLun(fake.LUN_HANDLE,
-                                        fake.LUN_ID,
-                                        fake.LUN_SIZE,
-                                        fake.LUN_METADATA)
-        new_lun_size = fake.LUN_SIZE * 10
-        block_count = 0
-
-        mock_get_lun_from_table = self.mock_object(
-            self.library, '_get_lun_from_table',
-            mock.Mock(return_value=fake_lun))
-        mock_get_vol_option = self.mock_object(
-            self.library, '_get_vol_option', mock.Mock(return_value='off'))
-        mock_get_lun_block_count = self.mock_object(
-            self.library, '_get_lun_block_count',
-            mock.Mock(return_value=block_count))
-        mock_create_lun = self.mock_object(
-            self.library.zapi_client, 'create_lun')
-        mock_clone_lun = self.mock_object(self.library, '_clone_lun')
-        mock_post_sub_clone_resize = self.mock_object(
-            self.library, '_post_sub_clone_resize')
-        mock_destroy_lun = self.mock_object(
-            self.library.zapi_client, 'destroy_lun')
-
-        self.assertRaises(exception.VolumeBackendAPIException,
-                          self.library._do_sub_clone_resize,
-                          fake.LUN_PATH,
-                          new_lun_size,
-                          fake.QOS_POLICY_GROUP_NAME)
-
-        mock_get_lun_from_table.assert_called_once_with(fake.LUN_NAME)
-        mock_get_vol_option.assert_called_once_with('vol0', 'compression')
-        mock_get_lun_block_count.assert_called_once_with(fake.LUN_PATH)
-        self.assertFalse(mock_create_lun.called)
-        self.assertFalse(mock_clone_lun.called)
-        self.assertFalse(mock_post_sub_clone_resize.called)
-        self.assertFalse(mock_destroy_lun.called)
-
-    def test_do_sub_clone_resize_create_error(self):
-
-        fake_lun = block_base.NetAppLun(fake.LUN_HANDLE,
-                                        fake.LUN_ID,
-                                        fake.LUN_SIZE,
-                                        fake.LUN_METADATA)
-        new_lun_size = fake.LUN_SIZE * 10
-        new_lun_name = 'new-%s' % fake.LUN_NAME
-        block_count = fake.LUN_SIZE * units.Gi / 512
-
-        mock_get_lun_from_table = self.mock_object(
-            self.library, '_get_lun_from_table',
-            mock.Mock(return_value=fake_lun))
-        mock_get_vol_option = self.mock_object(
-            self.library, '_get_vol_option', mock.Mock(return_value='off'))
-        mock_get_lun_block_count = self.mock_object(
-            self.library, '_get_lun_block_count',
-            mock.Mock(return_value=block_count))
-        mock_create_lun = self.mock_object(
-            self.library.zapi_client, 'create_lun',
-            mock.Mock(side_effect=netapp_api.NaApiError))
-        mock_clone_lun = self.mock_object(self.library, '_clone_lun')
-        mock_post_sub_clone_resize = self.mock_object(
-            self.library, '_post_sub_clone_resize')
-        mock_destroy_lun = self.mock_object(
-            self.library.zapi_client, 'destroy_lun')
-
-        self.assertRaises(netapp_api.NaApiError,
-                          self.library._do_sub_clone_resize,
-                          fake.LUN_PATH,
-                          new_lun_size,
-                          fake.QOS_POLICY_GROUP_NAME)
-
-        mock_get_lun_from_table.assert_called_once_with(fake.LUN_NAME)
-        mock_get_vol_option.assert_called_once_with('vol0', 'compression')
-        mock_get_lun_block_count.assert_called_once_with(fake.LUN_PATH)
-        mock_create_lun.assert_called_once_with(
-            'vol0', new_lun_name, new_lun_size, fake.LUN_METADATA,
-            qos_policy_group_name=fake.QOS_POLICY_GROUP_NAME)
-        self.assertFalse(mock_clone_lun.called)
-        self.assertFalse(mock_post_sub_clone_resize.called)
-        self.assertFalse(mock_destroy_lun.called)
-
-    def test_do_sub_clone_resize_clone_error(self):
-
-        fake_lun = block_base.NetAppLun(fake.LUN_HANDLE,
-                                        fake.LUN_ID,
-                                        fake.LUN_SIZE,
-                                        fake.LUN_METADATA)
-        new_lun_size = fake.LUN_SIZE * 10
-        new_lun_name = 'new-%s' % fake.LUN_NAME
-        new_lun_path = '/vol/vol0/%s' % new_lun_name
-        block_count = fake.LUN_SIZE * units.Gi / 512
-
-        mock_get_lun_from_table = self.mock_object(
-            self.library, '_get_lun_from_table',
-            mock.Mock(return_value=fake_lun))
-        mock_get_vol_option = self.mock_object(
-            self.library, '_get_vol_option', mock.Mock(return_value='off'))
-        mock_get_lun_block_count = self.mock_object(
-            self.library, '_get_lun_block_count',
-            mock.Mock(return_value=block_count))
-        mock_create_lun = self.mock_object(
-            self.library.zapi_client, 'create_lun')
-        mock_clone_lun = self.mock_object(
-            self.library, '_clone_lun',
-            mock.Mock(side_effect=netapp_api.NaApiError))
-        mock_post_sub_clone_resize = self.mock_object(
-            self.library, '_post_sub_clone_resize')
-        mock_destroy_lun = self.mock_object(
-            self.library.zapi_client, 'destroy_lun')
-
-        self.assertRaises(netapp_api.NaApiError,
-                          self.library._do_sub_clone_resize,
-                          fake.LUN_PATH,
-                          new_lun_size,
-                          fake.QOS_POLICY_GROUP_NAME)
-
-        mock_get_lun_from_table.assert_called_once_with(fake.LUN_NAME)
-        mock_get_vol_option.assert_called_once_with('vol0', 'compression')
-        mock_get_lun_block_count.assert_called_once_with(fake.LUN_PATH)
-        mock_create_lun.assert_called_once_with(
-            'vol0', new_lun_name, new_lun_size, fake.LUN_METADATA,
-            qos_policy_group_name=fake.QOS_POLICY_GROUP_NAME)
-        mock_clone_lun.assert_called_once_with(
-            fake.LUN_NAME, new_lun_name, block_count=block_count)
-        self.assertFalse(mock_post_sub_clone_resize.called)
-        mock_destroy_lun.assert_called_once_with(new_lun_path)
-
-    def test_configure_chap_generate_username_and_password(self):
-        """Ensure that a CHAP username and password are generated."""
-        initiator_name = fake.ISCSI_CONNECTOR['initiator']
-
-        username, password = self.library._configure_chap(initiator_name)
-
-        self.assertEqual(na_utils.DEFAULT_CHAP_USER_NAME, username)
-        self.assertIsNotNone(password)
-        self.assertEqual(len(password), na_utils.CHAP_SECRET_LENGTH)
-
-    def test_add_chap_properties(self):
-        """Ensure that CHAP properties are added to the properties dictionary
-
-        """
-        properties = {'data': {}}
-        self.library._add_chap_properties(properties, 'user1', 'pass1')
-
-        data = properties['data']
-        self.assertEqual('CHAP', data['auth_method'])
-        self.assertEqual('user1', data['auth_username'])
-        self.assertEqual('pass1', data['auth_password'])
-        self.assertEqual('CHAP', data['discovery_auth_method'])
-        self.assertEqual('user1', data['discovery_auth_username'])
-        self.assertEqual('pass1', data['discovery_auth_password'])
-
-    def test_create_cgsnapshot(self):
-        snapshot = fake.CG_SNAPSHOT
-        snapshot['volume'] = fake.CG_VOLUME
-
-        mock_extract_host = self.mock_object(
-            volume_utils, 'extract_host',
-            mock.Mock(return_value=fake.POOL_NAME))
-
-        mock_clone_lun = self.mock_object(self.library, '_clone_lun')
-        mock_busy = self.mock_object(self.library, '_handle_busy_snapshot')
-
-        self.library.create_cgsnapshot(fake.CG_SNAPSHOT, [snapshot])
-
-        mock_extract_host.assert_called_once_with(fake.CG_VOLUME['host'],
-                                                  level='pool')
-        self.zapi_client.create_cg_snapshot.assert_called_once_with(
-            set([fake.POOL_NAME]), fake.CG_SNAPSHOT_ID)
-        mock_clone_lun.assert_called_once_with(
-            fake.CG_VOLUME_NAME, fake.CG_SNAPSHOT_NAME,
-            source_snapshot=fake.CG_SNAPSHOT_ID)
-        mock_busy.assert_called_once_with(fake.POOL_NAME, fake.CG_SNAPSHOT_ID)
-
-    def test_delete_cgsnapshot(self):
-
-        mock_delete_snapshot = self.mock_object(
-            self.library, '_delete_lun')
-
-        self.library.delete_cgsnapshot(fake.CG_SNAPSHOT, [fake.CG_SNAPSHOT])
-
-        mock_delete_snapshot.assert_called_once_with(fake.CG_SNAPSHOT['name'])
-
-    def test_delete_cgsnapshot_not_found(self):
-        self.mock_object(block_base, 'LOG')
-        self.mock_object(self.library, '_get_lun_attr',
-                         mock.Mock(return_value=None))
-
-        self.library.delete_cgsnapshot(fake.CG_SNAPSHOT, [fake.CG_SNAPSHOT])
-
-        self.assertEqual(0, block_base.LOG.error.call_count)
-        self.assertEqual(1, block_base.LOG.warning.call_count)
-        self.assertEqual(0, block_base.LOG.info.call_count)
-
-    def test_create_volume_with_cg(self):
-        volume_size_in_bytes = int(fake.CG_VOLUME_SIZE) * units.Gi
-        self._create_volume_test_helper()
-
-        self.library.create_volume(fake.CG_VOLUME)
-
-        self.library._create_lun.assert_called_once_with(
-            fake.POOL_NAME, fake.CG_VOLUME_NAME, volume_size_in_bytes,
-            fake.CG_LUN_METADATA, None)
-        self.assertEqual(0, self.library.
-                         _mark_qos_policy_group_for_deletion.call_count)
-        self.assertEqual(0, block_base.LOG.error.call_count)
-
-    def _create_volume_test_helper(self):
-        self.mock_object(na_utils, 'get_volume_extra_specs')
-        self.mock_object(na_utils, 'log_extra_spec_warnings')
-        self.mock_object(block_base, 'LOG')
-        self.mock_object(volume_utils, 'extract_host',
-                         mock.Mock(return_value=fake.POOL_NAME))
-        self.mock_object(self.library, '_setup_qos_for_volume',
-                         mock.Mock(return_value=None))
-        self.mock_object(self.library, '_create_lun')
-        self.mock_object(self.library, '_create_lun_handle')
-        self.mock_object(self.library, '_add_lun_to_table')
-        self.mock_object(self.library, '_mark_qos_policy_group_for_deletion')
-
-    def test_create_consistency_group(self):
-        model_update = self.library.create_consistencygroup(
-            fake.CONSISTENCY_GROUP)
-        self.assertEqual('available', model_update['status'])
-
-    def test_delete_consistencygroup_volume_delete_failure(self):
-        self.mock_object(block_base, 'LOG')
-        self.mock_object(self.library, '_delete_lun',
-                         mock.Mock(side_effect=Exception))
-
-        model_update, volumes = self.library.delete_consistencygroup(
-            fake.CONSISTENCY_GROUP, [fake.CG_VOLUME])
-
-        self.assertEqual('deleted', model_update['status'])
-        self.assertEqual('error_deleting', volumes[0]['status'])
-        self.assertEqual(1, block_base.LOG.exception.call_count)
-
-    def test_delete_consistencygroup_not_found(self):
-        self.mock_object(block_base, 'LOG')
-        self.mock_object(self.library, '_get_lun_attr',
-                         mock.Mock(return_value=None))
-
-        model_update, volumes = self.library.delete_consistencygroup(
-            fake.CONSISTENCY_GROUP, [fake.CG_VOLUME])
-
-        self.assertEqual(0, block_base.LOG.error.call_count)
-        self.assertEqual(1, block_base.LOG.warning.call_count)
-        self.assertEqual(0, block_base.LOG.info.call_count)
-
-        self.assertEqual('deleted', model_update['status'])
-        self.assertEqual('deleted', volumes[0]['status'])
-
-    def test_create_consistencygroup_from_src_cg_snapshot(self):
-
-        mock_clone_source_to_destination = self.mock_object(
-            self.library, '_clone_source_to_destination')
-
-        self.library.create_consistencygroup_from_src(
-            fake.CONSISTENCY_GROUP, [fake.VOLUME], cgsnapshot=fake.CG_SNAPSHOT,
-            snapshots=[fake.CG_VOLUME_SNAPSHOT])
-
-        clone_source_to_destination_args = {
-            'name': fake.CG_SNAPSHOT['name'],
-            'size': fake.CG_SNAPSHOT['volume_size'],
-        }
-        mock_clone_source_to_destination.assert_called_once_with(
-            clone_source_to_destination_args, fake.VOLUME)
-
-    def test_create_consistencygroup_from_src_cg(self):
-        class fake_lun_name(object):
-            pass
-        fake_lun_name_instance = fake_lun_name()
-        fake_lun_name_instance.name = fake.SOURCE_CG_VOLUME['name']
-        self.mock_object(self.library, '_get_lun_from_table', mock.Mock(
-            return_value=fake_lun_name_instance)
-        )
-        mock_clone_source_to_destination = self.mock_object(
-            self.library, '_clone_source_to_destination')
-
-        self.library.create_consistencygroup_from_src(
-            fake.CONSISTENCY_GROUP, [fake.VOLUME],
-            source_cg=fake.SOURCE_CONSISTENCY_GROUP,
-            source_vols=[fake.SOURCE_CG_VOLUME])
-
-        clone_source_to_destination_args = {
-            'name': fake.SOURCE_CG_VOLUME['name'],
-            'size': fake.SOURCE_CG_VOLUME['size'],
-        }
-        mock_clone_source_to_destination.assert_called_once_with(
-            clone_source_to_destination_args, fake.VOLUME)
-
-    def test_handle_busy_snapshot(self):
-        self.mock_object(block_base, 'LOG')
-        mock_get_snapshot = self.mock_object(
-            self.zapi_client, 'get_snapshot',
-            mock.Mock(return_value=fake.SNAPSHOT)
-        )
-
-        self.library._handle_busy_snapshot(fake.FLEXVOL, fake.SNAPSHOT_NAME)
-
-        self.assertEqual(1, block_base.LOG.info.call_count)
-        mock_get_snapshot.assert_called_once_with(fake.FLEXVOL,
-                                                  fake.SNAPSHOT_NAME)

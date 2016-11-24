@@ -22,25 +22,27 @@ warnings.simplefilter('once', DeprecationWarning)
 
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_service import wsgi
 
 from cinder import i18n
 i18n.enable_lazy()
 
 # Need to register global_opts
-from cinder.common import config
+from cinder.common import config  # noqa
 from cinder import rpc
 from cinder import version
+from cinder.wsgi import common as wsgi_common
 
 CONF = cfg.CONF
 
 
-def initialize_application():
+def _application():
     objects.register_all()
     CONF(sys.argv[1:], project='cinder',
          version=version.version_string())
     logging.setup(CONF, "cinder")
-    config.set_middleware_defaults()
 
     rpc.init(CONF)
-    return wsgi.Loader(CONF).load_app(name='osapi_volume')
+    return wsgi_common.Loader().load_app(name='osapi_volume')
+
+
+application = _application()

@@ -13,53 +13,47 @@
 #    under the License.
 
 import mock
-import six
 
-from cinder.db.sqlalchemy import models
+from cinder import context
 from cinder import exception
 from cinder import objects
-from cinder.objects import fields
-from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit import objects as test_objects
 from cinder.tests.unit import utils
 
 
 fake_backup = {
-    'id': fake.backup_id,
-    'volume_id': fake.volume_id,
-    'status': fields.BackupStatus.CREATING,
+    'id': '1',
+    'volume_id': 'fake_id',
+    'status': "creating",
     'size': 1,
     'display_name': 'fake_name',
     'display_description': 'fake_description',
-    'user_id': fake.user_id,
-    'project_id': fake.project_id,
+    'user_id': 'fake_user',
+    'project_id': 'fake_project',
     'temp_volume_id': None,
     'temp_snapshot_id': None,
-    'snapshot_id': None,
-    'data_timestamp': None,
-    'restore_volume_id': None,
 }
 
 
 class TestBackup(test_objects.BaseObjectsTestCase):
+    def setUp(self):
+        super(TestBackup, self).setUp()
+        # NOTE (e0ne): base tests contains original RequestContext from
+        # oslo_context. We change it to our RequestContext implementation
+        # to have 'elevated' method
+        self.context = context.RequestContext(self.user_id, self.project_id,
+                                              is_admin=False)
 
-    @mock.patch('cinder.db.get_by_id', return_value=fake_backup)
+    @staticmethod
+    def _compare(test, db, obj):
+        for field, value in db.items():
+            test.assertEqual(db[field], obj[field])
+
+    @mock.patch('cinder.db.backup_get', return_value=fake_backup)
     def test_get_by_id(self, backup_get):
-        backup = objects.Backup.get_by_id(self.context, fake.user_id)
+        backup = objects.Backup.get_by_id(self.context, 1)
         self._compare(self, fake_backup, backup)
-        backup_get.assert_called_once_with(self.context, models.Backup,
-                                           fake.user_id)
-
-    @mock.patch('cinder.db.sqlalchemy.api.model_query')
-    def test_get_by_id_no_existing_id(self, model_query):
-        query = mock.Mock()
-        filter_by = mock.Mock()
-        filter_by.first.return_value = None
-        query.filter_by.return_value = filter_by
-        model_query.return_value = query
-        self.assertRaises(exception.BackupNotFound, objects.Backup.get_by_id,
-                          self.context, 123)
 
     @mock.patch('cinder.db.backup_create', return_value=fake_backup)
     def test_create(self, backup_create):
@@ -79,7 +73,7 @@ class TestBackup(test_objects.BaseObjectsTestCase):
 
     @mock.patch('cinder.db.backup_destroy')
     def test_destroy(self, backup_destroy):
-        backup = objects.Backup(context=self.context, id=fake.backup_id)
+        backup = objects.Backup(context=self.context, id=1)
         backup.destroy()
         self.assertTrue(backup_destroy.called)
         admin_context = backup_destroy.call_args[0][0]
@@ -92,20 +86,9 @@ class TestBackup(test_objects.BaseObjectsTestCase):
         self.assertEqual('2', backup.temp_volume_id)
         self.assertEqual('3', backup.temp_snapshot_id)
 
-    def test_obj_field_snapshot_id(self):
-        backup = objects.Backup(context=self.context,
-                                snapshot_id='2')
-        self.assertEqual('2', backup.snapshot_id)
-
-    def test_obj_field_restore_volume_id(self):
-        backup = objects.Backup(context=self.context,
-                                restore_volume_id='2')
-        self.assertEqual('2', backup.restore_volume_id)
-
     def test_import_record(self):
         utils.replace_obj_loader(self, objects.Backup)
-        backup = objects.Backup(context=self.context, id=fake.backup_id,
-                                parent_id=None,
+        backup = objects.Backup(context=self.context, id=1, parent_id=None,
                                 num_dependent_backups=0)
         export_string = backup.encode_record()
         imported_backup = objects.Backup.decode_record(export_string)
@@ -115,8 +98,7 @@ class TestBackup(test_objects.BaseObjectsTestCase):
 
     def test_import_record_additional_info(self):
         utils.replace_obj_loader(self, objects.Backup)
-        backup = objects.Backup(context=self.context, id=fake.backup_id,
-                                parent_id=None,
+        backup = objects.Backup(context=self.context, id=1, parent_id=None,
                                 num_dependent_backups=0)
         extra_info = {'driver': {'key1': 'value1', 'key2': 'value2'}}
         extra_info_copy = extra_info.copy()
@@ -139,8 +121,7 @@ class TestBackup(test_objects.BaseObjectsTestCase):
 
     def test_import_record_additional_info_cant_overwrite(self):
         utils.replace_obj_loader(self, objects.Backup)
-        backup = objects.Backup(context=self.context, id=fake.backup_id,
-                                parent_id=None,
+        backup = objects.Backup(context=self.context, id=1, parent_id=None,
                                 num_dependent_backups=0)
         export_string = backup.encode_record(id='fake_id')
         imported_backup = objects.Backup.decode_record(export_string)
@@ -159,30 +140,6 @@ class TestBackup(test_objects.BaseObjectsTestCase):
         self.assertRaises(exception.InvalidInput,
                           objects.Backup.decode_record,
                           export_string)
-
-    @mock.patch('cinder.db.sqlalchemy.api.backup_get')
-    def test_refresh(self, backup_get):
-        db_backup1 = fake_backup.copy()
-        db_backup2 = db_backup1.copy()
-        db_backup2['display_name'] = 'foobar'
-
-        # On the second backup_get, return the backup with an updated
-        # display_name
-        backup_get.side_effect = [db_backup1, db_backup2]
-        backup = objects.Backup.get_by_id(self.context, fake.backup_id)
-        self._compare(self, db_backup1, backup)
-
-        # display_name was updated, so a backup refresh should have a new value
-        # for that field
-        backup.refresh()
-        self._compare(self, db_backup2, backup)
-        if six.PY3:
-            call_bool = mock.call.__bool__()
-        else:
-            call_bool = mock.call.__nonzero__()
-        backup_get.assert_has_calls([mock.call(self.context, fake.backup_id),
-                                     call_bool,
-                                     mock.call(self.context, fake.backup_id)])
 
 
 class TestBackupList(test_objects.BaseObjectsTestCase):

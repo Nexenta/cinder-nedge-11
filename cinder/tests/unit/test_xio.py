@@ -863,8 +863,9 @@ class XIOISEDriverTestCase(object):
             protocol = 'iSCSI'
         else:
             protocol = 'fibre_channel'
+        exp_result = {}
         exp_result = {'vendor_name': "X-IO",
-                      'driver_version': "1.1.4",
+                      'driver_version': "1.1.3",
                       'volume_backend_name': backend_name,
                       'reserved_percentage': 0,
                       'total_capacity_gb': 100,
@@ -1038,15 +1039,17 @@ class XIOISEDriverTestCase(object):
         exp_result = {}
         if self.configuration.ise_protocol == 'iscsi':
             exp_result = {"driver_volume_type": "iscsi",
-                          "data": {"target_lun": 1,
+                          "data": {"target_lun": '1',
                                    "volume_id": '1',
+                                   "access_mode": 'rw',
                                    "target_discovered": False,
                                    "target_iqn": ISE_IQN,
                                    "target_portal": ISE_ISCSI_IP1 + ":3260"}}
         elif self.configuration.ise_protocol == 'fibre_channel':
             exp_result = {"driver_volume_type": "fibre_channel",
-                          "data": {"target_lun": 1,
+                          "data": {"target_lun": '1',
                                    "volume_id": '1',
+                                   "access_mode": 'rw',
                                    "target_discovered": True,
                                    "initiator_target_map": ISE_INIT_TARGET_MAP,
                                    "target_wwn": ISE_TARGETS}}
@@ -1067,15 +1070,17 @@ class XIOISEDriverTestCase(object):
         exp_result = {}
         if self.configuration.ise_protocol == 'iscsi':
             exp_result = {"driver_volume_type": "iscsi",
-                          "data": {"target_lun": 1,
+                          "data": {"target_lun": '1',
                                    "volume_id": '1',
+                                   "access_mode": 'rw',
                                    "target_discovered": False,
                                    "target_iqn": ISE_IQN,
                                    "target_portal": ISE_ISCSI_IP1 + ":3260"}}
         elif self.configuration.ise_protocol == 'fibre_channel':
             exp_result = {"driver_volume_type": "fibre_channel",
-                          "data": {"target_lun": 1,
+                          "data": {"target_lun": '1',
                                    "volume_id": '1',
+                                   "access_mode": 'rw',
                                    "target_discovered": True,
                                    "initiator_target_map": ISE_INIT_TARGET_MAP,
                                    "target_wwn": ISE_TARGETS}}
@@ -1096,8 +1101,9 @@ class XIOISEDriverTestCase(object):
         exp_result = {}
         if self.configuration.ise_protocol == 'iscsi':
             exp_result = {"driver_volume_type": "iscsi",
-                          "data": {"target_lun": 1,
+                          "data": {"target_lun": '1',
                                    "volume_id": '2',
+                                   "access_mode": 'rw',
                                    "target_discovered": False,
                                    "target_iqn": ISE_IQN,
                                    "target_portal": ISE_ISCSI_IP1 + ":3260",
@@ -1106,8 +1112,9 @@ class XIOISEDriverTestCase(object):
                                    'auth_password': 'abc'}}
         elif self.configuration.ise_protocol == 'fibre_channel':
             exp_result = {"driver_volume_type": "fibre_channel",
-                          "data": {"target_lun": 1,
+                          "data": {"target_lun": '1',
                                    "volume_id": '2',
+                                   "access_mode": 'rw',
                                    "target_discovered": True,
                                    "initiator_target_map": ISE_INIT_TARGET_MAP,
                                    "target_wwn": ISE_TARGETS}}

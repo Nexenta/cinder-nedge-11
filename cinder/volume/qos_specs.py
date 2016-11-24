@@ -16,6 +16,7 @@
 """The QoS Specs Implementation"""
 
 
+from oslo_config import cfg
 from oslo_db import exception as db_exc
 from oslo_log import log as logging
 
@@ -26,6 +27,7 @@ from cinder.i18n import _, _LE, _LW
 from cinder.volume import volume_types
 
 
+CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 CONTROL_LOCATION = ['front-end', 'back-end', 'both']
@@ -79,10 +81,6 @@ def create(context, name, specs=None):
 
     try:
         qos_specs_ref = db.qos_specs_create(context, values)
-    except db_exc.DBDataError:
-        msg = _('Error writing field to database')
-        LOG.exception(msg)
-        raise exception.Invalid(msg)
     except db_exc.DBError:
         LOG.exception(_LE('DB error:'))
         raise exception.QoSSpecsCreateFailed(name=name,
@@ -231,12 +229,42 @@ def disassociate_all(context, specs_id):
                                                    type_id=None)
 
 
-def get_all_specs(context, filters=None, marker=None, limit=None, offset=None,
-                  sort_keys=None, sort_dirs=None):
-    """Get all non-deleted qos specs."""
-    qos_specs = db.qos_specs_get_all(context, filters=filters, marker=marker,
-                                     limit=limit, offset=offset,
-                                     sort_keys=sort_keys, sort_dirs=sort_dirs)
+def get_all_specs(context, inactive=False, search_opts=None):
+    """Get all non-deleted qos specs.
+
+    Pass inactive=True as argument and deleted volume types would return
+    as well.
+    """
+    search_opts = search_opts or {}
+    qos_specs = db.qos_specs_get_all(context, inactive)
+
+    if search_opts:
+        LOG.debug("Searching by: %s", search_opts)
+
+        def _check_specs_match(qos_specs, searchdict):
+            for k, v in searchdict.items():
+                if ((k not in qos_specs['specs'].keys() or
+                     qos_specs['specs'][k] != v)):
+                    return False
+            return True
+
+        # search_option to filter_name mapping.
+        filter_mapping = {'qos_specs': _check_specs_match}
+
+        result = {}
+        for name, args in qos_specs.items():
+            # go over all filters in the list
+            for opt, values in search_opts.items():
+                try:
+                    filter_func = filter_mapping[opt]
+                except KeyError:
+                    # no such filter - ignore it, go to next filter
+                    continue
+                else:
+                    if filter_func(args, values):
+                        result[name] = args
+                        break
+        qos_specs = result
     return qos_specs
 
 

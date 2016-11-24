@@ -47,3 +47,11 @@ def upgrade(migrate_engine):
     )
 
     backups.create()
+
+
+def downgrade(migrate_engine):
+    meta = MetaData()
+    meta.bind = migrate_engine
+
+    backups = Table('backups', meta, autoload=True)
+    backups.drop()

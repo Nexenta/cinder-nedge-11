@@ -12,6 +12,7 @@
 #   License for the specific language governing permissions and limitations
 #   under the License.
 
+import json
 import uuid
 from xml.dom import minidom
 
@@ -25,14 +26,12 @@ from cinder.api.openstack import wsgi
 from cinder import context
 from cinder import db
 from cinder import exception
-from cinder import objects
 from cinder import test
 from cinder.tests.unit.api import fakes
-from cinder.tests.unit import fake_volume
 from cinder import volume
 
 
-def fake_db_volume_get(*args, **kwargs):
+def fake_volume_get(*args, **kwargs):
     return {
         'id': 'fake',
         'host': 'host001',
@@ -40,29 +39,21 @@ def fake_db_volume_get(*args, **kwargs):
         'size': 5,
         'availability_zone': 'somewhere',
         'created_at': timeutils.utcnow(),
+        'attach_status': None,
         'display_name': 'anothervolume',
         'display_description': 'Just another volume!',
         'volume_type_id': None,
         'snapshot_id': None,
         'project_id': 'fake',
-        'migration_status': None,
-        '_name_id': 'fake2',
-        'attach_status': 'detached',
     }
 
 
-def fake_volume_api_get(*args, **kwargs):
-    ctx = context.RequestContext('admin', 'fake', True)
-    db_volume = fake_db_volume_get()
-    return fake_volume.fake_volume_obj(ctx, **db_volume)
-
-
 def fake_volume_get_all(*args, **kwargs):
-    return objects.VolumeList(objects=[fake_volume_api_get()])
+    return [fake_volume_get()]
 
 
 def fake_volume_get_all_empty(*args, **kwargs):
-    return objects.VolumeList(objects=[])
+    return []
 
 
 fake_image_metadata = {
@@ -103,12 +94,13 @@ class VolumeImageMetadataTest(test.TestCase):
 
     def setUp(self):
         super(VolumeImageMetadataTest, self).setUp()
-        self.stubs.Set(volume.api.API, 'get', fake_volume_api_get)
+        self.stubs.Set(volume.api.API, 'get', fake_volume_get)
         self.stubs.Set(volume.api.API, 'get_all', fake_volume_get_all)
         self.stubs.Set(volume.api.API, 'get_volume_image_metadata',
                        fake_get_volume_image_metadata)
         self.stubs.Set(volume.api.API, 'get_volumes_image_metadata',
                        fake_get_volumes_image_metadata)
+        self.stubs.Set(db, 'volume_get', fake_volume_get)
         self.UUID = uuid.uuid4()
         self.controller = (volume_image_metadata.
                            VolumeImageMetadataController())
@@ -120,12 +112,12 @@ class VolumeImageMetadataTest(test.TestCase):
         return res
 
     def _get_image_metadata(self, body):
-        return jsonutils.loads(body)['volume']['volume_image_metadata']
+        return json.loads(body)['volume']['volume_image_metadata']
 
     def _get_image_metadata_list(self, body):
         return [
             volume['volume_image_metadata']
-            for volume in jsonutils.loads(body)['volumes']
+            for volume in json.loads(body)['volumes']
         ]
 
     def _create_volume_and_glance_metadata(self):
@@ -187,13 +179,13 @@ class VolumeImageMetadataTest(test.TestCase):
         body = {"os-set_image_metadata": {"metadata": fake_image_metadata}}
         req = webob.Request.blank('/v2/fake/volumes/1/action')
         req.method = "POST"
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         res = req.get_response(fakes.wsgi_app())
         self.assertEqual(200, res.status_int)
         self.assertEqual(fake_image_metadata,
-                         jsonutils.loads(res.body)["metadata"])
+                         json.loads(res.body)["metadata"])
 
     def test_create_with_keys_case_insensitive(self):
         # If the keys in uppercase_and_lowercase, should return the one
@@ -216,13 +208,13 @@ class VolumeImageMetadataTest(test.TestCase):
 
         req = webob.Request.blank('/v2/fake/volumes/1/action')
         req.method = 'POST'
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         res = req.get_response(fakes.wsgi_app())
         self.assertEqual(200, res.status_int)
         self.assertEqual(fake_image_metadata,
-                         jsonutils.loads(res.body)["metadata"])
+                         json.loads(res.body)["metadata"])
 
     def test_create_empty_body(self):
         req = fakes.HTTPRequest.blank('/v2/fake/volumes/1/action')
@@ -241,7 +233,7 @@ class VolumeImageMetadataTest(test.TestCase):
         body = {"os-set_image_metadata": {
             "metadata": {"image_name": "fake"}}
         }
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.create, req, 1, body)
 
@@ -257,7 +249,7 @@ class VolumeImageMetadataTest(test.TestCase):
         }
 
         # Test for long key
-        req.body = jsonutils.dump_as_bytes(data)
+        req.body = jsonutils.dumps(data)
         self.assertRaises(webob.exc.HTTPRequestEntityTooLarge,
                           self.controller.create, req, 1, data)
 
@@ -265,7 +257,7 @@ class VolumeImageMetadataTest(test.TestCase):
         data = {"os-set_image_metadata": {
             "metadata": {"key": "v" * 260}}
         }
-        req.body = jsonutils.dump_as_bytes(data)
+        req.body = jsonutils.dumps(data)
         self.assertRaises(webob.exc.HTTPRequestEntityTooLarge,
                           self.controller.create, req, 1, data)
 
@@ -273,7 +265,7 @@ class VolumeImageMetadataTest(test.TestCase):
         data = {"os-set_image_metadata": {
             "metadata": {"": "value1"}}
         }
-        req.body = jsonutils.dump_as_bytes(data)
+        req.body = jsonutils.dumps(data)
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create, req, 1, data)
 
@@ -286,7 +278,7 @@ class VolumeImageMetadataTest(test.TestCase):
         }
         req = webob.Request.blank('/v2/fake/volumes/1/action')
         req.method = 'POST'
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         res = req.get_response(fakes.wsgi_app())
@@ -298,7 +290,7 @@ class VolumeImageMetadataTest(test.TestCase):
         }
         req = fakes.HTTPRequest.blank('/v2/fake/volumes/1/action')
         req.method = 'POST'
-        req.body = jsonutils.dump_as_bytes(data)
+        req.body = jsonutils.dumps(data)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPNotFound,
@@ -313,23 +305,11 @@ class VolumeImageMetadataTest(test.TestCase):
         }
         req = fakes.HTTPRequest.blank('/v2/fake/volumes/1/action')
         req.method = 'POST'
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.delete, req, 1, body)
-
-    def test_show_image_metadata(self):
-        body = {"os-show_image_metadata": None}
-        req = webob.Request.blank('/v2/fake/volumes/1/action')
-        req.method = 'POST'
-        req.body = jsonutils.dump_as_bytes(body)
-        req.headers["content-type"] = "application/json"
-
-        res = req.get_response(fakes.wsgi_app())
-        self.assertEqual(200, res.status_int)
-        self.assertEqual(fake_image_metadata,
-                         jsonutils.loads(res.body)["metadata"])
 
 
 class ImageMetadataXMLDeserializer(common.MetadataXMLDeserializer):
@@ -357,7 +337,5 @@ class VolumeImageMetadataXMLTest(VolumeImageMetadataTest):
                 volume, 'volume_image_metadata'
             )
             for volume in volume_list]
-
-        metadata_deserializer = wsgi.MetadataXMLDeserializer()
-        return [metadata_deserializer.extract_metadata(image_metadata)
-                for image_metadata in image_metadata_list]
+        return map(wsgi.MetadataXMLDeserializer().extract_metadata,
+                   image_metadata_list)

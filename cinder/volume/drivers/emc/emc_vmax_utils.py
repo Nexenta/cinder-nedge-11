@@ -14,7 +14,6 @@
 #    under the License.
 
 import datetime
-import hashlib
 import random
 import re
 from xml.dom import minidom
@@ -40,8 +39,6 @@ except ImportError:
 STORAGEGROUPTYPE = 4
 POSTGROUPTYPE = 3
 CLONE_REPLICATION_TYPE = 10
-MAX_POOL_LENGTH = 16
-MAX_FASTPOLICY_LENGTH = 14
 
 EMC_ROOT = 'root/emc'
 CONCATENATED = 'concatenated'
@@ -55,7 +52,6 @@ INTERVAL = 'storagetype:interval'
 RETRIES = 'storagetype:retries'
 CIM_ERR_NOT_FOUND = 6
 VOLUME_ELEMENT_NAME_PREFIX = 'OS-'
-SYNCHRONIZED = 4
 
 
 class EMCVMAXUtils(object):
@@ -64,9 +60,6 @@ class EMCVMAXUtils(object):
     This Utility class is for EMC volume drivers based on SMI-S.
     It supports VMAX arrays.
     """
-    SLO = 'storagetype:slo'
-    WORKLOAD = 'storagetype:workload'
-    POOL = 'storagetype:pool'
 
     def __init__(self, prtcl):
         if not pywbemAvailable:
@@ -410,9 +403,18 @@ class EMCVMAXUtils(object):
             :raises: VolumeBackendAPIException
             """
             retries = kwargs['retries']
+            maxJobRetries = self._get_max_job_retries(extraSpecs)
+            wait_for_sync_called = kwargs['wait_for_sync_called']
+            if self._is_sync_complete(conn, syncName):
+                raise loopingcall.LoopingCallDone()
+            if retries > maxJobRetries:
+                LOG.error(_LE("_wait_for_sync failed after %(retries)d "
+                              "tries."),
+                          {'retries': retries})
+                raise loopingcall.LoopingCallDone()
             try:
                 kwargs['retries'] = retries + 1
-                if not kwargs['wait_for_sync_called']:
+                if not wait_for_sync_called:
                     if self._is_sync_complete(conn, syncName):
                         kwargs['wait_for_sync_called'] = True
             except Exception:
@@ -421,21 +423,11 @@ class EMCVMAXUtils(object):
                 LOG.exception(exceptionMessage)
                 raise exception.VolumeBackendAPIException(exceptionMessage)
 
-            if kwargs['retries'] > maxJobRetries:
-                LOG.error(_LE("_wait_for_sync failed after %(retries)d "
-                              "tries."),
-                          {'retries': retries})
-                raise loopingcall.LoopingCallDone(retvalue=maxJobRetries)
-            if kwargs['wait_for_sync_called']:
-                raise loopingcall.LoopingCallDone()
-
-        maxJobRetries = self._get_max_job_retries(extraSpecs)
         kwargs = {'retries': 0,
                   'wait_for_sync_called': False}
         intervalInSecs = self._get_interval_in_secs(extraSpecs)
         timer = loopingcall.FixedIntervalLoopingCall(_wait_for_sync)
-        rc = timer.start(interval=intervalInSecs).wait()
-        return rc
+        timer.start(interval=intervalInSecs).wait()
 
     def _is_sync_complete(self, conn, syncName):
         """Check if the job is finished.
@@ -446,11 +438,15 @@ class EMCVMAXUtils(object):
         """
         syncInstance = conn.GetInstance(syncName,
                                         LocalOnly=False)
-        copyState = syncInstance['CopyState']
-        LOG.debug("CopyState is %(copyState)lu.",
-                  {'copyState': copyState})
+        percentSynced = syncInstance['PercentSynced']
 
-        return copyState == SYNCHRONIZED
+        LOG.debug("Percent synced is %(percentSynced)lu.",
+                  {'percentSynced': percentSynced})
+
+        if percentSynced < 100:
+            return False
+        else:
+            return True
 
     def get_num(self, numStr, datatype):
         """Get the ecom int from the number.
@@ -633,12 +629,12 @@ class EMCVMAXUtils(object):
         shortHostName = None
 
         hostArray = hostName.split('.')
-        if len(hostArray) > 1:
+        if len(hostArray) > 2:
             shortHostName = hostArray[0]
         else:
             shortHostName = hostName
 
-        return self.generate_unique_trunc_host(shortHostName)
+        return shortHostName
 
     def get_instance_name(self, classname, bindings):
         """Get the instance from the classname and bindings.
@@ -915,7 +911,7 @@ class EMCVMAXUtils(object):
         """
         errorDesc = None
         if compositeType in 'concatenated' and int(sizeStr) > 240:
-            newMemberCount = int(sizeStr) // 240
+            newMemberCount = int(sizeStr) / 240
             modular = int(sizeStr) % 240
             if modular > 0:
                 newMemberCount += 1
@@ -1015,7 +1011,7 @@ class EMCVMAXUtils(object):
         :param strBitSize: string -- The size in bytes
         :returns: int -- The size in GB
         """
-        gbSize = int(strBitSize) // 1024 // 1024 // 1024
+        gbSize = int(strBitSize) / 1024 / 1024 / 1024
         return gbSize
 
     def compare_size(self, size1Str, size2Str):
@@ -1157,8 +1153,8 @@ class EMCVMAXUtils(object):
         :returns: string -- truncated string or original string
         """
         if len(strToTruncate) > maxNum:
-            newNum = len(strToTruncate) - maxNum // 2
-            firstChars = strToTruncate[:maxNum // 2]
+            newNum = len(strToTruncate) - maxNum / 2
+            firstChars = strToTruncate[:maxNum / 2]
             lastChars = strToTruncate[newNum:]
             strToTruncate = firstChars + lastChars
 
@@ -1274,6 +1270,28 @@ class EMCVMAXUtils(object):
                 self.wait_for_sync(conn, foundSyncInstanceName, extraSpecs)
 
         return foundSyncInstanceName
+
+    def populate_cgsnapshot_status(
+            self, context, db, cgsnapshot_id, status='available'):
+        """Update cgsnapshot status in the cinder database.
+
+        :param context: the context
+        :param db: cinder database
+        :param cgsnapshot_id: cgsnapshot id
+        :param status: string value reflects the status of the member snapshot
+        :returns: snapshots - updated snapshots
+        """
+        snapshots = db.snapshot_get_all_for_cgsnapshot(context, cgsnapshot_id)
+        LOG.info(_LI(
+            "Populating status for cgsnapshot: %(id)s."),
+            {'id': cgsnapshot_id})
+        if snapshots:
+            for snapshot in snapshots:
+                snapshot['status'] = status
+        else:
+            LOG.info(_LI("No snapshot found for %(cgsnapshot)s."),
+                     {'cgsnapshot': cgsnapshot_id})
+        return snapshots
 
     def get_firmware_version(self, conn, arrayName):
         """Get the firmware version of array.
@@ -1531,6 +1549,16 @@ class EMCVMAXUtils(object):
                                'slo': slo,
                                'workload': workload})
         return storageGroupName
+
+    def strip_short_host_name(self, storageGroupName):
+        tempList = storageGroupName.split("-")
+        if len(tempList) == 6:
+            shorthostName = tempList.pop(1)
+            updatedStorageGroup = "-".join(tempList)
+            return updatedStorageGroup, shorthostName
+        else:
+            shorthostName = None
+            return storageGroupName, shorthostName
 
     def _get_fast_settings_from_storage_group(self, storageGroupInstance):
         """Get the emc FAST setting from the storage group.
@@ -2013,46 +2041,26 @@ class EMCVMAXUtils(object):
         portGroupElements = element.getElementsByTagName('PortGroup')
         if portGroupElements and len(portGroupElements) > 0:
             portGroupNames = []
-            for portGroupElement in portGroupElements:
-                if portGroupElement.childNodes:
-                    portGroupName = portGroupElement.childNodes[0].nodeValue
-                    if portGroupName:
-                        portGroupNames.append(portGroupName.strip())
-            portGroupNames = EMCVMAXUtils._filter_list(portGroupNames)
-            if len(portGroupNames) > 0:
-                return EMCVMAXUtils._get_random_pg_from_list(portGroupNames)
+            for __ in portGroupElements:
+                portGroupName = self._process_tag(
+                    element, 'PortGroup')
+                if portGroupName:
+                    portGroupNames.append(portGroupName)
 
-        exception_message = (_("No Port Group elements found in config file."))
+            LOG.debug("portGroupNames: %(portGroupNames)s.",
+                      {'portGroupNames': portGroupNames})
+            numPortGroups = len(portGroupNames)
+            if numPortGroups > 0:
+                selectedPortGroupName = (
+                    portGroupNames[random.randint(0, numPortGroups - 1)])
+                LOG.debug("Returning selected PortGroup: "
+                          "%(selectedPortGroupName)s.",
+                          {'selectedPortGroupName': selectedPortGroupName})
+                return selectedPortGroupName
+
+        exception_message = (_("No PortGroup elements found in config file."))
         LOG.error(exception_message)
         raise exception.VolumeBackendAPIException(data=exception_message)
-
-    @staticmethod
-    def _get_random_pg_from_list(portgroupnames):
-        """From list of portgroup, choose one randomly
-
-        :param portGroupNames: list of available portgroups
-        :returns: portGroupName - the random portgroup
-        """
-        portgroupname = (
-            portgroupnames[random.randint(0, len(portgroupnames) - 1)])
-
-        LOG.info(_LI("Returning random Port Group: "
-                     "%(portGroupName)s."),
-                 {'portGroupName': portgroupname})
-
-        return portgroupname
-
-    @staticmethod
-    def _filter_list(portgroupnames):
-        """Clean up the port group list
-
-        :param portgroupnames: list of available portgroups
-        :returns: portgroupnames - cleaned up list
-        """
-        portgroupnames = filter(None, portgroupnames)
-        # Convert list to set to remove duplicate portgroups
-        portgroupnames = list(set(portgroupnames))
-        return portgroupnames
 
     def _get_serial_number(self, arrayInfo):
         """If we don't have a pool then we just get the serial number.
@@ -2262,16 +2270,17 @@ class EMCVMAXUtils(object):
         return foundSyncInstanceName
 
     def get_volume_model_updates(
-            self, context, volumes, cgId, status='available'):
+            self, context, db, cgId, status='available'):
         """Update the volume model's status and return it.
 
         :param context: the context
-        :param volumes: volumes object api
+        :param db: cinder database
         :param cgId: cg id
         :param status: string value reflects the status of the member volume
         :returns: volume_model_updates - updated volumes
         """
         volume_model_updates = []
+        volumes = db.volume_get_all_by_group(context, cgId)
         LOG.info(_LI(
             "Updating status for CG: %(id)s."),
             {'id': cgId})
@@ -2335,52 +2344,6 @@ class EMCVMAXUtils(object):
             memberVolumes = ret['OutElements']
         return memberVolumes
 
-    def generate_unique_trunc_host(self, hostName):
-        """Create a unique short host name under 40 chars
-
-        :param sgName: long storage group name
-        :returns: truncated storage group name
-        """
-        if hostName and len(hostName) > 38:
-            hostName = hostName.lower()
-            m = hashlib.md5()
-            m.update(hostName.encode('utf-8'))
-            uuid = m.hexdigest()
-            return(
-                ("%(host)s%(uuid)s"
-                 % {'host': hostName[-6:],
-                    'uuid': uuid}))
-        else:
-            return hostName
-
-    def generate_unique_trunc_pool(self, poolName):
-        """Create a unique pool name under 16 chars
-
-        :param poolName: long pool name
-        :returns: truncated pool name
-        """
-        if poolName and len(poolName) > MAX_POOL_LENGTH:
-            return (
-                ("%(first)s_%(last)s"
-                 % {'first': poolName[:8],
-                    'last': poolName[-7:]}))
-        else:
-            return poolName
-
-    def generate_unique_trunc_fastpolicy(self, fastPolicyName):
-        """Create a unique fast policy name under 14 chars
-
-        :param fastPolicyName: long fast policy name
-        :returns: truncated fast policy name
-        """
-        if fastPolicyName and len(fastPolicyName) > MAX_FASTPOLICY_LENGTH:
-            return (
-                ("%(first)s_%(last)s"
-                 % {'first': fastPolicyName[:7],
-                    'last': fastPolicyName[-6:]}))
-        else:
-            return fastPolicyName
-
     def get_iscsi_protocol_endpoints(self, conn, portgroupinstancename):
         """Get the iscsi protocol endpoints of a port group.
 
@@ -2432,157 +2395,3 @@ class EMCVMAXUtils(object):
                 cimProperties = properties[1]
                 foundIpAddress = cimProperties.value
         return foundIpAddress
-
-    def get_target_endpoints(self, conn, hardwareId):
-        """Given the hardwareId get the target endpoints.
-
-        :param conn: the connection to the ecom server
-        :param hardwareId: the hardware Id
-        :returns: targetEndpoints
-        :raises: VolumeBackendAPIException
-        """
-        protocolControllerInstanceName = self.get_protocol_controller(
-            conn, hardwareId)
-
-        targetEndpoints = conn.AssociatorNames(
-            protocolControllerInstanceName,
-            ResultClass='EMC_FCSCSIProtocolEndpoint')
-
-        return targetEndpoints
-
-    def get_protocol_controller(self, conn, hardwareinstancename):
-        """Get the front end protocol endpoints of a hardware instance
-
-        :param conn: the ecom connection
-        :param hardwareinstancename: the hardware instance name
-        :returns: protocolControllerInstanceName
-        :raises: VolumeBackendAPIException
-        """
-        protocolControllerInstanceName = None
-        protocol_controllers = conn.AssociatorNames(
-            hardwareinstancename,
-            ResultClass='EMC_FrontEndSCSIProtocolController')
-        if len(protocol_controllers) > 0:
-            protocolControllerInstanceName = protocol_controllers[0]
-        if protocolControllerInstanceName is None:
-            exceptionMessage = (_(
-                "Unable to get target endpoints for hardwareId "
-                "%(hardwareIdInstance)s.")
-                % {'hardwareIdInstance': hardwareinstancename})
-            LOG.error(exceptionMessage)
-            raise exception.VolumeBackendAPIException(data=exceptionMessage)
-        return protocolControllerInstanceName
-
-    def get_replication_setting_data(self, conn, repServiceInstanceName,
-                                     replication_type, extraSpecs):
-        """Get the replication setting data
-
-        :param conn: connection the ecom server
-        :param repServiceInstanceName: the storage group instance name
-        :param replication_type: the replication type
-        :param copy_methodology: the copy methodology
-        :returns: instance rsdInstance
-        """
-        repServiceCapabilityInstanceNames = conn.AssociatorNames(
-            repServiceInstanceName,
-            ResultClass='CIM_ReplicationServiceCapabilities',
-            AssocClass='CIM_ElementCapabilities')
-        repServiceCapabilityInstanceName = (
-            repServiceCapabilityInstanceNames[0])
-
-        rc, rsd = conn.InvokeMethod(
-            'GetDefaultReplicationSettingData',
-            repServiceCapabilityInstanceName,
-            ReplicationType=self.get_num(replication_type, '16'))
-
-        if rc != 0:
-            rc, errordesc = self.wait_for_job_complete(conn, rsd,
-                                                       extraSpecs)
-            if rc != 0:
-                exceptionMessage = (_(
-                    "Error getting ReplicationSettingData. "
-                    "Return code: %(rc)lu. "
-                    "Error: %(error)s.")
-                    % {'rc': rc,
-                       'error': errordesc})
-                LOG.error(exceptionMessage)
-                raise exception.VolumeBackendAPIException(
-                    data=exceptionMessage)
-        return rsd
-
-    def set_copy_methodology_in_rsd(self, conn, repServiceInstanceName,
-                                    replication_type, copy_methodology,
-                                    extraSpecs):
-        """Get the replication setting data
-
-        :param conn: connection the ecom server
-        :param repServiceInstanceName: the storage group instance name
-        :param replication_type: the replication type
-        :param copy_methodology: the copy methodology
-        :returns: instance rsdInstance
-        """
-        rsd = self.get_replication_setting_data(
-            conn, repServiceInstanceName, replication_type, extraSpecs)
-        rsdInstance = rsd['DefaultInstance']
-        rsdInstance['DesiredCopyMethodology'] = (
-            self.get_num(copy_methodology, '16'))
-        return rsdInstance
-
-    def set_target_element_supplier_in_rsd(
-            self, conn, repServiceInstanceName, replication_type,
-            target_type, extraSpecs):
-        """Get the replication setting data
-
-        :param conn: connection the ecom server
-        :param repServiceInstanceName: the storage group instance name
-        :param replication_type: the replication type
-        :param target_type: Use existing, Create new, Use and create
-        :returns: instance rsdInstance
-        """
-        rsd = self.get_replication_setting_data(
-            conn, repServiceInstanceName, replication_type, extraSpecs)
-        rsdInstance = rsd['DefaultInstance']
-        rsdInstance['TargetElementSupplier'] = (
-            self.get_num(target_type, '16'))
-
-        return rsdInstance
-
-    def get_v3_default_sg_instance_name(
-            self, conn, poolName, slo, workload, storageSystemName):
-        """Get the V3 default instance name
-
-        :param conn: the connection to the ecom server
-        :param poolName: the pool name
-        :param slo: the SLO
-        :param workload: the workload
-        :param storageSystemName: the storage system name
-        :returns: the storage group instance name
-        """
-        storageGroupName = self.get_v3_storage_group_name(
-            poolName, slo, workload)
-        controllerConfigService = (
-            self.find_controller_configuration_service(
-                conn, storageSystemName))
-        sgInstanceName = self.find_storage_masking_group(
-            conn, controllerConfigService, storageGroupName)
-        return storageGroupName, controllerConfigService, sgInstanceName
-
-    def check_ig_instance_name(
-            self, conn, initiatorGroupInstanceName):
-        """Check if a given Initiator Group Instance Name has been deleted.
-
-        :param conn: the ecom connection
-        :param initiatorGroupInstanceName: the given IG instance name
-        :return: foundinitiatorGroupInstanceName or None if deleted
-        """
-        foundinitiatorGroupInstanceName = self.get_existing_instance(
-            conn, initiatorGroupInstanceName)
-        if foundinitiatorGroupInstanceName is not None:
-            LOG.debug("Found initiator group name: "
-                      "%(igName)s.",
-                      {'igName': foundinitiatorGroupInstanceName})
-        else:
-            LOG.debug("Could not find initiator group name: "
-                      "%(igName)s.",
-                      {'igName': foundinitiatorGroupInstanceName})
-        return foundinitiatorGroupInstanceName

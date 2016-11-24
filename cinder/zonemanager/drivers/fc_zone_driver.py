@@ -43,8 +43,7 @@ class FCZoneDriver(fc_common.FCCommon):
         super(FCZoneDriver, self).__init__(**kwargs)
         LOG.debug("Initializing FCZoneDriver")
 
-    def add_connection(self, fabric, initiator_target_map, host_name=None,
-                       storage_system=None):
+    def add_connection(self, fabric, initiator_target_map):
         """Add connection control.
 
         Abstract method to add connection control.
@@ -61,8 +60,7 @@ class FCZoneDriver(fc_common.FCCommon):
         """
         raise NotImplementedError()
 
-    def delete_connection(self, fabric, initiator_target_map, host_name=None,
-                          storage_system=None):
+    def delete_connection(self, fabric, initiator_target_map):
         """Delete connection control.
 
         Abstract method to remove connection control.

@@ -149,10 +149,10 @@ class TestGlanceImageService(test.TestCase):
             'properties': {'instance_id': '42', 'user_id': 'fake'},
             'owner': None,
         }
-        self.assertDictMatch(expected, image_meta)
+        self.assertDictMatch(image_meta, expected)
 
         image_metas = self.service.detail(self.context)
-        self.assertDictMatch(expected, image_metas[0])
+        self.assertDictMatch(image_metas[0], expected)
 
     def test_create_without_instance_id(self):
         """Test Creating images without instance_id.
@@ -183,7 +183,7 @@ class TestGlanceImageService(test.TestCase):
             'owner': None,
         }
         actual = self.service.show(self.context, image_id)
-        self.assertDictMatch(expected, actual)
+        self.assertDictMatch(actual, expected)
 
     def test_create(self):
         fixture = self._make_fixture(name='test image')
@@ -223,25 +223,6 @@ class TestGlanceImageService(test.TestCase):
         self.assertEqual('test image', image_metas[0]['name'])
         self.assertFalse(image_metas[0]['is_public'])
 
-    def test_detail_v1(self):
-        """Confirm we send is_public = None as default when using Glance v1."""
-        self.override_config('glance_api_version', 1)
-        with mock.patch.object(self.service, '_client') as client_mock:
-            client_mock.return_value = []
-            result = self.service.detail(self.context)
-        self.assertListEqual([], result)
-        client_mock.call.assert_called_once_with(self.context, 'list',
-                                                 filters={'is_public': 'none'})
-
-    def test_detail_v2(self):
-        """Check we don't send is_public key by default with Glance v2."""
-        self.override_config('glance_api_version', 2)
-        with mock.patch.object(self.service, '_client') as client_mock:
-            client_mock.return_value = []
-            result = self.service.detail(self.context)
-        self.assertListEqual([], result)
-        client_mock.call.assert_called_once_with(self.context, 'list')
-
     def test_detail_marker(self):
         fixtures = []
         ids = []
@@ -273,7 +254,7 @@ class TestGlanceImageService(test.TestCase):
                 'owner': None,
             }
 
-            self.assertDictMatch(expected, meta)
+            self.assertDictMatch(meta, expected)
             i = i + 1
 
     def test_detail_limit(self):
@@ -329,7 +310,7 @@ class TestGlanceImageService(test.TestCase):
                 'deleted': None,
                 'owner': None,
             }
-            self.assertDictMatch(expected, meta)
+            self.assertDictMatch(meta, expected)
             i = i + 1
 
     def test_detail_invalid_marker(self):
@@ -573,7 +554,7 @@ class TestGlanceImageService(test.TestCase):
         self.flags(allowed_direct_url_schemes=['file'])
         self.flags(glance_api_version=2)
         self.service.download(self.context, image_id, writer)
-        self.assertIsNone(mock_copyfileobj.call_args)
+        self.assertEqual(None, mock_copyfileobj.call_args)
 
     def test_glance_client_image_id(self):
         fixture = self._make_fixture(name='test image')

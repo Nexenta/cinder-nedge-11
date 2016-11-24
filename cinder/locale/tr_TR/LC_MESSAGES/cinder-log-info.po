@@ -7,9 +7,9 @@
 # OpenStack Infra <zanata@openstack.org>, 2015. #zanata
 msgid ""
 msgstr ""
-"Project-Id-Version: cinder 8.0.1.dev24\n"
-"Report-Msgid-Bugs-To: https://bugs.launchpad.net/openstack-i18n/\n"
-"POT-Creation-Date: 2016-04-21 16:43+0000\n"
+"Project-Id-Version: cinder 7.0.2.dev6\n"
+"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
+"POT-Creation-Date: 2016-01-15 17:55+0000\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -74,6 +74,10 @@ msgid "%(method)s %(url)s"
 msgstr "%(method)s %(url)s"
 
 #, python-format
+msgid "%(name)s listening on %(_host)s:%(_port)s"
+msgstr "%(name)s %(_host)s:%(_port)s üzerinde dinliyor"
+
+#, python-format
 msgid "%(url)s returned a fault: %(e)s"
 msgstr "%(url)s hata döndürdü: %(e)s"
 
@@ -120,6 +124,9 @@ msgstr "%s aktarımı kabul ediliyor"
 msgid "Activate Flexvisor cinder volume driver."
 msgstr "Flexvisor cinder mantıksal sürücü sürücüsünü etkinleştir."
 
+msgid "Add Connection: Finished iterating over all target list"
+msgstr "Bağlantı Ekle: Tüm hedef listesi üzerinde gezme bitti"
+
 #, python-format
 msgid "Add volume response: %s"
 msgstr "Mantıksal sürücü ekleme yanıtı: %s"
@@ -154,6 +161,18 @@ msgstr "Mantıksal sürücüler cg %s'e ekleniyor"
 msgid "Attach volume completed successfully."
 msgstr "Mantıksal sürücü ekleme başarıyla tamamlandı."
 
+#, python-format
+msgid "Attempting to promote secondary replica to primary for volume %s."
+msgstr ""
+"İkincil kopya %s mantıksal sürücüsü için birincilliğe terfi ettirilmeye "
+"çalışılıyor."
+
+#, python-format
+msgid "Attempting to sync secondary replica with primary for volume %s."
+msgstr ""
+"%s mantıksal sürücüsü için ikincil kopya birincille eş zamanlanmaya "
+"çalışılıyor."
+
 msgid "Availability Zones retrieved successfully."
 msgstr "Kullanılabilir Bölgeler başarıyla alındı."
 
@@ -164,6 +183,10 @@ msgstr "Kullanılabilir servisler: %s"
 #, python-format
 msgid "Backend name is %s."
 msgstr "Arka uç ismi %s."
+
+#, python-format
+msgid "Backend not found in hostname (%s) so using default."
+msgstr "Arka uç makine adında bulunamadı (%s) varsayılan kullanılıyor."
 
 #, python-format
 msgid "Backend type: %s"
@@ -210,6 +233,18 @@ msgstr "Mantıksal sürücü %s yedeğine başla."
 
 msgid "Begin detaching volume completed successfully."
 msgstr "Mantıksal sürücünün ayrılmasına başlanması başarıyla tamamlandı."
+
+#, python-format
+msgid "Body: %s"
+msgstr "Gövde: %s"
+
+#, python-format
+msgid "BrcdFCZoneDriver - Add connection for I-T map: %s"
+msgstr "BrcdFCZoneDriver - I-T haritası için bağlantı ekle: %s"
+
+#, python-format
+msgid "BrcdFCZoneDriver - Delete connection for I-T map: %s"
+msgstr "BrcdFCZoneDriver - I-T haritası için bağlantı sil: %s"
 
 #, python-format
 msgid "CONCERTO version: %s"
@@ -380,6 +415,9 @@ msgstr ""
 msgid "Copied image to volume %s using regular download."
 msgstr "Normal indirme kullanılarak imaj %s mantıksal sürücüsüne kopyalandı."
 
+msgid "Copy image to volume completed successfully."
+msgstr "İmajın mantıksal sürücüye kopyalanması başarıyla tamamlandı."
+
 #, python-format
 msgid "Copy job to dest vol %s completed."
 msgstr "%s hedef mantıksal sürücüsüne kopyalama işi tamamlandı."
@@ -428,6 +466,10 @@ msgstr ""
 "sürücüyü temizlemeye gerek yok."
 
 #, python-format
+msgid "Create %(volume)s on %(device)s"
+msgstr "%(device)s üzerinde %(volume)s oluştur"
+
+#, python-format
 msgid "Create Cloned Volume %(volume_id)s completed."
 msgstr "%(volume_id)s Mantıksal sürücüsü klonlama bitti."
 
@@ -465,6 +507,11 @@ msgstr ""
 
 msgid "Create consistency group completed successfully."
 msgstr "Tutarlılık grubu oluşturma başarıyla tamamlandı."
+
+#, python-format
+msgid "Create consistency group from snapshot-%(snap)s completed successfully."
+msgstr ""
+"Anlık görüntü-%(snap)s den tutarlılık grubu oluşturma başarıyla tamamlandı."
 
 #, python-format
 msgid "Create export done from Volume %(volume_id)s."
@@ -674,6 +721,10 @@ msgstr "Tutarlılık grubu için %(snap_name)s cgsnapshot'ını sil: %(group_nam
 msgid "Delete cgsnapshot with id: %s"
 msgstr "Şu kimliğe sahip cgsnapshot'u sil: %s"
 
+#, python-format
+msgid "Delete connection Target List: %s"
+msgstr "Bağlantı Hedef Listesini sil: %s"
+
 msgid "Delete consistency group completed successfully."
 msgstr "Tutarlılık grubunun silinmesi başarıyla tamamlandı."
 
@@ -815,6 +866,10 @@ msgid "Dissociating volume %s "
 msgstr "Mantıksal sürücü %s ilişiği kesiliyor "
 
 #, python-format
+msgid "Doing %(method)s on %(relative_url)s"
+msgstr "%(relative_url)s'de %(method)s işlemleri yapılıyor"
+
+#, python-format
 msgid "Domain id is %s."
 msgstr "Alan id'si %s."
 
@@ -825,6 +880,10 @@ msgstr "İmaj %(id)s nin mantıksal sürücü: %(vol)s e kopyalanması bitti."
 #, python-format
 msgid "Done copying volume %(vol)s to a new image %(img)s"
 msgstr "%(vol)s mantıksal sürücüsünün %(img)s yeni imajına kopyalanması bitti"
+
+#, python-format
+msgid "Done extending volume %(vol)s to size %(size)s GB."
+msgstr "%(vol)s mantıksal sürücüsünün %(size)s GB olarak büyütülmesi bitti."
 
 msgid "Driver initialization completed successfully."
 msgstr "Sürücü ilklendirme başarıyla tamamlandı."
@@ -872,6 +931,27 @@ msgstr ""
 "terminate_connection'a giriliyor mantıksal sürücü=%(vol)s bağlayıcı=%(conn)s "
 "konum=%(loc)s."
 
+msgid "Error attaching Volume"
+msgstr "Mantıksal sürücü eklenirken hata"
+
+msgid "Error creating Volume"
+msgstr "Mantıksal sürücü oluşturmada hata"
+
+#, python-format
+msgid "Error creating Volume %s."
+msgstr "Mantıksal sürücü %s oluşturulurken hata."
+
+#, python-format
+msgid "Error destroying Volume %s."
+msgstr "Mantıksal sürücü %s silinirken hata."
+
+msgid "Error detaching Volume"
+msgstr "Mantıksal sürücü ayrılırken hata"
+
+#, python-format
+msgid "Error extending Volume %s."
+msgstr "Mantıksal sürücü %s büyütülürken hata."
+
 #, python-format
 msgid "Exploring array subnet label %s"
 msgstr "Dizi alt ağ etiketi %s keşfediliyor"
@@ -895,6 +975,10 @@ msgid "Extend volume request issued successfully."
 msgstr "Mantıksal sürücü büyütme isteği başarıyla yapıldı."
 
 #, python-format
+msgid "Extended volume with label %s."
+msgstr "%s etiketli mantıksal sürücü büyütüldü."
+
+#, python-format
 msgid "Extending volume %s."
 msgstr "Mantıksal sürücü %s büyütülüyor."
 
@@ -913,6 +997,14 @@ msgstr "Hata fırlatıldı: %s"
 #, python-format
 msgid "Filtered targets for SAN is: %s"
 msgstr "SAN için filtrelenen hedefler: %s"
+
+#, python-format
+msgid "Final filtered map for delete connection: %s"
+msgstr "Bağlantı silme için filtrelenmiş son harita: %s"
+
+#, python-format
+msgid "Final filtered map for fabric: %s"
+msgstr "Fabric için son filtrelenmiş harita: %s"
 
 #, python-format
 msgid "Fixing previous mount %s which was not unmounted correctly."
@@ -992,6 +1084,9 @@ msgstr "%(in)s başlatıcısını kaydetmek için FC hedeflerini %(tg)s getir."
 msgid "Get ISCSI targets %(tg)s to register initiator %(in)s."
 msgstr "%(in)s başlatıcısını kaydetmek için ISCSI hedefleri %(tg)s'yi getir."
 
+msgid "Get all snaphsots completed successfully."
+msgstr "Tüm anlık görüntülerin alınması başarıyla bitti."
+
 msgid "Get all volumes completed successfully."
 msgstr "Tüm mantıksal sürücülerin getirilmesi başarıyla bitti."
 
@@ -1018,6 +1113,9 @@ msgstr "Mantıksal sürücü imaj-metadata'sı getir başarıyla tamamlandı."
 msgid "Get volume metadata completed successfully."
 msgstr "Mantıksal sürücü metadata alma başarıyla tamamlandı."
 
+msgid "Get volume metadata key completed successfully."
+msgstr "Mantıksal sürücü metadata anahtarı getir başarıyla tamamlandı."
+
 msgid "Getting getInitiatorGrpList"
 msgstr "getInitiatorGrpList getiriliyor"
 
@@ -1032,6 +1130,18 @@ msgstr "İstek %s geçerli jetonla tekrar gerçekleşecek."
 #, python-format
 msgid "HDP list: %s"
 msgstr "HDP listesi: %s"
+
+#, python-format
+msgid "HP3PARCommon %(common_ver)s,hp3parclient %(rest_ver)s"
+msgstr "HP3PARCommon %(common_ver)s,hp3parclient %(rest_ver)s"
+
+#, python-format
+msgid "HPLeftHand API version %s"
+msgstr "HPLeftHand API sürümü %s"
+
+#, python-format
+msgid "HPLeftHand driver %(driver_ver)s, proxy %(proxy_ver)s"
+msgstr "HPLeftHand sürücüsü %(driver_ver)s, proxy %(proxy_ver)s"
 
 #, python-format
 msgid "HTTP exception thrown: %s"
@@ -1082,6 +1192,14 @@ msgstr "Mantıksal sürücü bağlantısını ilklendirme başarıyla tamamland�
 #, python-format
 msgid "Initialized driver %(name)s version: %(vers)s"
 msgstr "Sürücü %(name)s sürüm: %(vers)s ilklendirildi"
+
+#, python-format
+msgid "Initialized driver %(name)s version: %(vers)s."
+msgstr "Sürücü %(name)s sürüm: %(vers)s ilklendirildi."
+
+#, python-format
+msgid "Initialized driver for IBMNAS Platform: %s."
+msgstr "IBMNAS Platformu için sürücü ilklendirildi: %s."
 
 msgid "Initializing extension manager."
 msgstr "Genişletme yöneticisi başlatılıyor"
@@ -1216,6 +1334,10 @@ msgid ""
 msgstr ""
 "PyWBEM Modülü kurulu değil. python-pywbem paketini kullanarak PyWBEM kurun."
 
+#, python-format
+msgid "Mounting share: %s"
+msgstr "Paylaşım bağlanıyor: %s"
+
 msgid "Need to remove FC Zone, building initiator target map"
 msgstr "FC Bölgesi silinmeli, başlatıcı hedef haritası inşa ediliyor"
 
@@ -1277,6 +1399,14 @@ msgid "No rpm info found for %(pkg)s package."
 msgstr "%(pkg)s paketi için rpm bilgisi bulunamadı."
 
 #, python-format
+msgid "No snapshot found for %(cgsnapshot)s."
+msgstr "%(cgsnapshot)s için anlık görüntü bulunamadı."
+
+#, python-format
+msgid "No targets to add or remove connection for I: %s"
+msgstr "I için bağlantı ekleme ya da çıkarma için hedef yok: %s"
+
+#, python-format
 msgid "OpenStack OS Version Info: %(info)s"
 msgstr "OpenStack OS Sürüm Bilgisi: %(info)s"
 
@@ -1310,6 +1440,10 @@ msgid "Pool id is %s."
 msgstr "Havuz id'si %s."
 
 #, python-format
+msgid "Populating status for cgsnapshot: %(id)s."
+msgstr "cgsnapshot: %(id)s için durum dolduruluyor."
+
+#, python-format
 msgid "Port group instance name is %(foundPortGroupInstanceName)s."
 msgstr "Bağlantı noktası grubu sunucu ismi %(foundPortGroupInstanceName)s."
 
@@ -1327,6 +1461,10 @@ msgstr "%s profili silindi."
 
 msgid "Promote volume replica completed successfully."
 msgstr "Mantıksal sürücü kopyasının terfisi başarıyla tamamlandı."
+
+#, python-format
+msgid "Protection domain name: %(domain_id)s."
+msgstr "Koruma alan adı: %(domain_id)s."
 
 #, python-format
 msgid "Protection domain name: %(domain_name)s."
@@ -1369,8 +1507,20 @@ msgid "Re-using existing purity host %(host_name)r"
 msgstr "Mevcut purity istemcisi %(host_name)r tekrar kullanılıyor"
 
 #, python-format
+msgid "Reference count of %(volume)s is %(count)d, not detaching."
+msgstr "%(volume)s için referans sayısı %(count)d, ayrılmıyor."
+
+#, python-format
 msgid "Registering image in cache %s"
 msgstr "%s zulasında imaj kaydediliyor"
+
+#, python-format
+msgid ""
+"Relocating volume %s vmdk to a different datastore since trying to extend "
+"vmdk file in place failed."
+msgstr ""
+"Mantıksal sürücü %s vmdk başka bir veri deposuna konumlandırılıyor çünkü "
+"aynı yerde vmdk dosyasının büyütülmesi başarısız oldu."
 
 #, python-format
 msgid "Removed %s from cg."
@@ -1447,6 +1597,10 @@ msgstr "Yedek %s hataya sıfırlanıyor (oluşturuluyordu)."
 #, python-format
 msgid "Resizing LUN %s directly to new size."
 msgstr "LUN %s doğrudan yeni boyuta boyutlandırılıyor."
+
+#, python-format
+msgid "Resizing LUN %s to new size using clone operation."
+msgstr "LUN %s klon işlemiyle yeni boyuta boyutlandırılıyor."
 
 #, python-format
 msgid "Resizing file to %sG"
@@ -1537,6 +1691,10 @@ msgid "Running with vmemclient version: %s"
 msgstr "vmemclient sürüm: %s ile çalışıyor"
 
 #, python-format
+msgid "Running with vmemclient version: %s."
+msgstr "vmemclient sürüm: %s ile çalışıyor."
+
+#, python-format
 msgid "Save service info for %(svc)s -> %(hdp)s, %(path)s"
 msgstr " %(svc)s -> %(hdp)s, %(path)s için servis bilgisi kaydet"
 
@@ -1595,6 +1753,12 @@ msgid ""
 msgstr ""
 "İkincil ssh istemci anahtarı %(kwargs)s /etc/cinder.conf'dan gelen %(conf)s "
 "ile birlikte yüklenecek."
+
+#, python-format
+msgid "Selected datastore %(ds)s to place extended volume of size %(size)s GB."
+msgstr ""
+"%(size)s GB boyutundaki büyütülmüş mantıksal sürücüyü koymak için %(ds)s "
+"veri deposu seçildi."
 
 msgid "Session might have expired. Trying to relogin"
 msgstr "Oturum sona ermiş olabilir. Tekrar giriş deneniyor"
@@ -1698,6 +1862,13 @@ msgid "Starting volume driver %(driver_name)s (%(version)s)"
 msgstr "Mantıksal sürücü %(driver_name)s (%(version)s) başlatılıyor"
 
 #, python-format
+msgid "Starting volume driver %(driver_name)s (%(version)s)."
+msgstr "Mantıksal sürücü sürücüsü başlatılıyor %(driver_name)s (%(version)s)."
+
+msgid "Stopping WSGI server."
+msgstr "WSGI sunucusu durduruluyor."
+
+#, python-format
 msgid "Storage Group %s was empty."
 msgstr "Depolama Grubu %s boştu."
 
@@ -1716,6 +1887,12 @@ msgstr ""
 #, python-format
 msgid "Successful login by user %s"
 msgstr "%s kullanıcısı tarafından başarılı giriş"
+
+#, python-format
+msgid ""
+"Successfully cloned new backing: %(back)s from source VMDK file: %(vmdk)s."
+msgstr ""
+"Yeni destek: %(back)s VMDK dosyası: %(vmdk)s kaynağından başarıyla klonlandı."
 
 #, python-format
 msgid "Successfully completed ssc job for %(server)s and vserver %(vs)s"
@@ -1789,6 +1966,10 @@ msgstr ""
 #, python-format
 msgid "Successfully deleted volume: %s"
 msgstr "Mantıksal sürücü başarıyla silindi: %s"
+
+#, python-format
+msgid "Successfully extended the volume %(name)s to %(size)s GB."
+msgstr "Mantıksal sürücü %(name)s başarıyla %(size)s GB boyutuna büyütüldü."
 
 #, python-format
 msgid "Successfully extended volume %(volume_id)s to size %(size)s."
@@ -1871,6 +2052,18 @@ msgstr "QoS özelliği: %s."
 
 #, python-format
 msgid ""
+"The backing is not found, so there is no need to extend the vmdk virtual "
+"disk for the volume %s."
+msgstr ""
+"Destek bulunamadı, bu yüzden %s mantıksal sürücüsü için vmdk sanal diskini "
+"büyütmeye gerek yok."
+
+#, python-format
+msgid "The iSCSI target %(target_name)s already exists."
+msgstr "iSCSI hedefi %(target_name)s zaten mevcut."
+
+#, python-format
+msgid ""
 "The multi-attach E-Series host group '%(label)s' already exists with "
 "clusterRef %(clusterRef)s"
 msgstr ""
@@ -1899,11 +2092,27 @@ msgstr ""
 
 #, python-format
 msgid ""
+"There is no backing for the source snapshot: %(snap)s. Not creating any "
+"backing for the volume: %(vol)s."
+msgstr ""
+"Kaynak anlık görüntü: %(snap)s için destek yok. Mantıksal sürücü: %(vol)s "
+"için destek oluşturulmuyor."
+
+#, python-format
+msgid ""
 "There is no backing for the source volume: %(src)s. Not creating any backing "
 "for volume: %(vol)s."
 msgstr ""
 "Kaynak mantıksal sürücü: %(src)s için destek yok. Mantıksal sürücü: %(vol)s "
 "için herhangi bir destek oluşturulmuyor."
+
+#, python-format
+msgid ""
+"There is no backing for the source volume: %(svol)s. Not creating any "
+"backing for the volume: %(vol)s."
+msgstr ""
+"Kaynak mantıksal sürücü: %(svol)s için destek yok. Mantıksal sürücü: %(vol)s "
+"için bir destek oluşturulmuyor."
 
 #, python-format
 msgid "There is no backing for the volume: %s. Need to create one."
@@ -1925,11 +2134,31 @@ msgstr ""
 "Anlık görüntülenen mantıksal sürücü: %(snap)s için anlık görüntü noktası "
 "yok. Mantıksal sürücü: %(vol)s için destek oluşturulmuyor."
 
+#, python-format
+msgid ""
+"Timeout is not configured in huawei conf file. Use default: "
+"%(default_timeout)d."
+msgstr ""
+"Zaman aşımı huawei yapılandırma dosyasında yapılandırılmamış. Varsayılanı "
+"kullan: %(default_timeout)d."
+
+#, python-format
+msgid "Toggle storage_vnx_ip_address from %(old)s to %(new)s."
+msgstr "storage_vnx_ip_address'i %(old)s dan %(new)s e değiştir."
+
 msgid "Token is invalid, going to re-login and get a new one."
 msgstr "Jeton geçersiz, tekrar giriş yapıp yeni bir tane alınacak."
 
 msgid "Transfer volume completed successfully."
 msgstr "Mantıksal sürücü aktarımı başarıyla tamamlandı."
+
+#, python-format
+msgid ""
+"Tried to delete export for volume %s, but it was not found in the Datera "
+"cluster. Continuing with volume detach"
+msgstr ""
+"%s mantıksal sürücüsü için dışa aktarım silinmeye çalışıldı, ama Datera "
+"kümesinde bulunamadı. Mantıksal sürücü ayırmayla devam ediliyor"
 
 #, python-format
 msgid "Tried to delete non-existent vdisk %s."
@@ -1956,6 +2185,34 @@ msgid "Trying to unmap volume from all sdcs before deletion: %s."
 msgstr ""
 "Silmeden önce tüm sdc'lerden mantıksal sürücü eşleştirmesini kaldırmaya "
 "çalışılıyor: %s."
+
+#, python-format
+msgid ""
+"Unable to delete volume: %(vol_id)s, volume must be available or error, but "
+"is %(vol_status)s."
+msgstr ""
+"Mantıksal sürücü silinemedi: %(vol_id)s, mantıksal sürücü kullanılabilir ya "
+"da hata olmalı, ama %(vol_status)s."
+
+#, python-format
+msgid "Unable to delete volume: %s, volume currently has snapshots."
+msgstr ""
+"Mantıksal sürücü silinemiyor: %s, mantıksal sürücünün anlık görüntüleri var."
+
+#, python-format
+msgid "Unable to delete volume: %s, volume is attached."
+msgstr "Mantıksal sürücü: %s silinemedi, mantıksal sürücü ekli durumda."
+
+#, python-format
+msgid "Unable to delete volume: %s, volume is currently migrating."
+msgstr "Mantıksal sürücü silinemiyor: %s, mantıksal sürücü şu an göç ediyor."
+
+#, python-format
+msgid ""
+"Unable to delete volume: %s, volume is currently part of a consistency group."
+msgstr ""
+"Mantıksal sürücü silinemiyor: %s, mantıksal sürücü şu an bir tutarlılık "
+"grubu parçası."
 
 msgid "Unable to parse XML input."
 msgstr "XML girdisi ayrıştırılamadı."
@@ -2036,12 +2293,19 @@ msgstr "%(id)s anlık görüntüsü %(dict)s bilgisi ile güncelleniyor"
 msgid "Updating storage service catalog information for backend '%s'"
 msgstr "'%s' arka ucu için depolama servisi kataloğu bilgisi güncelleniyor"
 
+msgid "Use default PrefetchType. PrefetchType: Intelligent."
+msgstr "Varsayılan PrefetchType kullan. PrefetchType: Zeki."
+
 #, python-format
 msgid ""
 "Using FC Zone Manager %(zm_version)s, Driver %(drv_name)s %(drv_version)s."
 msgstr ""
 "FC Zone Manager %(zm_version)s, Sürücü %(drv_name)s %(drv_version)s "
 "kullanılıyor."
+
+#, python-format
+msgid "Using FC lookup service %s"
+msgstr "FC arama servisi %s kullanılıyor"
 
 #, python-format
 msgid "Using existing initiator group name: %(igGroupName)s."
@@ -2067,6 +2331,10 @@ msgstr "Servis etiketi kullanılıyor: %s"
 #, python-format
 msgid "Value with type=%s is not serializable"
 msgstr "type=%s sahip değer serileştirilemez"
+
+#, python-format
+msgid "Verified VMOS version %s is supported."
+msgstr "Doğrulanmış VMOS sürümü %s destekleniyor."
 
 #, python-format
 msgid "Virtual volume %(disp)s '%(new)s' is being retyped."
@@ -2207,12 +2475,27 @@ msgstr ""
 "Mantıksal sürücü: %(vol_id)s, boyut: %(vol_size)d yedek: %(backup_id)s, "
 "boyut: %(backup_size)d'den büyük, geri yüklemeyle devam ediliyor."
 
+msgid "WSGI server has stopped."
+msgstr "WSGI sunucusu durduruldu."
+
 #, python-format
 msgid "WWPN on node %(node)s: %(wwpn)s."
 msgstr "%(node)s düğümü üzerinde WWPN: %(wwpn)s."
 
+#, python-format
+msgid ""
+"Wait interval for %(event_type)s is not configured in huawei conf file. Use "
+"default: %(default_wait_interval)d."
+msgstr ""
+"%(event_type)s için bekleme aralığı huawei yapılandırma dosyasında "
+"yapılandırılmamış: %(default_wait_interval)d."
+
 msgid "Waiting for web service array communication."
 msgstr "Web servis dizisi iletişimi bekleniyor."
+
+#, python-format
+msgid "XML exception reading parameter: %s"
+msgstr "Parametre okurken XML istisnası: %s"
 
 #, python-format
 msgid "XtremIO SW version %s"
@@ -2315,6 +2598,10 @@ msgstr ""
 #, python-format
 msgid "initiate: connection %s"
 msgstr "başlat: bağlantı %s"
+
+#, python-format
+msgid "initiator name: %(initiator_name)s, volume name: %(volume)s."
+msgstr "başlatıcı ismi: %(initiator_name)s, mantıksal sürücü ismi: %(volume)s."
 
 msgid ""
 "initiator_auto_registration: False. Initiator auto registration is not "

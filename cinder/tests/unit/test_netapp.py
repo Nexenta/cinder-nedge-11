@@ -31,8 +31,6 @@ from cinder.volume.drivers.netapp.dataontap import block_cmode
 from cinder.volume.drivers.netapp.dataontap.client import client_7mode
 from cinder.volume.drivers.netapp.dataontap.client import client_base
 from cinder.volume.drivers.netapp.dataontap.client import client_cmode
-from cinder.volume.drivers.netapp.dataontap.performance import perf_7mode
-from cinder.volume.drivers.netapp.dataontap.performance import perf_cmode
 from cinder.volume.drivers.netapp.dataontap import ssc_cmode
 from cinder.volume.drivers.netapp import options
 from cinder.volume.drivers.netapp import utils
@@ -69,8 +67,8 @@ class FakeHTTPRequestHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 class FakeHttplibSocket(object):
     """A fake socket implementation for http_client.HTTPResponse."""
     def __init__(self, value):
-        self._rbuffer = six.BytesIO(value)
-        self._wbuffer = six.BytesIO()
+        self._rbuffer = six.StringIO(value)
+        self._wbuffer = six.StringIO('')
         oldclose = self._wbuffer.close
 
         def newclose():
@@ -78,27 +76,24 @@ class FakeHttplibSocket(object):
             oldclose()
         self._wbuffer.close = newclose
 
-    def makefile(self, mode, *args):
+    def makefile(self, mode, _other):
         """Returns the socket's internal buffer"""
         if mode == 'r' or mode == 'rb':
             return self._rbuffer
         if mode == 'w' or mode == 'wb':
             return self._wbuffer
 
-    def close(self):
-        pass
 
-
-RESPONSE_PREFIX_DIRECT_CMODE = b"""<?xml version='1.0' encoding='UTF-8' ?>
+RESPONSE_PREFIX_DIRECT_CMODE = """<?xml version='1.0' encoding='UTF-8' ?>
 <!DOCTYPE netapp SYSTEM 'file:/etc/netapp_gx.dtd'>"""
 
-RESPONSE_PREFIX_DIRECT_7MODE = b"""<?xml version='1.0' encoding='UTF-8' ?>
+RESPONSE_PREFIX_DIRECT_7MODE = """<?xml version='1.0' encoding='UTF-8' ?>
 <!DOCTYPE netapp SYSTEM "/na_admin/netapp_filer.dtd">"""
 
-RESPONSE_PREFIX_DIRECT = b"""
+RESPONSE_PREFIX_DIRECT = """
 <netapp version='1.15' xmlns='http://www.netapp.com/filer/admin'>"""
 
-RESPONSE_SUFFIX_DIRECT = b"""</netapp>"""
+RESPONSE_SUFFIX_DIRECT = """</netapp>"""
 
 
 class FakeDirectCMODEServerHandler(FakeHTTPRequestHandler):
@@ -436,8 +431,6 @@ class FakeDirectCMODEServerHandler(FakeHTTPRequestHandler):
         s.end_headers()
         s.wfile.write(RESPONSE_PREFIX_DIRECT_CMODE)
         s.wfile.write(RESPONSE_PREFIX_DIRECT)
-        if isinstance(body, six.text_type):
-            body = body.encode('utf-8')
         s.wfile.write(body)
         s.wfile.write(RESPONSE_SUFFIX_DIRECT)
 
@@ -473,10 +466,8 @@ class FakeDirectCmodeHTTPConnection(object):
         req_str = '%s %s HTTP/1.1\r\n' % (method, path)
         for key, value in headers.items():
             req_str += "%s: %s\r\n" % (key, value)
-        if isinstance(req_str, six.text_type):
-            req_str = req_str.encode('latin1')
         if data:
-            req_str += b'\r\n' + data
+            req_str += '\r\n%s' % data
 
         # NOTE(vish): normally the http transport normalizes from unicode
         sock = FakeHttplibSocket(req_str.decode("latin-1").encode("utf-8"))
@@ -497,9 +488,6 @@ class FakeDirectCmodeHTTPConnection(object):
 
     def getresponsebody(self):
         return self.sock.result
-
-    def close(self):
-        pass
 
 
 class NetAppDirectCmodeISCSIDriverTestCase(test.TestCase):
@@ -570,8 +558,6 @@ class NetAppDirectCmodeISCSIDriverTestCase(test.TestCase):
             ssc_cmode, 'refresh_cluster_ssc',
             lambda a, b, c, synchronous: None)
         self.mock_object(utils, 'OpenStackInfo')
-        self.mock_object(perf_7mode, 'Performance7modeLibrary')
-        self.mock_object(client_base.Client, '_init_ssh_client')
 
         configuration = self._set_config(create_configuration())
         driver = common.NetAppDriver(configuration=configuration)
@@ -579,7 +565,6 @@ class NetAppDirectCmodeISCSIDriverTestCase(test.TestCase):
                        FakeDirectCmodeHTTPConnection)
         driver.do_setup(context='')
         self.driver = driver
-        self.mock_object(self.driver.library.zapi_client, '_init_ssh_client')
         self.driver.ssc_vols = self.ssc_map
 
     def _set_config(self, configuration):
@@ -606,7 +591,6 @@ class NetAppDirectCmodeISCSIDriverTestCase(test.TestCase):
         configuration = self._set_config(create_configuration())
         driver = common.NetAppDriver(configuration=configuration)
         mock_client = self.mock_object(client_cmode, 'Client')
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         driver.do_setup(context='')
         mock_client.assert_called_with(**FAKE_CONNECTION_HTTP)
 
@@ -618,7 +602,6 @@ class NetAppDirectCmodeISCSIDriverTestCase(test.TestCase):
         configuration.netapp_transport_type = 'http'
         driver = common.NetAppDriver(configuration=configuration)
         mock_client = self.mock_object(client_cmode, 'Client')
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         driver.do_setup(context='')
         mock_client.assert_called_with(**FAKE_CONNECTION_HTTP)
 
@@ -631,7 +614,6 @@ class NetAppDirectCmodeISCSIDriverTestCase(test.TestCase):
         driver = common.NetAppDriver(configuration=configuration)
         driver.library._get_root_volume_name = mock.Mock()
         mock_client = self.mock_object(client_cmode, 'Client')
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         driver.do_setup(context='')
         FAKE_CONNECTION_HTTPS = dict(FAKE_CONNECTION_HTTP,
                                      transport_type='https')
@@ -645,7 +627,6 @@ class NetAppDirectCmodeISCSIDriverTestCase(test.TestCase):
         configuration.netapp_server_port = 81
         driver = common.NetAppDriver(configuration=configuration)
         mock_client = self.mock_object(client_cmode, 'Client')
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         driver.do_setup(context='')
         FAKE_CONNECTION_HTTP_PORT = dict(FAKE_CONNECTION_HTTP, port=81)
         mock_client.assert_called_with(**FAKE_CONNECTION_HTTP_PORT)
@@ -660,7 +641,6 @@ class NetAppDirectCmodeISCSIDriverTestCase(test.TestCase):
         driver = common.NetAppDriver(configuration=configuration)
         driver.library._get_root_volume_name = mock.Mock()
         mock_client = self.mock_object(client_cmode, 'Client')
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         driver.do_setup(context='')
         FAKE_CONNECTION_HTTPS_PORT = dict(FAKE_CONNECTION_HTTP, port=446,
                                           transport_type='https')
@@ -1194,8 +1174,6 @@ class FakeDirect7MODEServerHandler(FakeHTTPRequestHandler):
         s.end_headers()
         s.wfile.write(RESPONSE_PREFIX_DIRECT_7MODE)
         s.wfile.write(RESPONSE_PREFIX_DIRECT)
-        if isinstance(body, six.text_type):
-            body = body.encode('utf-8')
         s.wfile.write(body)
         s.wfile.write(RESPONSE_SUFFIX_DIRECT)
 
@@ -1216,10 +1194,8 @@ class FakeDirect7modeHTTPConnection(object):
         req_str = '%s %s HTTP/1.1\r\n' % (method, path)
         for key, value in headers.items():
             req_str += "%s: %s\r\n" % (key, value)
-        if isinstance(req_str, six.text_type):
-            req_str = req_str.encode('latin1')
         if data:
-            req_str += b'\r\n' + data
+            req_str += '\r\n%s' % data
 
         # NOTE(vish): normally the http transport normailizes from unicode
         sock = FakeHttplibSocket(req_str.decode("latin-1").encode("utf-8"))
@@ -1240,9 +1216,6 @@ class FakeDirect7modeHTTPConnection(object):
 
     def getresponsebody(self):
         return self.sock.result
-
-    def close(self):
-        pass
 
 
 class NetAppDirect7modeISCSIDriverTestCase_NV(test.TestCase):
@@ -1271,12 +1244,10 @@ class NetAppDirect7modeISCSIDriverTestCase_NV(test.TestCase):
 
         configuration = self._set_config(create_configuration())
         driver = common.NetAppDriver(configuration=configuration)
-        self.mock_object(client_base.Client, '_init_ssh_client')
         self.stubs.Set(http_client, 'HTTPConnection',
                        FakeDirect7modeHTTPConnection)
         self.mock_object(driver.library, '_get_root_volume_name', mock.Mock(
             return_value='root'))
-        self.mock_object(perf_7mode, 'Performance7modeLibrary')
         driver.do_setup(context='')
         driver.root_volume_name = 'root'
         self.driver = driver
@@ -1333,12 +1304,10 @@ class NetAppDirect7modeISCSIDriverTestCase_WV(
 
         configuration = self._set_config(create_configuration())
         driver = common.NetAppDriver(configuration=configuration)
-        self.mock_object(client_base.Client, '_init_ssh_client')
         self.stubs.Set(http_client, 'HTTPConnection',
                        FakeDirect7modeHTTPConnection)
         self.mock_object(driver.library, '_get_root_volume_name',
                          mock.Mock(return_value='root'))
-        self.mock_object(perf_7mode, 'Performance7modeLibrary')
         driver.do_setup(context='')
         self.driver = driver
         self.driver.root_volume_name = 'root'

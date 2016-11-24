@@ -15,7 +15,6 @@
 
 import uuid
 
-from oslo_service import wsgi
 from oslo_utils import timeutils
 import routes
 import webob
@@ -24,13 +23,13 @@ import webob.request
 
 from cinder.api.middleware import auth
 from cinder.api.middleware import fault
-from cinder.api.openstack import api_version_request as api_version
 from cinder.api.openstack import wsgi as os_wsgi
 from cinder.api import urlmap
 from cinder.api.v2 import limits
 from cinder.api.v2 import router
 from cinder.api import versions
 from cinder import context
+from cinder.wsgi import common as wsgi
 
 
 FAKE_UUID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
@@ -79,7 +78,7 @@ def wsgi_app(inner_app_v2=None, fake_auth=True, fake_auth_context=None,
 
     mapper = urlmap.URLMap()
     mapper['/v2'] = api_v2
-    mapper['/'] = fault.FaultWrapper(versions.VersionsController())
+    mapper['/'] = fault.FaultWrapper(versions.Versions())
     return mapper
 
 
@@ -107,21 +106,17 @@ class HTTPRequest(webob.Request):
     @classmethod
     def blank(cls, *args, **kwargs):
         if args is not None:
-            if 'v1' in args[0]:
+            if args[0].find('v1') == 0:
                 kwargs['base_url'] = 'http://localhost/v1'
-            if 'v2' in args[0]:
+            else:
                 kwargs['base_url'] = 'http://localhost/v2'
-            if 'v3' in args[0]:
-                kwargs['base_url'] = 'http://localhost/v3'
 
         use_admin_context = kwargs.pop('use_admin_context', False)
-        version = kwargs.pop('version', api_version._MIN_API_VERSION)
         out = os_wsgi.Request.blank(*args, **kwargs)
         out.environ['cinder.context'] = FakeRequestContext(
             'fake_user',
             'fakeproject',
             is_admin=use_admin_context)
-        out.api_version_request = api_version.APIVersionRequest(version)
         return out
 
 

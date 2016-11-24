@@ -27,7 +27,6 @@ import uuid
 
 from oslo_log import log as logging
 import requests
-from simplejson import scanner
 import six
 from six.moves import urllib
 
@@ -102,61 +101,12 @@ class RestClient(WebserviceClient):
     ASUP_VALID_VERSION = (1, 52, 9000, 3)
     # We need to check for both the release and the pre-release versions
     SSC_VALID_VERSIONS = ((1, 53, 9000, 1), (1, 53, 9010, 17))
-    REST_1_3_VERSION = (1, 53, 9000, 1)
-    REST_1_4_VERSIONS = ((1, 54, 9000, 1), (1, 54, 9090, 0))
 
     RESOURCE_PATHS = {
         'volumes': '/storage-systems/{system-id}/volumes',
         'volume': '/storage-systems/{system-id}/volumes/{object-id}',
-        'pool_operation_progress':
-            '/storage-systems/{system-id}/storage-pools/{object-id}'
-            '/action-progress',
-        'volume_expand':
-            '/storage-systems/{system-id}/volumes/{object-id}/expand',
-        'thin_volume_expand':
-            '/storage-systems/{system-id}/thin-volumes/{object-id}/expand',
         'ssc_volumes': '/storage-systems/{system-id}/ssc/volumes',
-        'ssc_volume': '/storage-systems/{system-id}/ssc/volumes/{object-id}',
-        'snapshot_groups': '/storage-systems/{system-id}/snapshot-groups',
-        'snapshot_group':
-            '/storage-systems/{system-id}/snapshot-groups/{object-id}',
-        'snapshot_volumes': '/storage-systems/{system-id}/snapshot-volumes',
-        'snapshot_volume':
-            '/storage-systems/{system-id}/snapshot-volumes/{object-id}',
-        'snapshot_images': '/storage-systems/{system-id}/snapshot-images',
-        'snapshot_image':
-            '/storage-systems/{system-id}/snapshot-images/{object-id}',
-        'cgroup':
-            '/storage-systems/{system-id}/consistency-groups/{object-id}',
-        'cgroups': '/storage-systems/{system-id}/consistency-groups',
-        'cgroup_members':
-            '/storage-systems/{system-id}/consistency-groups/{object-id}'
-            '/member-volumes',
-        'cgroup_member':
-            '/storage-systems/{system-id}/consistency-groups/{object-id}'
-            '/member-volumes/{vol-id}',
-        'cgroup_snapshots':
-            '/storage-systems/{system-id}/consistency-groups/{object-id}'
-            '/snapshots',
-        'cgroup_snapshot':
-            '/storage-systems/{system-id}/consistency-groups/{object-id}'
-            '/snapshots/{seq-num}',
-        'cgroup_snapshots_by_seq':
-            '/storage-systems/{system-id}/consistency-groups/{object-id}'
-            '/snapshots/{seq-num}',
-        'cgroup_cgsnap_view':
-            '/storage-systems/{system-id}/consistency-groups/{object-id}'
-            '/views/{seq-num}',
-        'cgroup_cgsnap_views':
-            '/storage-systems/{system-id}/consistency-groups/{object-id}'
-            '/views/',
-        'cgroup_snapshot_views':
-            '/storage-systems/{system-id}/consistency-groups/{object-id}'
-            '/views/{view-id}/views',
-        'persistent-stores': '/storage-systems/{'
-                             'system-id}/persistent-records/',
-        'persistent-store': '/storage-systems/{'
-                            'system-id}/persistent-records/{key}'
+        'ssc_volume': '/storage-systems/{system-id}/ssc/volumes/{object-id}'
     }
 
     def __init__(self, scheme, host, port, service_path, username,
@@ -182,13 +132,6 @@ class RestClient(WebserviceClient):
         asup_api_valid_version = self._validate_version(
             self.ASUP_VALID_VERSION, api_version_tuple)
 
-        rest_1_3_api_valid_version = self._validate_version(
-            self.REST_1_3_VERSION, api_version_tuple)
-
-        rest_1_4_api_valid_version = any(
-            self._validate_version(valid_version, api_version_tuple)
-            for valid_version in self.REST_1_4_VERSIONS)
-
         ssc_api_valid_version = any(self._validate_version(valid_version,
                                                            api_version_tuple)
                                     for valid_version
@@ -202,12 +145,6 @@ class RestClient(WebserviceClient):
                                   supported=ssc_api_valid_version,
                                   min_version=self._version_tuple_to_str(
                                       self.SSC_VALID_VERSIONS[0]))
-        self.features.add_feature(
-            'REST_1_3_RELEASE', supported=rest_1_3_api_valid_version,
-            min_version=self._version_tuple_to_str(self.REST_1_3_VERSION))
-        self.features.add_feature(
-            'REST_1_4_RELEASE', supported=rest_1_4_api_valid_version,
-            min_version=self._version_tuple_to_str(self.REST_1_4_VERSIONS[0]))
 
     def _version_tuple_to_str(self, version):
         return ".".join([str(part) for part in version])
@@ -230,7 +167,7 @@ class RestClient(WebserviceClient):
 
         :param version: The version to validate
         :param actual_version: The running version of the Webservice
-        :returns: True if the actual_version is equal or newer than the
+        :return: True if the actual_version is equal or newer than the
         current running version, otherwise False
         """
         major_1, major_2, release, minor = version
@@ -275,13 +212,7 @@ class RestClient(WebserviceClient):
             res = self.invoke_service(method, url, data=data,
                                       headers=headers,
                                       timeout=timeout, verify=verify)
-
-            try:
-                res_dict = res.json() if res.text else None
-            # This should only occur if we expected JSON, but were sent
-            # something else
-            except scanner.JSONDecodeError:
-                res_dict = None
+            res_dict = res.json() if res.text else None
 
             if cinder_utils.TRACE_API:
                 self._log_http_response(res.status_code, dict(res.headers),
@@ -343,8 +274,6 @@ class RestClient(WebserviceClient):
                         msg = _("The storage array password for %s is "
                                 "incorrect, please update the configured "
                                 "password.") % self._system_id
-            elif status_code == 424:
-                msg = _("Response error - The storage-system is offline.")
             else:
                 msg = _("Response error code - %s.") % status_code
             raise es_exception.WebServiceException(msg,
@@ -380,7 +309,7 @@ class RestClient(WebserviceClient):
         explicitly disable it.
         :param flash_cache: If true, add the volume to a Flash Cache
         :param data_assurance: If true, enable the Data Assurance capability
-        :returns: The created volume
+        :return The created volume
         """
 
         # Utilize the new API if it is available
@@ -435,8 +364,8 @@ class RestClient(WebserviceClient):
         """Retrieve the given volume from array.
 
         :param object_id: The volume id, label, or wwn
-        :returns: The volume identified by object_id
-        :raise: VolumeNotFound if the volume could not be found
+        :return The volume identified by object_id
+        :raise VolumeNotFound if the volume could not be found
         """
 
         if self.features.SSC_API_V2:
@@ -460,7 +389,7 @@ class RestClient(WebserviceClient):
         try:
             return self._invoke('GET', path, **{'object-id': object_id})
         except es_exception.WebServiceException as e:
-            if 404 == e.status_code:
+            if(404 == e.status_code):
                 raise exception.VolumeNotFound(volume_id=object_id)
             else:
                 raise
@@ -474,163 +403,20 @@ class RestClient(WebserviceClient):
         data = {'name': label}
         return self._invoke('POST', path, data, **{'object-id': object_id})
 
-    def create_consistency_group(self, name, warn_at_percent_full=75,
-                                 rollback_priority='medium',
-                                 full_policy='failbasewrites'):
-        """Define a new consistency group"""
-        path = self.RESOURCE_PATHS.get('cgroups')
-        data = {
-            'name': name,
-            'fullWarnThresholdPercent': warn_at_percent_full,
-            'repositoryFullPolicy': full_policy,
-            # A non-zero threshold enables auto-deletion
-            'autoDeleteThreshold': 0,
-            'rollbackPriority': rollback_priority,
-        }
-
-        return self._invoke('POST', path, data)
-
-    def get_consistency_group(self, object_id):
-        """Retrieve the consistency group identified by object_id"""
-        path = self.RESOURCE_PATHS.get('cgroup')
-
-        return self._invoke('GET', path, **{'object-id': object_id})
-
-    def list_consistency_groups(self):
-        """Retrieve all consistency groups defined on the array"""
-        path = self.RESOURCE_PATHS.get('cgroups')
-
-        return self._invoke('GET', path)
-
-    def delete_consistency_group(self, object_id):
-        path = self.RESOURCE_PATHS.get('cgroup')
-
-        self._invoke('DELETE', path, **{'object-id': object_id})
-
-    def add_consistency_group_member(self, volume_id, cg_id,
-                                     repo_percent=20.0):
-        """Add a volume to a consistency group
-
-        :param volume_id the eseries volume id
-        :param cg_id: the eseries cg id
-        :param repo_percent: percentage capacity of the volume to use for
-        capacity of the copy-on-write repository
-        """
-        path = self.RESOURCE_PATHS.get('cgroup_members')
-        data = {'volumeId': volume_id, 'repositoryPercent': repo_percent}
-
-        return self._invoke('POST', path, data, **{'object-id': cg_id})
-
-    def remove_consistency_group_member(self, volume_id, cg_id):
-        """Remove a volume from a consistency group"""
-        path = self.RESOURCE_PATHS.get('cgroup_member')
-
-        self._invoke('DELETE', path, **{'object-id': cg_id,
-                                        'vol-id': volume_id})
-
-    def create_consistency_group_snapshot(self, cg_id):
-        """Define a consistency group snapshot"""
-        path = self.RESOURCE_PATHS.get('cgroup_snapshots')
-
-        return self._invoke('POST', path, **{'object-id': cg_id})
-
-    def delete_consistency_group_snapshot(self, cg_id, seq_num):
-        """Define a consistency group snapshot"""
-        path = self.RESOURCE_PATHS.get('cgroup_snapshot')
-
-        return self._invoke('DELETE', path, **{'object-id': cg_id,
-                                               'seq-num': seq_num})
-
-    def get_consistency_group_snapshots(self, cg_id):
-        """Retrieve all snapshots defined for a consistency group"""
-        path = self.RESOURCE_PATHS.get('cgroup_snapshots')
-
-        return self._invoke('GET', path, **{'object-id': cg_id})
-
-    def create_cg_snapshot_view(self, cg_id, name, snap_id):
-        """Define a snapshot view for the cgsnapshot
-
-        In order to define a snapshot view for a snapshot defined under a
-        consistency group, the view must be defined at the cgsnapshot
-        level.
-
-        :param cg_id: E-Series cg identifier
-        :param name: the label for the view
-        :param snap_id: E-Series snapshot view to locate
-        :raise NetAppDriverException: if the snapshot view cannot be
-        located for the snapshot identified by snap_id
-        :return snapshot view for snapshot identified by snap_id
-        """
-        path = self.RESOURCE_PATHS.get('cgroup_cgsnap_views')
-
-        data = {
-            'name': name,
-            'accessMode': 'readOnly',
-            # Only define a view for this snapshot
-            'pitId': snap_id,
-        }
-        # Define a view for the cgsnapshot
-        cgsnapshot_view = self._invoke(
-            'POST', path, data, **{'object-id': cg_id})
-
-        # Retrieve the snapshot views associated with our cgsnapshot view
-        views = self.list_cg_snapshot_views(cg_id, cgsnapshot_view[
-            'cgViewRef'])
-        # Find the snapshot view defined for our snapshot
-        for view in views:
-            if view['basePIT'] == snap_id:
-                return view
-        else:
-            try:
-                self.delete_cg_snapshot_view(cg_id, cgsnapshot_view['id'])
-            finally:
-                raise exception.NetAppDriverException(
-                    'Unable to create snapshot view.')
-
-    def list_cg_snapshot_views(self, cg_id, view_id):
-        path = self.RESOURCE_PATHS.get('cgroup_snapshot_views')
-
-        return self._invoke('GET', path, **{'object-id': cg_id,
-                                            'view-id': view_id})
-
-    def delete_cg_snapshot_view(self, cg_id, view_id):
-        path = self.RESOURCE_PATHS.get('cgroup_snap_view')
-
-        return self._invoke('DELETE', path, **{'object-id': cg_id,
-                                               'view-id': view_id})
-
-    def get_pool_operation_progress(self, object_id):
-        """Retrieve the progress long-running operations on a storage pool
-
-        Example:
-        [
-            {
-                "volumeRef": "3232....", # Volume being referenced
-                "progressPercentage": 0, # Approxmate percent complete
-                "estimatedTimeToCompletion": 0, # ETA in minutes
-                "currentAction": "none" # Current volume action
-            }
-            ...
-        ]
-
-        :param object_id: A pool id
-        :returns: A dict representing the action progress
-        """
-        path = self.RESOURCE_PATHS.get('pool_operation_progress')
-        return self._invoke('GET', path, **{'object-id': object_id})
-
-    def expand_volume(self, object_id, new_capacity, thin_provisioned,
-                      capacity_unit='gb'):
+    def expand_volume(self, object_id, new_capacity, capacity_unit='gb'):
         """Increase the capacity of a volume"""
-        if thin_provisioned:
-            path = self.RESOURCE_PATHS.get('thin_volume_expand')
-            data = {'newVirtualSize': new_capacity, 'sizeUnit': capacity_unit,
-                    'newRepositorySize': new_capacity}
-            return self._invoke('POST', path, data, **{'object-id': object_id})
-        else:
-            path = self.RESOURCE_PATHS.get('volume_expand')
-            data = {'expansionSize': new_capacity, 'sizeUnit': capacity_unit}
-            return self._invoke('POST', path, data, **{'object-id': object_id})
+        if not self.features.SSC_API_V2:
+            msg = _("E-series proxy API version %(current_version)s does "
+                    "not support this expansion API. The proxy"
+                    " version must be at at least %(min_version)s")
+            min_version = self.features.SSC_API_V2.minimum_version
+            msg_args = {'current_version': self.api_version,
+                        'min_version': min_version}
+            raise exception.NetAppDriverException(msg % msg_args)
+
+        path = self.RESOURCE_PATHS.get('ssc_volume')
+        data = {'newSize': new_capacity, 'sizeUnit': capacity_unit}
+        return self._invoke('POST', path, data, **{'object-id': object_id})
 
     def get_volume_mappings(self):
         """Creates volume mapping on array."""
@@ -640,18 +426,21 @@ class RestClient(WebserviceClient):
     def get_volume_mappings_for_volume(self, volume):
         """Gets all host mappings for given volume from array."""
         mappings = self.get_volume_mappings() or []
-        return [x for x in mappings
-                if x.get('volumeRef') == volume['volumeRef']]
+        host_maps = filter(lambda x: x.get('volumeRef') == volume['volumeRef'],
+                           mappings)
+        return host_maps
 
     def get_volume_mappings_for_host(self, host_ref):
         """Gets all volume mappings for given host from array."""
         mappings = self.get_volume_mappings() or []
-        return [x for x in mappings if x.get('mapRef') == host_ref]
+        host_maps = filter(lambda x: x.get('mapRef') == host_ref, mappings)
+        return host_maps
 
     def get_volume_mappings_for_host_group(self, hg_ref):
         """Gets all volume mappings for given host group from array."""
         mappings = self.get_volume_mappings() or []
-        return [x for x in mappings if x.get('mapRef') == hg_ref]
+        hg_maps = filter(lambda x: x.get('mapRef') == hg_ref, mappings)
+        return hg_maps
 
     def create_volume_mapping(self, object_id, target_id, lun):
         """Creates volume mapping on array."""
@@ -772,19 +561,14 @@ class RestClient(WebserviceClient):
 
     def list_snapshot_groups(self):
         """Lists snapshot groups."""
-        path = self.RESOURCE_PATHS['snapshot_groups']
+        path = "/storage-systems/{system-id}/snapshot-groups"
         return self._invoke('GET', path)
 
-    def list_snapshot_group(self, object_id):
-        """Retrieve given snapshot group from the array."""
-        path = self.RESOURCE_PATHS['snapshot_group']
-        return self._invoke('GET', path, **{'object-id': object_id})
-
-    def create_snapshot_group(self, label, object_id, storage_pool_id=None,
+    def create_snapshot_group(self, label, object_id, storage_pool_id,
                               repo_percent=99, warn_thres=99, auto_del_limit=0,
                               full_policy='failbasewrites'):
         """Creates snapshot group on array."""
-        path = self.RESOURCE_PATHS['snapshot_groups']
+        path = "/storage-systems/{system-id}/snapshot-groups"
         data = {'baseMappableObjectId': object_id, 'name': label,
                 'storagePoolId': storage_pool_id,
                 'repositoryPercentage': repo_percent,
@@ -792,44 +576,33 @@ class RestClient(WebserviceClient):
                 'autoDeleteLimit': auto_del_limit, 'fullPolicy': full_policy}
         return self._invoke('POST', path, data)
 
-    def update_snapshot_group(self, group_id, label):
-        """Modify a snapshot group on the array."""
-        path = self.RESOURCE_PATHS['snapshot_group']
-        data = {'name': label}
-        return self._invoke('POST', path, data, **{'object-id': group_id})
-
     def delete_snapshot_group(self, object_id):
         """Deletes given snapshot group from array."""
-        path = self.RESOURCE_PATHS['snapshot_group']
+        path = "/storage-systems/{system-id}/snapshot-groups/{object-id}"
         return self._invoke('DELETE', path, **{'object-id': object_id})
 
     def create_snapshot_image(self, group_id):
         """Creates snapshot image in snapshot group."""
-        path = self.RESOURCE_PATHS['snapshot_images']
+        path = "/storage-systems/{system-id}/snapshot-images"
         data = {'groupId': group_id}
         return self._invoke('POST', path, data)
 
     def delete_snapshot_image(self, object_id):
         """Deletes given snapshot image in snapshot group."""
-        path = self.RESOURCE_PATHS['snapshot_image']
+        path = "/storage-systems/{system-id}/snapshot-images/{object-id}"
         return self._invoke('DELETE', path, **{'object-id': object_id})
-
-    def list_snapshot_image(self, object_id):
-        """Retrieve given snapshot image from the array."""
-        path = self.RESOURCE_PATHS['snapshot_image']
-        return self._invoke('GET', path, **{'object-id': object_id})
 
     def list_snapshot_images(self):
         """Lists snapshot images."""
-        path = self.RESOURCE_PATHS['snapshot_images']
+        path = "/storage-systems/{system-id}/snapshot-images"
         return self._invoke('GET', path)
 
     def create_snapshot_volume(self, image_id, label, base_object_id,
-                               storage_pool_id=None,
+                               storage_pool_id,
                                repo_percent=99, full_thres=99,
                                view_mode='readOnly'):
         """Creates snapshot volume."""
-        path = self.RESOURCE_PATHS['snapshot_volumes']
+        path = "/storage-systems/{system-id}/snapshot-volumes"
         data = {'snapshotImageId': image_id, 'fullThreshold': full_thres,
                 'storagePoolId': storage_pool_id,
                 'name': label, 'viewMode': view_mode,
@@ -838,21 +611,10 @@ class RestClient(WebserviceClient):
                 'repositoryPoolId': storage_pool_id}
         return self._invoke('POST', path, data)
 
-    def update_snapshot_volume(self, snap_vol_id, label=None, full_thres=None):
-        """Modify an existing snapshot volume."""
-        path = self.RESOURCE_PATHS['snapshot_volume']
-        data = {'name': label, 'fullThreshold': full_thres}
-        return self._invoke('POST', path, data, **{'object-id': snap_vol_id})
-
     def delete_snapshot_volume(self, object_id):
         """Deletes given snapshot volume."""
-        path = self.RESOURCE_PATHS['snapshot_volume']
+        path = "/storage-systems/{system-id}/snapshot-volumes/{object-id}"
         return self._invoke('DELETE', path, **{'object-id': object_id})
-
-    def list_snapshot_volumes(self):
-        """Lists snapshot volumes/views defined on the array."""
-        path = self.RESOURCE_PATHS['snapshot_volumes']
-        return self._invoke('GET', path)
 
     def list_ssc_storage_pools(self):
         """Lists pools and their service quality defined on the array."""
@@ -990,43 +752,3 @@ class RestClient(WebserviceClient):
         if mode_is_proxy:
             api_operating_mode = 'proxy'
         return api_operating_mode, about_response_dict['version']
-
-    def list_backend_store(self, key):
-        """Retrieve data by key from the the persistent store on the backend.
-
-        Example response: {"key": "cinder-snapshots", "value": "[]"}
-
-        :param key: the persistent store to retrieve
-        :return a json body representing the value of the store,
-        or an empty json object
-        """
-        path = self.RESOURCE_PATHS.get('persistent-store')
-        try:
-            resp = self._invoke('GET', path, **{'key': key})
-        except exception.NetAppDriverException:
-            return dict()
-        else:
-            data = resp['value']
-            if data:
-                return json.loads(data)
-            return dict()
-
-    def save_backend_store(self, key, store_data):
-        """Save a json value to the persistent storage on the backend.
-
-        The storage backend provides a small amount of persistent storage
-        that we can utilize for storing driver information.
-
-        :param key: The key utilized for storing/retrieving the data
-        :param store_data: a python data structure that will be stored as a
-        json value
-        """
-        path = self.RESOURCE_PATHS.get('persistent-stores')
-        store_data = json.dumps(store_data, separators=(',', ':'))
-
-        data = {
-            'key': key,
-            'value': store_data
-        }
-
-        self._invoke('POST', path, data)

@@ -12,19 +12,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import base64
+import binascii
+
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_serialization import base64
 from oslo_serialization import jsonutils
 from oslo_utils import versionutils
 from oslo_versionedobjects import fields
+import six
 
 from cinder import db
 from cinder import exception
 from cinder.i18n import _
 from cinder import objects
 from cinder.objects import base
-from cinder.objects import fields as c_fields
 
 CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
@@ -36,10 +38,7 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
     # Version 1.0: Initial version
     # Version 1.1: Add new field num_dependent_backups and extra fields
     #              is_incremental and has_dependent_backups.
-    # Version 1.2: Add new field snapshot_id and data_timestamp.
-    # Version 1.3: Changed 'status' field to use BackupStatusField
-    # Version 1.4: Add restore_volume_id
-    VERSION = '1.4'
+    VERSION = '1.1'
 
     fields = {
         'id': fields.UUIDField(),
@@ -52,9 +51,9 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
         'availability_zone': fields.StringField(nullable=True),
         'container': fields.StringField(nullable=True),
         'parent_id': fields.StringField(nullable=True),
-        'status': c_fields.BackupStatusField(nullable=True),
+        'status': fields.StringField(nullable=True),
         'fail_reason': fields.StringField(nullable=True),
-        'size': fields.IntegerField(nullable=True),
+        'size': fields.IntegerField(),
 
         'display_name': fields.StringField(nullable=True),
         'display_description': fields.StringField(nullable=True),
@@ -64,14 +63,11 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
         'service_metadata': fields.StringField(nullable=True),
         'service': fields.StringField(nullable=True),
 
-        'object_count': fields.IntegerField(nullable=True),
+        'object_count': fields.IntegerField(),
 
         'temp_volume_id': fields.StringField(nullable=True),
         'temp_snapshot_id': fields.StringField(nullable=True),
-        'num_dependent_backups': fields.IntegerField(nullable=True),
-        'snapshot_id': fields.StringField(nullable=True),
-        'data_timestamp': fields.DateTimeField(nullable=True),
-        'restore_volume_id': fields.StringField(nullable=True),
+        'num_dependent_backups': fields.IntegerField(),
     }
 
     obj_extra_fields = ['name', 'is_incremental', 'has_dependent_backups']
@@ -105,6 +101,12 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
         backup.obj_reset_changes()
         return backup
 
+    @base.remotable_classmethod
+    def get_by_id(cls, context, id, read_deleted=None, project_only=None):
+        db_backup = db.backup_get(context, id, read_deleted=read_deleted,
+                                  project_only=project_only)
+        return cls._from_db_object(context, cls(context), db_backup)
+
     @base.remotable
     def create(self):
         if self.obj_attr_is_set('id'):
@@ -135,8 +137,8 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
         :raises: InvalidInput
         """
         try:
-            return jsonutils.loads(base64.decode_as_text(backup_url))
-        except TypeError:
+            return jsonutils.loads(base64.decodestring(backup_url))
+        except binascii.Error:
             msg = _("Can't decode backup record.")
         except ValueError:
             msg = _("Can't parse backup record.")
@@ -152,8 +154,10 @@ class Backup(base.CinderPersistentObject, base.CinderObject,
         # We must update kwargs instead of record to ensure we don't overwrite
         # "real" data from the backup
         kwargs.update(record)
-        retval = jsonutils.dump_as_bytes(kwargs)
-        return base64.encode_as_text(retval)
+        retval = jsonutils.dumps(kwargs)
+        if six.PY3:
+            retval = retval.encode('utf-8')
+        return base64.encodestring(retval)
 
 
 @base.CinderObjectRegistry.register
@@ -162,6 +166,9 @@ class BackupList(base.ObjectListBase, base.CinderObject):
 
     fields = {
         'objects': fields.ListOfObjectsField('Backup'),
+    }
+    child_versions = {
+        '1.0': '1.0'
     }
 
     @base.remotable_classmethod

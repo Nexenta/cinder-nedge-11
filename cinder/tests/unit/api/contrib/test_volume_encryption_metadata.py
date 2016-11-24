@@ -13,7 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_serialization import jsonutils
+import json
+
 import webob
 
 from cinder.api.contrib import volume_encryption_metadata
@@ -80,7 +81,7 @@ class VolumeEncryptionMetadataTest(test.TestCase):
                                   % self.volume_id)
         res = req.get_response(fakes.wsgi_app(fake_auth_context=self.ctxt))
         self.assertEqual(200, res.status_code)
-        res_dict = jsonutils.loads(res.body)
+        res_dict = json.loads(res.body)
 
         expected = {
             "encryption_key_id": "fake_key",
@@ -97,7 +98,7 @@ class VolumeEncryptionMetadataTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(fake_auth_context=self.ctxt))
         self.assertEqual(400, res.status_code)
 
-        res_dict = jsonutils.loads(res.body)
+        res_dict = json.loads(res.body)
         expected = {'badRequest': {'code': 400,
                                    'message': 'Malformed request url'}}
         self.assertEqual(expected, res_dict)
@@ -109,7 +110,7 @@ class VolumeEncryptionMetadataTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(fake_auth_context=self.ctxt))
         self.assertEqual(404, res.status_code)
 
-        res_dict = jsonutils.loads(res.body)
+        res_dict = json.loads(res.body)
         expected = {'itemNotFound': {'code': 404,
                                      'message': 'VolumeNotFound: Volume '
                                                 '%s could not be found.'
@@ -122,7 +123,7 @@ class VolumeEncryptionMetadataTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(fake_auth_context=self.ctxt))
         self.assertEqual(200, res.status_code)
 
-        self.assertEqual(b'fake_key', res.body)
+        self.assertEqual('fake_key', res.body)
 
     def test_show_control(self):
         req = webob.Request.blank('/v2/fake/volumes/%s/encryption/'
@@ -130,7 +131,7 @@ class VolumeEncryptionMetadataTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(fake_auth_context=self.ctxt))
         self.assertEqual(200, res.status_code)
 
-        self.assertEqual(b'front-end', res.body)
+        self.assertEqual('front-end', res.body)
 
     def test_show_provider(self):
         req = webob.Request.blank('/v2/fake/volumes/%s/encryption/'
@@ -138,7 +139,7 @@ class VolumeEncryptionMetadataTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(fake_auth_context=self.ctxt))
         self.assertEqual(200, res.status_code)
 
-        self.assertEqual(b'nova.volume.encryptors.base.VolumeEncryptor',
+        self.assertEqual('nova.volume.encryptors.base.VolumeEncryptor',
                          res.body)
 
     def test_show_bad_tenant_id(self):
@@ -148,7 +149,7 @@ class VolumeEncryptionMetadataTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(fake_auth_context=self.ctxt))
         self.assertEqual(400, res.status_code)
 
-        res_dict = jsonutils.loads(res.body)
+        res_dict = json.loads(res.body)
         expected = {'badRequest': {'code': 400,
                                    'message': 'Malformed request url'}}
         self.assertEqual(expected, res_dict)
@@ -160,7 +161,7 @@ class VolumeEncryptionMetadataTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(fake_auth_context=self.ctxt))
         self.assertEqual(404, res.status_code)
 
-        res_dict = jsonutils.loads(res.body)
+        res_dict = json.loads(res.body)
         expected = {'itemNotFound': {'code': 404,
                                      'message': 'VolumeNotFound: Volume '
                                                 '%s could not be found.'
@@ -175,7 +176,7 @@ class VolumeEncryptionMetadataTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(fake_auth_context=ctxt))
         self.assertEqual(200, res.status_code)
 
-        self.assertEqual(b'fake_key', res.body)
+        self.assertEqual('fake_key', res.body)
 
     def test_show_volume_not_encrypted_type(self):
         self.stubs.Set(db.sqlalchemy.api, 'volume_type_encryption_get',
@@ -202,7 +203,7 @@ class VolumeEncryptionMetadataTest(test.TestCase):
         res = req.get_response(fakes.wsgi_app(fake_auth_context=self.ctxt))
 
         self.assertEqual(200, res.status_code)
-        res_dict = jsonutils.loads(res.body)
+        res_dict = json.loads(res.body)
 
         expected = {
             'encryption_key_id': None

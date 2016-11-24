@@ -39,11 +39,13 @@ from cinder.volume.drivers.netapp.dataontap.client import client_7mode
 from cinder.volume.drivers.netapp.dataontap.client import client_base
 from cinder.volume.drivers.netapp.dataontap.client import client_cmode
 from cinder.volume.drivers.netapp.dataontap import nfs_base
-from cinder.volume.drivers.netapp.dataontap.performance import perf_7mode
-from cinder.volume.drivers.netapp.dataontap.performance import perf_cmode
 from cinder.volume.drivers.netapp.dataontap import ssc_cmode
 from cinder.volume.drivers.netapp import utils
 
+from oslo_config import cfg
+
+
+CONF = cfg.CONF
 
 CONNECTION_INFO = {
     'hostname': 'fake_host',
@@ -87,6 +89,8 @@ def create_configuration():
     configuration.nfs_mount_point_base = '/mnt/test'
     configuration.nfs_mount_options = None
     configuration.nas_mount_options = None
+    configuration.nfs_used_ratio = .95
+    configuration.nfs_oversub_ratio = 1.0
     configuration.netapp_server_hostname = CONNECTION_INFO['hostname']
     configuration.netapp_transport_type = CONNECTION_INFO['transport_type']
     configuration.netapp_server_port = CONNECTION_INFO['port']
@@ -213,7 +217,6 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
     @mock.patch.object(client_cmode.Client, '__init__', return_value=None)
     def test_do_setup(self, mock_client_init, mock_super_do_setup):
         context = mock.Mock()
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         self._driver.do_setup(context)
         mock_client_init.assert_called_once_with(vserver=FAKE_VSERVER,
                                                  **CONNECTION_INFO)
@@ -908,7 +911,6 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         configuration = self._set_config(create_configuration())
         driver = common.NetAppDriver(configuration=configuration)
         mock_invoke = self.mock_object(client_cmode, 'Client')
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         driver.do_setup(context='')
         mock_invoke.assert_called_with(**FAKE_CONNECTION_INFO_HTTP)
 
@@ -920,7 +922,6 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         configuration.netapp_transport_type = 'http'
         driver = common.NetAppDriver(configuration=configuration)
         mock_invoke = self.mock_object(client_cmode, 'Client')
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         driver.do_setup(context='')
         mock_invoke.assert_called_with(**FAKE_CONNECTION_INFO_HTTP)
 
@@ -932,7 +933,6 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         configuration.netapp_transport_type = 'https'
         driver = common.NetAppDriver(configuration=configuration)
         mock_invoke = self.mock_object(client_cmode, 'Client')
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         driver.do_setup(context='')
         mock_invoke.assert_called_with(**FAKE_CONNECTION_INFO_HTTPS)
 
@@ -944,7 +944,6 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         configuration.netapp_server_port = 81
         driver = common.NetAppDriver(configuration=configuration)
         mock_invoke = self.mock_object(client_cmode, 'Client')
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         driver.do_setup(context='')
         FAKE_CONN_INFO_PORT_HTTP = dict(FAKE_CONNECTION_INFO_HTTP, port=81)
         mock_invoke.assert_called_with(**FAKE_CONN_INFO_PORT_HTTP)
@@ -958,7 +957,6 @@ class NetAppCmodeNfsDriverTestCase(test.TestCase):
         configuration.netapp_server_port = 446
         driver = common.NetAppDriver(configuration=configuration)
         mock_invoke = self.mock_object(client_cmode, 'Client')
-        self.mock_object(perf_cmode, 'PerformanceCmodeLibrary')
         driver.do_setup(context='')
         FAKE_CONN_INFO_PORT_HTTPS = dict(FAKE_CONNECTION_INFO_HTTPS, port=446)
         mock_invoke.assert_called_with(**FAKE_CONN_INFO_PORT_HTTPS)
@@ -1314,6 +1312,71 @@ class NetAppCmodeNfsDriverOnlyTestCase(test.TestCase):
         self.assertRaises(OSError, drv._copy_from_img_service,
                           context, volume, image_service, image_id)
 
+    def test_copyoffload_frm_cache_success(self):
+        drv = self._driver
+        context = object()
+        volume = {'id': 'vol_id', 'name': 'name'}
+        image_service = object()
+        image_id = 'image_id'
+        drv.zapi_client.get_ontapi_version = mock.Mock(return_value=(1, 20))
+        nfs_base.NetAppNfsDriver.copy_image_to_volume = mock.Mock()
+        drv._get_provider_location = mock.Mock(return_value='share')
+        drv._get_vol_for_share = mock.Mock(return_value='vol')
+        drv._update_stale_vols = mock.Mock()
+        drv._find_image_in_cache = mock.Mock(return_value=[('share', 'img')])
+        drv._copy_from_cache = mock.Mock(return_value=True)
+
+        drv.copy_image_to_volume(context, volume, image_service, image_id)
+        drv._copy_from_cache.assert_called_once_with(volume,
+                                                     image_id,
+                                                     [('share', 'img')])
+
+    def test_copyoffload_frm_img_service_success(self):
+        drv = self._driver
+        context = object()
+        volume = {'id': 'vol_id', 'name': 'name'}
+        image_service = object()
+        image_id = 'image_id'
+        drv._client = mock.Mock()
+        drv.zapi_client.get_ontapi_version = mock.Mock(return_value=(1, 20))
+        nfs_base.NetAppNfsDriver.copy_image_to_volume = mock.Mock()
+        drv._get_provider_location = mock.Mock(return_value='share')
+        drv._get_vol_for_share = mock.Mock(return_value='vol')
+        drv._update_stale_vols = mock.Mock()
+        drv._find_image_in_cache = mock.Mock(return_value=False)
+        drv._copy_from_img_service = mock.Mock()
+
+        drv.copy_image_to_volume(context, volume, image_service, image_id)
+        drv._copy_from_img_service.assert_called_once_with(context,
+                                                           volume,
+                                                           image_service,
+                                                           image_id)
+
+    def test_cache_copyoffload_workflow_success(self):
+        drv = self._driver
+        volume = {'id': 'vol_id', 'name': 'name', 'size': 1}
+        image_id = 'image_id'
+        cache_result = [('ip1:/openstack', 'img-cache-imgid')]
+        drv._get_ip_verify_on_cluster = mock.Mock(return_value='ip1')
+        drv._get_host_ip = mock.Mock(return_value='ip2')
+        drv._get_export_path = mock.Mock(return_value='/exp_path')
+        drv._execute = mock.Mock()
+        drv._register_image_in_cache = mock.Mock()
+        drv._get_provider_location = mock.Mock(return_value='/share')
+        drv._post_clone_image = mock.Mock()
+
+        copied = drv._copy_from_cache(volume, image_id, cache_result)
+        self.assertTrue(copied)
+        drv._get_ip_verify_on_cluster.assert_any_call('ip1')
+        drv._get_export_path.assert_called_with('vol_id')
+        drv._execute.assert_called_once_with('cof_path', 'ip1', 'ip1',
+                                             '/openstack/img-cache-imgid',
+                                             '/exp_path/name',
+                                             run_as_root=False,
+                                             check_exit_code=0)
+        drv._post_clone_image.assert_called_with(volume)
+        drv._get_provider_location.assert_called_with('vol_id')
+
     @mock.patch.object(image_utils, 'qemu_img_info')
     def test_img_service_raw_copyoffload_workflow_success(self,
                                                           mock_qemu_img_info):
@@ -1445,7 +1508,6 @@ class NetApp7modeNfsDriverTestCase(NetAppCmodeNfsDriverTestCase):
     @mock.patch.object(client_7mode.Client, '__init__', return_value=None)
     def test_do_setup(self, mock_client_init, mock_super_do_setup):
         context = mock.Mock()
-        self.mock_object(perf_7mode, 'Performance7modeLibrary')
         self._driver.do_setup(context)
         mock_client_init.assert_called_once_with(**SEVEN_MODE_CONNECTION_INFO)
         mock_super_do_setup.assert_called_once_with(context)
@@ -1457,7 +1519,6 @@ class NetApp7modeNfsDriverTestCase(NetAppCmodeNfsDriverTestCase):
         configuration = self._set_config(create_configuration())
         driver = common.NetAppDriver(configuration=configuration)
         mock_invoke = self.mock_object(client_7mode, 'Client')
-        self.mock_object(perf_7mode, 'Performance7modeLibrary')
         driver.do_setup(context='')
         mock_invoke.assert_called_with(**FAKE_7MODE_CONNECTION_INFO_HTTP)
 
@@ -1469,7 +1530,6 @@ class NetApp7modeNfsDriverTestCase(NetAppCmodeNfsDriverTestCase):
         configuration.netapp_transport_type = 'http'
         driver = common.NetAppDriver(configuration=configuration)
         mock_invoke = self.mock_object(client_7mode, 'Client')
-        self.mock_object(perf_7mode, 'Performance7modeLibrary')
         driver.do_setup(context='')
         mock_invoke.assert_called_with(**FAKE_7MODE_CONNECTION_INFO_HTTP)
 
@@ -1481,7 +1541,6 @@ class NetApp7modeNfsDriverTestCase(NetAppCmodeNfsDriverTestCase):
         configuration.netapp_transport_type = 'https'
         driver = common.NetAppDriver(configuration=configuration)
         mock_invoke = self.mock_object(client_7mode, 'Client')
-        self.mock_object(perf_7mode, 'Performance7modeLibrary')
         driver.do_setup(context='')
         mock_invoke.assert_called_with(**FAKE_7MODE_CONNECTION_INFO_HTTPS)
 
@@ -1493,7 +1552,6 @@ class NetApp7modeNfsDriverTestCase(NetAppCmodeNfsDriverTestCase):
         configuration.netapp_server_port = 81
         driver = common.NetAppDriver(configuration=configuration)
         mock_invoke = self.mock_object(client_7mode, 'Client')
-        self.mock_object(perf_7mode, 'Performance7modeLibrary')
         driver.do_setup(context='')
         FAKE_CONN_INFO_PORT_HTTP = dict(FAKE_7MODE_CONNECTION_INFO_HTTP,
                                         port=81)
@@ -1508,7 +1566,6 @@ class NetApp7modeNfsDriverTestCase(NetAppCmodeNfsDriverTestCase):
         configuration.netapp_server_port = 446
         driver = common.NetAppDriver(configuration=configuration)
         mock_invoke = self.mock_object(client_7mode, 'Client')
-        self.mock_object(perf_7mode, 'Performance7modeLibrary')
         driver.do_setup(context='')
         FAKE_CONN_INFO_PORT_HTTPS = dict(FAKE_7MODE_CONNECTION_INFO_HTTPS,
                                          port=446)

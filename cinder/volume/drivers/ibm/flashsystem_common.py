@@ -75,12 +75,10 @@ class FlashSystemDriver(san.SanDriver):
     1.0.5 - Report capability of volume multiattach
     1.0.6 - Fix bug #1469581, add I/T mapping check in
             terminate_connection
-    1.0.7 - Fix bug #1505477, add host name check in
-            _find_host_exhaustive for FC
 
     """
 
-    VERSION = "1.0.7"
+    VERSION = "1.0.6"
 
     def __init__(self, *args, **kwargs):
         super(FlashSystemDriver, self).__init__(*args, **kwargs)
@@ -124,7 +122,8 @@ class FlashSystemDriver(san.SanDriver):
                                 'err': six.text_type(err)}))
 
     def _build_default_params(self):
-        return {'protocol': self.configuration.flashsystem_connection_protocol}
+        return {'protocol': self.configuration.flashsystem_connection_protocol,
+                'multipath': self.configuration.flashsystem_multipath_enabled}
 
     def _build_initiator_target_map(self, initiator_wwpns, target_wwpns):
         map = {}
@@ -421,7 +420,7 @@ class FlashSystemDriver(san.SanDriver):
             'name' in header,
             '_get_host_from_connector', ssh_cmd, out, err)
         name_index = header.index('name')
-        hosts = [x.split('!')[name_index] for x in host_lines]
+        hosts = map(lambda x: x.split('!')[name_index], host_lines)
         hostname = self._find_host_exhaustive(connector, hosts)
 
         LOG.debug('leave: _get_host_from_connector: host %s.', hostname)
@@ -790,8 +789,9 @@ class FlashSystemDriver(san.SanDriver):
                      'via the path %(path)s.') % {'path': host_device})
             raise exception.VolumeBackendAPIException(data=msg)
 
-        LOG.debug('leave: _scan_device')
         return device
+
+        LOG.debug('leave: _scan_device')
 
     @utils.synchronized('flashsystem-unmap', external=True)
     def _unmap_vdisk_from_host(self, vdisk_name, connector):
@@ -820,7 +820,7 @@ class FlashSystemDriver(san.SanDriver):
                             {'vdisk_name': vdisk_name})
                 return
             else:
-                host_name = list(mapping_data.keys())[0]
+                host_name = mapping_data.keys()[0]
         else:
             if host_name not in mapping_data:
                 LOG.error(_LE('_unmap_vdisk_from_host: No mapping of volume '

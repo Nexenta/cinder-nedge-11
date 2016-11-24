@@ -15,7 +15,6 @@
 
 
 import datetime
-import mock
 import time
 
 from oslo_config import cfg
@@ -63,62 +62,6 @@ class VolumeTypeTestCase(test.TestCase):
             self.assertEqual(v, new['extra_specs'][k],
                              'one of fields does not match')
 
-        new_all_vtypes = volume_types.get_all_types(self.ctxt)
-        self.assertEqual(len(prev_all_vtypes) + 1,
-                         len(new_all_vtypes),
-                         'drive type was not created')
-
-        # update
-        new_type_name = self.vol_type1_name + '_updated'
-        new_type_desc = self.vol_type1_description + '_updated'
-        type_ref_updated = volume_types.update(self.ctxt,
-                                               type_ref.id,
-                                               new_type_name,
-                                               new_type_desc)
-        self.assertEqual(new_type_name, type_ref_updated['name'])
-        self.assertEqual(new_type_desc, type_ref_updated['description'])
-
-        # destroy
-        volume_types.destroy(self.ctxt, type_ref['id'])
-        new_all_vtypes = volume_types.get_all_types(self.ctxt)
-        self.assertEqual(prev_all_vtypes,
-                         new_all_vtypes,
-                         'drive type was not deleted')
-
-    @mock.patch('cinder.quota.VolumeTypeQuotaEngine.'
-                'update_quota_resource')
-    def test_update_volume_type_name(self, mock_update_quota):
-        type_ref = volume_types.create(self.ctxt,
-                                       self.vol_type1_name,
-                                       self.vol_type1_specs,
-                                       description=self.vol_type1_description)
-        new_type_name = self.vol_type1_name + '_updated'
-        volume_types.update(self.ctxt,
-                            type_ref.id,
-                            new_type_name,
-                            None)
-        mock_update_quota.assert_called_once_with(self.ctxt,
-                                                  self.vol_type1_name,
-                                                  new_type_name)
-        volume_types.destroy(self.ctxt, type_ref.id)
-
-    def test_volume_type_create_then_destroy_with_non_admin(self):
-        """Ensure volume types can be created and deleted by non-admin user.
-
-        If a non-admn user is authorized at API, volume type operations
-        should be permitted.
-        """
-        prev_all_vtypes = volume_types.get_all_types(self.ctxt)
-        self.ctxt = context.RequestContext('fake', 'fake', is_admin=False)
-
-        # create
-        type_ref = volume_types.create(self.ctxt,
-                                       self.vol_type1_name,
-                                       self.vol_type1_specs,
-                                       description=self.vol_type1_description)
-        new = volume_types.get_volume_type_by_name(self.ctxt,
-                                                   self.vol_type1_name)
-        self.assertEqual(self.vol_type1_description, new['description'])
         new_all_vtypes = volume_types.get_all_types(self.ctxt)
         self.assertEqual(len(prev_all_vtypes) + 1,
                          len(new_all_vtypes),
@@ -235,7 +178,7 @@ class VolumeTypeTestCase(test.TestCase):
 
         vol_types = volume_types.get_all_types(
             self.ctxt,
-            filters={'extra_specs': {"key1": "val1"}})
+            search_opts={'extra_specs': {"key1": "val1"}})
         self.assertEqual(1, len(vol_types))
         self.assertIn("type1", vol_types.keys())
         self.assertEqual({"key1": "val1", "key2": "val2"},
@@ -243,14 +186,14 @@ class VolumeTypeTestCase(test.TestCase):
 
         vol_types = volume_types.get_all_types(
             self.ctxt,
-            filters={'extra_specs': {"key2": "val2"}})
+            search_opts={'extra_specs': {"key2": "val2"}})
         self.assertEqual(2, len(vol_types))
         self.assertIn("type1", vol_types.keys())
         self.assertIn("type2", vol_types.keys())
 
         vol_types = volume_types.get_all_types(
             self.ctxt,
-            filters={'extra_specs': {"key3": "val3"}})
+            search_opts={'extra_specs': {"key3": "val3"}})
         self.assertEqual(1, len(vol_types))
         self.assertIn("type2", vol_types.keys())
 
@@ -267,7 +210,8 @@ class VolumeTypeTestCase(test.TestCase):
 
         vol_types = volume_types.get_all_types(
             self.ctxt,
-            filters={'extra_specs': {"key1": "val1", "key3": "val3"}})
+            search_opts={'extra_specs': {"key1": "val1",
+                                         "key3": "val3"}})
         self.assertEqual(2, len(vol_types))
         self.assertIn("type1", vol_types.keys())
         self.assertIn("type3", vol_types.keys())
@@ -306,29 +250,6 @@ class VolumeTypeTestCase(test.TestCase):
 
         volume_types.remove_volume_type_access(self.ctxt, vtype_id, project_id)
         vtype_access = db.volume_type_access_get_all(self.ctxt, vtype_id)
-        self.assertNotIn(project_id, vtype_access)
-
-    def test_add_access_with_non_admin(self):
-        self.ctxt = context.RequestContext('fake', 'fake', is_admin=False)
-        project_id = '456'
-        vtype = volume_types.create(self.ctxt, 'type1', is_public=False)
-        vtype_id = vtype.get('id')
-
-        volume_types.add_volume_type_access(self.ctxt, vtype_id, project_id)
-        vtype_access = db.volume_type_access_get_all(self.ctxt.elevated(),
-                                                     vtype_id)
-        self.assertIn(project_id, [a.project_id for a in vtype_access])
-
-    def test_remove_access_with_non_admin(self):
-        self.ctxt = context.RequestContext('fake', 'fake', is_admin=False)
-        project_id = '456'
-        vtype = volume_types.create(self.ctxt, 'type1', projects=['456'],
-                                    is_public=False)
-        vtype_id = vtype.get('id')
-
-        volume_types.remove_volume_type_access(self.ctxt, vtype_id, project_id)
-        vtype_access = db.volume_type_access_get_all(self.ctxt.elevated(),
-                                                     vtype_id)
         self.assertNotIn(project_id, vtype_access)
 
     def test_get_volume_type_qos_specs(self):

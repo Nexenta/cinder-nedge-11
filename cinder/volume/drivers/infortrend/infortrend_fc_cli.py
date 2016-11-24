@@ -158,6 +158,7 @@ class InfortrendCLIFCDriver(driver.FibreChannelDriver):
                     'target_discovered': True,
                     'target_lun': 1,
                     'target_wwn': '1234567890123',
+                    'access_mode': 'rw'
                     'initiator_target_map': {
                         '1122334455667788': ['1234567890123']
                     }
@@ -172,6 +173,7 @@ class InfortrendCLIFCDriver(driver.FibreChannelDriver):
                     'target_discovered': True,
                     'target_lun': 1,
                     'target_wwn': ['1234567890123', '0987654321321'],
+                    'access_mode': 'rw'
                     'initiator_target_map': {
                         '1122334455667788': ['1234567890123',
                                              '0987654321321']
@@ -269,7 +271,7 @@ class InfortrendCLIFCDriver(driver.FibreChannelDriver):
         :param new_volume: The migration volume object that was created on
                            this backend as part of the migration process
         :param original_volume_status: The status of the original volume
-        :returns: model_update to update DB with any needed changes
+        :return model_update to update DB with any needed changes
         """
         LOG.debug(
             'update migrated volume original volume id= %(volume_id)s '

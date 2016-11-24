@@ -23,3 +23,13 @@ def upgrade(migrate_engine):
     attached_host = Column('attached_host', String(255))
     volumes.create_column(attached_host)
     volumes.update().values(attached_host=None).execute()
+
+
+def downgrade(migrate_engine):
+    """Remove attach host column from volumes."""
+    meta = MetaData()
+    meta.bind = migrate_engine
+
+    volumes = Table('volumes', meta, autoload=True)
+    attached_host = Column('attached_host', String(255))
+    volumes.drop_column(attached_host)

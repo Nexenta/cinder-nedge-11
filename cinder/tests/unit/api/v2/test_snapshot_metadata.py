@@ -16,6 +16,7 @@
 import uuid
 
 import mock
+from oslo_config import cfg
 from oslo_serialization import jsonutils
 import webob
 
@@ -29,7 +30,9 @@ from cinder import test
 from cinder.tests.unit.api import fakes
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
-from cinder import volume
+
+
+CONF = cfg.CONF
 
 
 def return_create_snapshot_metadata(context, snapshot_id, metadata, delete):
@@ -84,19 +87,17 @@ def return_snapshot(context, snapshot_id):
             'metadata': {}}
 
 
-def stub_get(context, *args, **kwargs):
-    vol = {'id': 'fake-vol-id',
-           'size': 100,
-           'name': 'fake',
-           'host': 'fake-host',
-           'status': 'available',
-           'encryption_key_id': None,
-           'volume_type_id': None,
-           'migration_status': None,
-           'availability_zone': 'fake-zone',
-           'attach_status': 'detached',
-           'metadata': {}}
-    return fake_volume.fake_volume_obj(context, **vol)
+def return_volume(context, volume_id):
+    return {'id': 'fake-vol-id',
+            'size': 100,
+            'name': 'fake',
+            'host': 'fake-host',
+            'status': 'available',
+            'encryption_key_id': None,
+            'volume_type_id': None,
+            'migration_status': None,
+            'metadata': {},
+            'project_id': context.project_id}
 
 
 def return_snapshot_nonexistent(context, snapshot_id):
@@ -112,7 +113,7 @@ class SnapshotMetaDataTest(test.TestCase):
     def setUp(self):
         super(SnapshotMetaDataTest, self).setUp()
         self.volume_api = cinder.volume.api.API()
-        self.stubs.Set(volume.api.API, 'get', stub_get)
+        self.stubs.Set(cinder.db, 'volume_get', return_volume)
         self.stubs.Set(cinder.db, 'snapshot_get', return_snapshot)
 
         self.stubs.Set(self.volume_api, 'update_snapshot_metadata',
@@ -289,7 +290,7 @@ class SnapshotMetaDataTest(test.TestCase):
         body = {"metadata": {"key1": "value1",
                              "key2": "value2",
                              "key3": "value3"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         res_dict = self.controller.create(req, self.req_id, body)
         self.assertEqual(body, res_dict)
 
@@ -323,7 +324,7 @@ class SnapshotMetaDataTest(test.TestCase):
                                  "key2": "value2",
                                  "key3": "value3",
                                  "KEY4": "value4"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         res_dict = self.controller.create(req, self.req_id, body)
         self.assertEqual(expected, res_dict)
 
@@ -343,7 +344,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {"": "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -355,7 +356,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {("a" * 260): "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -372,7 +373,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req.method = 'POST'
         req.content_type = "application/json"
         body = {"metadata": {"key9": "value9"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.create, req, self.req_id, body)
 
@@ -399,7 +400,7 @@ class SnapshotMetaDataTest(test.TestCase):
                 'KEY20': 'value20',
             },
         }
-        req.body = jsonutils.dump_as_bytes(expected)
+        req.body = jsonutils.dumps(expected)
         res_dict = self.controller.update_all(req, self.req_id, expected)
 
         self.assertEqual(expected, res_dict)
@@ -439,7 +440,7 @@ class SnapshotMetaDataTest(test.TestCase):
                 'KEY20': 'value20',
             },
         }
-        req.body = jsonutils.dump_as_bytes(expected)
+        req.body = jsonutils.dumps(expected)
         res_dict = self.controller.update_all(req, self.req_id, body)
 
         self.assertEqual(expected, res_dict)
@@ -462,7 +463,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = "application/json"
         expected = {'metadata': {}}
-        req.body = jsonutils.dump_as_bytes(expected)
+        req.body = jsonutils.dumps(expected)
         res_dict = self.controller.update_all(req, self.req_id, expected)
 
         self.assertEqual(expected, res_dict)
@@ -474,7 +475,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = "application/json"
         expected = {'meta': {}}
-        req.body = jsonutils.dump_as_bytes(expected)
+        req.body = jsonutils.dumps(expected)
 
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.update_all, req, self.req_id,
@@ -487,7 +488,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = "application/json"
         expected = {'metadata': ['asdf']}
-        req.body = jsonutils.dump_as_bytes(expected)
+        req.body = jsonutils.dumps(expected)
 
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.update_all, req, self.req_id,
@@ -499,7 +500,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req.method = 'PUT'
         req.content_type = "application/json"
         body = {'metadata': {'key10': 'value10'}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
 
         self.assertRaises(webob.exc.HTTPNotFound,
                           self.controller.update_all, req, '100', body)
@@ -520,7 +521,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {"key1": "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
         res_dict = self.controller.update(req, self.req_id, 'key1', body)
         expected = {'meta': {'key1': 'value1'}}
@@ -533,7 +534,7 @@ class SnapshotMetaDataTest(test.TestCase):
             '/v2/fake/snapshots/asdf/metadata/key1')
         req.method = 'PUT'
         body = {"meta": {"key1": "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPNotFound,
@@ -551,14 +552,13 @@ class SnapshotMetaDataTest(test.TestCase):
                           self.controller.update, req, self.req_id, 'key1',
                           None)
 
-    @mock.patch('cinder.db.sqlalchemy.api._snapshot_get')
-    @mock.patch('cinder.db.snapshot_metadata_update', autospec=True)
-    def test_update_item_empty_key(self, metadata_update, snapshot_get):
-        snapshot_get.return_value = stub_get
+    def test_update_item_empty_key(self):
+        self.stubs.Set(cinder.db, 'snapshot_metadata_update',
+                       return_create_snapshot_metadata)
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {"": "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -579,7 +579,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {("a" * 260): "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPRequestEntityTooLarge,
@@ -601,7 +601,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {"key1": ("a" * 260)}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPRequestEntityTooLarge,
@@ -614,7 +614,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/key1')
         req.method = 'PUT'
         body = {"meta": {"key1": "value1", "key2": "value2"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -627,7 +627,7 @@ class SnapshotMetaDataTest(test.TestCase):
         req = fakes.HTTPRequest.blank(self.url + '/bad')
         req.method = 'PUT'
         body = {"meta": {"key1": "value1"}}
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         req.headers["content-type"] = "application/json"
 
         self.assertRaises(webob.exc.HTTPBadRequest,
@@ -652,18 +652,18 @@ class SnapshotMetaDataTest(test.TestCase):
 
         # test for long key
         data = {"metadata": {"a" * 260: "value1"}}
-        req.body = jsonutils.dump_as_bytes(data)
+        req.body = jsonutils.dumps(data)
         self.assertRaises(webob.exc.HTTPRequestEntityTooLarge,
                           self.controller.create, req, self.req_id, data)
 
         # test for long value
         data = {"metadata": {"key": "v" * 260}}
-        req.body = jsonutils.dump_as_bytes(data)
+        req.body = jsonutils.dumps(data)
         self.assertRaises(webob.exc.HTTPRequestEntityTooLarge,
                           self.controller.create, req, self.req_id, data)
 
         # test for empty key.
         data = {"metadata": {"": "value1"}}
-        req.body = jsonutils.dump_as_bytes(data)
+        req.body = jsonutils.dumps(data)
         self.assertRaises(webob.exc.HTTPBadRequest,
                           self.controller.create, req, self.req_id, data)

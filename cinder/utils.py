@@ -22,9 +22,9 @@ import abc
 import contextlib
 import datetime
 import functools
+import hashlib
 import inspect
 import logging as py_logging
-import math
 import os
 import pyclbr
 import random
@@ -40,6 +40,7 @@ from xml.dom import minidom
 from xml.parsers import expat
 from xml import sax
 from xml.sax import expatreader
+from xml.sax import saxutils
 
 from os_brick.initiator import connector
 from oslo_concurrency import lockutils
@@ -47,13 +48,11 @@ from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import encodeutils
-from oslo_utils import excutils
 from oslo_utils import importutils
 from oslo_utils import strutils
 from oslo_utils import timeutils
 import retrying
 import six
-import webob.exc
 
 from cinder import exception
 from cinder.i18n import _, _LE, _LW
@@ -108,6 +107,14 @@ def as_int(obj, quiet=True):
     if not quiet:
         raise TypeError(_("Can not translate %s to integer.") % (obj))
     return obj
+
+
+def is_int_like(val):
+    """Check if a value looks like an int."""
+    try:
+        return str(int(val)) == str(val)
+    except Exception:
+        return False
 
 
 def check_exclusive_options(**kwargs):
@@ -181,6 +188,13 @@ def check_ssh_injection(cmd_list):
             if not result == -1:
                 if result == 0 or not arg[result - 1] == '\\':
                     raise exception.SSHInjectionThreat(command=cmd_list)
+
+
+def create_channel(client, width, height):
+    """Invoke an interactive shell session on server."""
+    channel = client.invoke_shell()
+    channel.resize_pty(width, height)
+    return channel
 
 
 def cinderdir():
@@ -275,6 +289,24 @@ def last_completed_audit_period(unit=None):
     return (begin, end)
 
 
+def list_of_dicts_to_dict(seq, key):
+    """Convert list of dicts to a indexted dict.
+
+    Takes a list of dicts, and converts it a nested dict
+    indexed by <key>
+
+    :param seq: list of dicts
+    :parm key: key in dicts to index by
+
+    example:
+      lst = [{'id': 1, ...}, {'id': 2, ...}...]
+      key = 'id'
+      returns {1:{'id': 1, ...}, 2:{'id':2, ...}
+
+    """
+    return {d[key]: dict(d, index=d[key]) for (i, d) in enumerate(seq)}
+
+
 class ProtectedExpatParser(expatreader.ExpatParser):
     """An expat parser which disables DTD's and entities by default."""
 
@@ -310,21 +342,74 @@ def safe_minidom_parse_string(xml_string):
 
     """
     try:
-        if six.PY3 and isinstance(xml_string, bytes):
-            # On Python 3, minidom.parseString() requires Unicode when
-            # the parser parameter is used.
-            #
-            # Bet that XML used in Cinder is always encoded to UTF-8.
-            xml_string = xml_string.decode('utf-8')
         return minidom.parseString(xml_string, parser=ProtectedExpatParser())
     except sax.SAXParseException:
         raise expat.ExpatError()
 
 
+def xhtml_escape(value):
+    """Escapes a string so it is valid within XML or XHTML."""
+    return saxutils.escape(value, {'"': '&quot;', "'": '&apos;'})
+
+
+def get_from_path(items, path):
+    """Returns a list of items matching the specified path.
+
+    Takes an XPath-like expression e.g. prop1/prop2/prop3, and for each item
+    in items, looks up items[prop1][prop2][prop3]. Like XPath, if any of the
+    intermediate results are lists it will treat each list item individually.
+    A 'None' in items or any child expressions will be ignored, this function
+    will not throw because of None (anywhere) in items.  The returned list
+    will contain no None values.
+
+    """
+    if path is None:
+        raise exception.Error('Invalid mini_xpath')
+
+    (first_token, sep, remainder) = path.partition('/')
+
+    if first_token == '':
+        raise exception.Error('Invalid mini_xpath')
+
+    results = []
+
+    if items is None:
+        return results
+
+    if not isinstance(items, list):
+        # Wrap single objects in a list
+        items = [items]
+
+    for item in items:
+        if item is None:
+            continue
+        get_method = getattr(item, 'get', None)
+        if get_method is None:
+            continue
+        child = get_method(first_token)
+        if child is None:
+            continue
+        if isinstance(child, list):
+            # Flatten intermediate lists
+            for x in child:
+                results.append(x)
+        else:
+            results.append(child)
+
+    if not sep:
+        # No more tokens
+        return results
+    else:
+        return get_from_path(results, remainder)
+
+
 def is_valid_boolstr(val):
     """Check if the provided string is a valid bool string or not."""
     val = str(val).lower()
-    return val in ('true', 'false', 'yes', 'no', 'y', 'n', '1', '0')
+    return (val == 'true' or val == 'false' or
+            val == 'yes' or val == 'no' or
+            val == 'y' or val == 'n' or
+            val == '1' or val == '0')
 
 
 def is_none_string(val):
@@ -369,14 +454,12 @@ def monkey_patch():
             # set the decorator for the class methods
             if isinstance(module_data[key], pyclbr.Class):
                 clz = importutils.import_class("%s.%s" % (module, key))
-                # On Python 3, unbound methods are regular functions
-                predicate = inspect.isfunction if six.PY3 else inspect.ismethod
-                for method, func in inspect.getmembers(clz, predicate):
+                for method, func in inspect.getmembers(clz, inspect.ismethod):
                     setattr(
                         clz, method,
                         decorator("%s.%s.%s" % (module, key, method), func))
             # set the decorator for the function
-            elif isinstance(module_data[key], pyclbr.Function):
+            if isinstance(module_data[key], pyclbr.Function):
                 func = importutils.import_class("%s.%s" % (module, key))
                 setattr(sys.modules[module], key,
                         decorator("%s.%s" % (module, key), func))
@@ -414,6 +497,13 @@ def sanitize_hostname(hostname):
     return hostname
 
 
+def hash_file(file_like_object):
+    """Generate a hash for the contents of a file."""
+    checksum = hashlib.sha1()
+    any(map(checksum.update, iter(lambda: file_like_object.read(32768), b'')))
+    return checksum.hexdigest()
+
+
 def service_is_up(service):
     """Check whether a service is up based on last heartbeat."""
     last_heartbeat = service['updated_at'] or service['created_at']
@@ -430,49 +520,6 @@ def read_file_as_root(file_path):
         return out
     except processutils.ProcessExecutionError:
         raise exception.FileNotFound(file_path=file_path)
-
-
-def robust_file_write(directory, filename, data):
-    """Robust file write.
-
-    Use "write to temp file and rename" model for writing the
-    persistence file.
-
-    :param directory: Target directory to create a file.
-    :param filename: File name to store specified data.
-    :param data: String data.
-    """
-    tempname = None
-    dirfd = None
-    try:
-        dirfd = os.open(directory, os.O_DIRECTORY)
-
-        # write data to temporary file
-        with tempfile.NamedTemporaryFile(prefix=filename,
-                                         dir=directory,
-                                         delete=False) as tf:
-            tempname = tf.name
-            tf.write(data.encode('utf-8'))
-            tf.flush()
-            os.fdatasync(tf.fileno())
-            tf.close()
-
-            # Fsync the directory to ensure the fact of the existence of
-            # the temp file hits the disk.
-            os.fsync(dirfd)
-            # If destination file exists, it will be replaced silently.
-            os.rename(tempname, os.path.join(directory, filename))
-            # Fsync the directory to ensure the rename hits the disk.
-            os.fsync(dirfd)
-    except OSError:
-        with excutils.save_and_reraise_exception():
-            LOG.error(_LE("Failed to write persistence file: %(path)s."),
-                      {'path': os.path.join(directory, filename)})
-            if os.path.isfile(tempname):
-                os.unlink(tempname)
-    finally:
-        if dirfd:
-            os.close(dirfd)
 
 
 @contextlib.contextmanager
@@ -753,34 +800,6 @@ def is_blk_device(dev):
         return False
 
 
-class ComparableMixin(object):
-    def _compare(self, other, method):
-        try:
-            return method(self._cmpkey(), other._cmpkey())
-        except (AttributeError, TypeError):
-            # _cmpkey not implemented, or return different type,
-            # so I can't compare with "other".
-            return NotImplemented
-
-    def __lt__(self, other):
-        return self._compare(other, lambda s, o: s < o)
-
-    def __le__(self, other):
-        return self._compare(other, lambda s, o: s <= o)
-
-    def __eq__(self, other):
-        return self._compare(other, lambda s, o: s == o)
-
-    def __ge__(self, other):
-        return self._compare(other, lambda s, o: s >= o)
-
-    def __gt__(self, other):
-        return self._compare(other, lambda s, o: s > o)
-
-    def __ne__(self, other):
-        return self._compare(other, lambda s, o: s != o)
-
-
 def retry(exceptions, interval=1, retries=3, backoff_rate=2,
           wait_random=False):
 
@@ -836,7 +855,7 @@ def convert_str(text):
     * convert to Unicode on Python 3: decode bytes from UTF-8
     """
     if six.PY2:
-        return encodeutils.to_utf8(text)
+        return encodeutils.safe_encode(text)
     else:
         if isinstance(text, bytes):
             return text.decode('utf-8')
@@ -874,7 +893,7 @@ def trace(f):
     Using this decorator on a function will cause its execution to be logged at
     `DEBUG` level with arguments, return values, and exceptions.
 
-    :returns: a function decorator
+    :returns a function decorator
     """
 
     func_name = f.__name__
@@ -975,95 +994,10 @@ def resolve_hostname(hostname):
     In this case, the same IP address will be returned.
 
     :param hostname:  Host name to resolve.
-    :returns:         IP Address for Host name.
+    :return:          IP Address for Host name.
     """
     result = socket.getaddrinfo(hostname, None)[0]
     (family, socktype, proto, canonname, sockaddr) = result
     LOG.debug('Asked to resolve hostname %(host)s and got IP %(ip)s.',
               {'host': hostname, 'ip': sockaddr[0]})
     return sockaddr[0]
-
-
-def build_or_str(elements, str_format=None):
-    """Builds a string of elements joined by 'or'.
-
-    Will join strings with the 'or' word and if a str_format is provided it
-    will be used to format the resulted joined string.
-    If there are no elements an empty string will be returned.
-
-    :param elements: Elements we want to join.
-    :type elements: String or iterable of strings.
-    :param str_format: String to use to format the response.
-    :type str_format: String.
-    """
-    if not elements:
-        return ''
-
-    if not isinstance(elements, six.string_types):
-        elements = _(' or ').join(elements)
-
-    if str_format:
-        return str_format % elements
-    return elements
-
-
-def calculate_virtual_free_capacity(total_capacity,
-                                    free_capacity,
-                                    provisioned_capacity,
-                                    thin_provisioning_support,
-                                    max_over_subscription_ratio,
-                                    reserved_percentage):
-    """Calculate the virtual free capacity based on thin provisioning support.
-
-    :param total_capacity:  total_capacity_gb of a host_state or pool.
-    :param free_capacity:   free_capacity_gb of a host_state or pool.
-    :param provisioned_capacity:    provisioned_capacity_gb of a host_state
-                                    or pool.
-    :param thin_provisioning_support:   thin_provisioning_support of
-                                        a host_state or a pool.
-    :param max_over_subscription_ratio: max_over_subscription_ratio of
-                                        a host_state or a pool
-    :param reserved_percentage: reserved_percentage of a host_state or
-                                a pool.
-    :returns: the calculated virtual free capacity.
-    """
-
-    total = float(total_capacity)
-    reserved = float(reserved_percentage) / 100
-
-    if thin_provisioning_support:
-        free = (total * max_over_subscription_ratio
-                - provisioned_capacity
-                - math.floor(total * reserved))
-    else:
-        # Calculate how much free space is left after taking into
-        # account the reserved space.
-        free = free_capacity - math.floor(total * reserved)
-    return free
-
-
-def validate_integer(value, name, min_value=None, max_value=None):
-    """Make sure that value is a valid integer, potentially within range.
-
-    :param value: the value of the integer
-    :param name: the name of the integer
-    :param min_length: the min_length of the integer
-    :param max_length: the max_length of the integer
-    :returns: integer
-    """
-    try:
-        value = int(value)
-    except (TypeError, ValueError, UnicodeEncodeError):
-        raise webob.exc.HTTPBadRequest(explanation=(
-            _('%s must be an integer.') % name))
-
-    if min_value is not None and value < min_value:
-        raise webob.exc.HTTPBadRequest(
-            explanation=(_('%(value_name)s must be >= %(min_value)d') %
-                         {'value_name': name, 'min_value': min_value}))
-    if max_value is not None and value > max_value:
-        raise webob.exc.HTTPBadRequest(
-            explanation=(_('%(value_name)s must be <= %(max_value)d') %
-                         {'value_name': name, 'max_value': max_value}))
-
-    return value

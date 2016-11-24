@@ -14,10 +14,6 @@
 #    under the License.
 
 import collections
-import eventlet
-import six
-import sys
-import time
 
 import mock
 from oslo_utils import importutils
@@ -37,97 +33,41 @@ class mock_dbus(object):
         return defaults
 
 
-class mock_dm_consts(object):
+class mock_dm_utils(object):
+
+    @staticmethod
+    def dict_to_aux_props(x):
+        return x
+
+
+class mock_dm_const(object):
 
     TQ_GET_PATH = "get_path"
-
-    NODE_ADDR = "addr"
-
-    CSTATE_PREFIX = "cstate:"
-    TSTATE_PREFIX = "tstate:"
-
-    FLAG_UPD_POOL = "upd_pool"
-    FLAG_UPDATE = "update"
-    FLAG_DRBDCTRL = "drbdctrl"
-    FLAG_STORAGE = "storage"
-    FLAG_EXTERNAL = "external"
-    FLAG_DEPLOY = "deploy"
-
-    FLAG_DISKLESS = "diskless"
-    FLAG_CONNECT = "connect"
-    FLAG_UPD_CON = "upd_con"
-    FLAG_RECONNECT = "reconnect"
-    FLAG_OVERWRITE = "overwrite"
-    FLAG_DISCARD = "discard"
-    FLAG_UPD_CONFIG = "upd_config"
-    FLAG_STANDBY = "standby"
-    FLAG_QIGNORE = "qignore"
-    FLAG_REMOVE = "remove"
-
-    AUX_PROP_PREFIX = "aux:"
-
-    BOOL_TRUE = "true"
-    BOOL_FALSE = "false"
-
-    VOL_ID = "vol_id"
 
 
 class mock_dm_exc(object):
 
     DM_SUCCESS = 0
-    DM_INFO = 1
-    DM_EEXIST = 101
-    DM_ENOENT = 102
+    DM_EEXIST = 1
+    DM_ENOENT = 2
     DM_ERROR = 1000
 
-
-class mock_dm_utils(object):
-
-    @staticmethod
-    def _aux_prop_name(key):
-        if six.text_type(key).startswith(mock_dm_consts.AUX_PROP_PREFIX):
-            return key[len(mock_dm_consts.AUX_PROP_PREFIX):]
-        else:
-            return None
-
-    @staticmethod
-    def aux_props_to_dict(props):
-        aux_props = {}
-        for (key, val) in props.items():
-            aux_key = mock_dm_utils._aux_prop_name(key)
-            if aux_key is not None:
-                aux_props[aux_key] = val
-        return aux_props
-
-    @staticmethod
-    def dict_to_aux_props(props):
-        aux_props = {}
-        for (key, val) in props.items():
-            aux_key = mock_dm_consts.AUX_PROP_PREFIX + six.text_type(key)
-            aux_props[aux_key] = six.text_type(val)
-        return aux_props
+    pass
 
 
-def public_keys(c):
-    return [n for n in c.__dict__.keys() if not n.startswith("_")]
-
-
+import sys
 sys.modules['dbus'] = mock_dbus
 sys.modules['drbdmanage'] = collections.namedtuple(
     'module', ['consts', 'exceptions', 'utils'])
 sys.modules['drbdmanage.utils'] = collections.namedtuple(
-    'module', public_keys(mock_dm_utils))
+    'module', ['dict_to_aux_props'])
 sys.modules['drbdmanage.consts'] = collections.namedtuple(
-    'module', public_keys(mock_dm_consts))
+    'module', [])
 sys.modules['drbdmanage.exceptions'] = collections.namedtuple(
-    'module', public_keys(mock_dm_exc))
+    'module', ['DM_EEXIST'])
 
-import cinder.volume.drivers.drbdmanagedrv as drv
 
-drv.dbus = mock_dbus
-drv.dm_const = mock_dm_consts
-drv.dm_utils = mock_dm_utils
-drv.dm_exc = mock_dm_exc
+from cinder.volume.drivers import drbdmanagedrv
 
 
 def create_configuration(object):
@@ -144,37 +84,9 @@ class DrbdManageFakeDriver(object):
     def __init__(self):
         self.calls = []
 
-    def run_external_plugin(self, name, props):
-        self.calls.append(["run_external_plugin", name, props])
-
-        call_okay = [[mock_dm_exc.DM_SUCCESS, "ACK", []]]
-        not_done_yet = (call_okay,
-                        dict(timeout=mock_dm_consts.BOOL_FALSE,
-                             result=mock_dm_consts.BOOL_FALSE))
-        success = (call_okay,
-                   dict(timeout=mock_dm_consts.BOOL_FALSE,
-                        result=mock_dm_consts.BOOL_TRUE))
-        got_timeout = (call_okay,
-                       dict(timeout=mock_dm_consts.BOOL_TRUE,
-                            result=mock_dm_consts.BOOL_FALSE))
-
-        if "retry" not in props:
-            # Fake success, to not slow tests down
-            return success
-
-        if props["retry"] > 1:
-            props["retry"] -= 1
-            return not_done_yet
-
-        if props.get("run-into-timeout"):
-            return got_timeout
-
-        return success
-
     def list_resources(self, res, serial, prop, req):
         self.calls.append(["list_resources", res, prop, req])
-        if ('aux:cinder-id' in prop and
-                prop['aux:cinder-id'].startswith("deadbeef")):
+        if 'cinder-id' in prop and prop['cinder-id'].startswith("deadbeef"):
             return ([[mock_dm_exc.DM_ENOENT, "none", []]],
                     [])
         else:
@@ -187,10 +99,7 @@ class DrbdManageFakeDriver(object):
 
     def create_volume(self, res, size, props):
         self.calls.append(["create_volume", res, size, props])
-        return [[mock_dm_exc.DM_SUCCESS, "ack", []],
-                [mock_dm_exc.DM_INFO,
-                 "create_volume",
-                 [(mock_dm_consts.VOL_ID, '2')]]]
+        return [[mock_dm_exc.DM_SUCCESS, "ack", []]]
 
     def auto_deploy(self, res, red, delta, site_clients):
         self.calls.append(["auto_deploy", res, red, delta, site_clients])
@@ -198,8 +107,7 @@ class DrbdManageFakeDriver(object):
 
     def list_volumes(self, res, ser, prop, req):
         self.calls.append(["list_volumes", res, ser, prop, req])
-        if ('aux:cinder-id' in prop and
-                prop['aux:cinder-id'].startswith("deadbeef")):
+        if 'cinder-id' in prop and prop['cinder-id'].startswith("deadbeef"):
             return ([[mock_dm_exc.DM_SUCCESS, "none", []]],
                     [])
         else:
@@ -213,14 +121,13 @@ class DrbdManageFakeDriver(object):
 
     def text_query(self, cmd):
         self.calls.append(["text_query", cmd])
-        if cmd[0] == mock_dm_consts.TQ_GET_PATH:
+        if cmd[0] == mock_dm_const.TQ_GET_PATH:
             return ([(mock_dm_exc.DM_SUCCESS, "ack", [])], ['/dev/drbd0'])
         return ([(mock_dm_exc.DM_ERROR, 'unknown command', [])], [])
 
     def list_assignments(self, nodes, res, ser, prop, req):
         self.calls.append(["list_assignments", nodes, res, ser, prop, req])
-        if ('aux:cinder-id' in prop and
-                prop['aux:cinder-id'].startswith("deadbeef")):
+        if 'cinder-id' in prop and prop['cinder-id'].startswith("deadbeef"):
             return ([[mock_dm_exc.DM_SUCCESS, "none", []]],
                     [])
         else:
@@ -234,8 +141,7 @@ class DrbdManageFakeDriver(object):
 
     def list_snapshots(self, res, sn, serial, prop, req):
         self.calls.append(["list_snapshots", res, sn, serial, prop, req])
-        if ('aux:cinder-id' in prop and
-                prop['aux:cinder-id'].startswith("deadbeef")):
+        if 'cinder-id' in prop and prop['cinder-id'].startswith("deadbeef"):
             return ([[mock_dm_exc.DM_SUCCESS, "none", []]],
                     [])
         else:
@@ -255,32 +161,8 @@ class DrbdManageFakeDriver(object):
         self.calls.append(["restore_snapshot", res, snap, new, rprop, vprops])
         return [[mock_dm_exc.DM_SUCCESS, "ack", []]]
 
-    def assign(self, host, resource, props):
-        self.calls.append(["assign", host, resource, props])
-        return [[mock_dm_exc.DM_SUCCESS, "ack", []]]
 
-    def create_node(self, name, prop):
-        self.calls.append(["create_node", name, prop])
-        if name.startswith('EXIST'):
-            return [(mock_dm_exc.DM_EEXIST, "none", [])]
-        else:
-            return [(mock_dm_exc.DM_SUCCESS, "ack", [])]
-
-
-class DrbdManageIscsiTestCase(test.TestCase):
-
-    def _fake_safe_get(self, key):
-        if key == 'iscsi_helper':
-            return 'fake'
-
-        if key.endswith('_policy'):
-            return '{}'
-
-        return None
-
-    @staticmethod
-    def _fake_sleep(amount):
-        pass
+class DrbdManageTestCase(test.TestCase):
 
     def setUp(self):
         self.ctxt = context.get_admin_context()
@@ -289,23 +171,25 @@ class DrbdManageIscsiTestCase(test.TestCase):
         self.configuration.san_is_local = True
         self.configuration.reserved_percentage = 1
 
-        super(DrbdManageIscsiTestCase, self).setUp()
+        super(DrbdManageTestCase, self).setUp()
 
         self.stubs.Set(importutils, 'import_object',
                        self.fake_import_object)
-        self.stubs.Set(drv.DrbdManageBaseDriver,
+        self.stubs.Set(drbdmanagedrv.DrbdManageDriver,
                        'call_or_reconnect',
                        self.fake_issue_dbus_call)
-        self.stubs.Set(drv.DrbdManageBaseDriver,
+        self.stubs.Set(drbdmanagedrv.DrbdManageDriver,
                        'dbus_connect',
                        self.fake_issue_dbus_connect)
-        self.stubs.Set(drv.DrbdManageBaseDriver,
-                       '_wait_for_node_assignment',
-                       self.fake_wait_node_assignment)
 
-        self.configuration.safe_get = self._fake_safe_get
+        sys.modules['cinder.volume.drivers.drbdmanagedrv'].dm_const \
+            = mock_dm_const
+        sys.modules['cinder.volume.drivers.drbdmanagedrv'].dm_utils \
+            = mock_dm_utils
+        sys.modules['cinder.volume.drivers.drbdmanagedrv'].dm_exc \
+            = mock_dm_exc
 
-        self.stubs.Set(eventlet, 'sleep', self._fake_sleep)
+        self.configuration.safe_get = lambda x: 'fake'
 
     # Infrastructure
     def fake_import_object(self, what, configuration, db, executor):
@@ -314,17 +198,11 @@ class DrbdManageIscsiTestCase(test.TestCase):
     def fake_issue_dbus_call(self, fn, *args):
         return fn(*args)
 
-    def fake_wait_node_assignment(self, *args, **kwargs):
-        return True
-
     def fake_issue_dbus_connect(self):
         self.odm = DrbdManageFakeDriver()
 
     def call_or_reconnect(self, method, *params):
         return method(*params)
-
-    def fake_is_external_node(self, name):
-        return False
 
     # Tests per se
 
@@ -336,8 +214,7 @@ class DrbdManageIscsiTestCase(test.TestCase):
                    'volume_type_id': 'drbdmanage',
                    'created_at': timeutils.utcnow()}
 
-        dmd = drv.DrbdManageIscsiDriver(configuration=self.configuration)
-        dmd.drbdmanage_devs_on_controller = False
+        dmd = drbdmanagedrv.DrbdManageDriver(configuration=self.configuration)
         dmd.odm = DrbdManageFakeDriver()
         dmd.create_volume(testvol)
         self.assertEqual("create_resource", dmd.odm.calls[0][0])
@@ -345,28 +222,6 @@ class DrbdManageIscsiTestCase(test.TestCase):
         self.assertEqual("create_volume", dmd.odm.calls[2][0])
         self.assertEqual(1048576, dmd.odm.calls[2][2])
         self.assertEqual("auto_deploy", dmd.odm.calls[3][0])
-        self.assertEqual(5, len(dmd.odm.calls))
-
-    def test_create_volume_controller_all_vols(self):
-        testvol = {'project_id': 'testprjid',
-                   'name': 'testvol',
-                   'size': 1,
-                   'id': 'deadbeef-8068-11e4-98c0-5254008ea111',
-                   'volume_type_id': 'drbdmanage',
-                   'created_at': timeutils.utcnow()}
-
-        dmd = drv.DrbdManageIscsiDriver(configuration=self.configuration)
-        dmd.drbdmanage_devs_on_controller = True
-        dmd.odm = DrbdManageFakeDriver()
-        dmd.create_volume(testvol)
-        self.assertEqual(6, len(dmd.odm.calls))
-        self.assertEqual("create_resource", dmd.odm.calls[0][0])
-        self.assertEqual("list_volumes", dmd.odm.calls[1][0])
-        self.assertEqual("create_volume", dmd.odm.calls[2][0])
-        self.assertEqual(1048576, dmd.odm.calls[2][2])
-        self.assertEqual("auto_deploy", dmd.odm.calls[3][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[4][0])
-        self.assertEqual("assign", dmd.odm.calls[5][0])
 
     def test_delete_volume(self):
         testvol = {'project_id': 'testprjid',
@@ -376,11 +231,11 @@ class DrbdManageIscsiTestCase(test.TestCase):
                    'volume_type_id': 'drbdmanage',
                    'created_at': timeutils.utcnow()}
 
-        dmd = drv.DrbdManageIscsiDriver(configuration=self.configuration)
+        dmd = drbdmanagedrv.DrbdManageDriver(configuration=self.configuration)
         dmd.odm = DrbdManageFakeDriver()
         dmd.delete_volume(testvol)
         self.assertEqual("list_volumes", dmd.odm.calls[0][0])
-        self.assertEqual(testvol['id'], dmd.odm.calls[0][3]["aux:cinder-id"])
+        self.assertEqual(testvol['id'], dmd.odm.calls[0][3]["cinder-id"])
         self.assertEqual("remove_volume", dmd.odm.calls[1][0])
 
     def test_local_path(self):
@@ -391,7 +246,7 @@ class DrbdManageIscsiTestCase(test.TestCase):
                    'volume_type_id': 'drbdmanage',
                    'created_at': timeutils.utcnow()}
 
-        dmd = drv.DrbdManageIscsiDriver(configuration=self.configuration)
+        dmd = drbdmanagedrv.DrbdManageDriver(configuration=self.configuration)
         dmd.odm = DrbdManageFakeDriver()
         data = dmd.local_path(testvol)
         self.assertTrue(data.startswith("/dev/drbd"))
@@ -400,7 +255,7 @@ class DrbdManageIscsiTestCase(test.TestCase):
         testsnap = {'id': 'ca253fd0-8068-11e4-98c0-5254008ea111',
                     'volume_id': 'ba253fd0-8068-11e4-98c0-5254008ea111'}
 
-        dmd = drv.DrbdManageIscsiDriver(configuration=self.configuration)
+        dmd = drbdmanagedrv.DrbdManageDriver(configuration=self.configuration)
         dmd.odm = DrbdManageFakeDriver()
         dmd.create_snapshot(testsnap)
         self.assertEqual("list_volumes", dmd.odm.calls[0][0])
@@ -411,7 +266,7 @@ class DrbdManageIscsiTestCase(test.TestCase):
     def test_delete_snapshot(self):
         testsnap = {'id': 'ca253fd0-8068-11e4-98c0-5254008ea111'}
 
-        dmd = drv.DrbdManageIscsiDriver(configuration=self.configuration)
+        dmd = drbdmanagedrv.DrbdManageDriver(configuration=self.configuration)
         dmd.odm = DrbdManageFakeDriver()
         dmd.delete_snapshot(testsnap)
         self.assertEqual("list_snapshots", dmd.odm.calls[0][0])
@@ -425,16 +280,16 @@ class DrbdManageIscsiTestCase(test.TestCase):
                    'volume_type_id': 'drbdmanage',
                    'created_at': timeutils.utcnow()}
 
-        dmd = drv.DrbdManageIscsiDriver(configuration=self.configuration)
+        dmd = drbdmanagedrv.DrbdManageDriver(configuration=self.configuration)
         dmd.odm = DrbdManageFakeDriver()
         dmd.extend_volume(testvol, 5)
         self.assertEqual("list_volumes", dmd.odm.calls[0][0])
-        self.assertEqual(testvol['id'], dmd.odm.calls[0][3]["aux:cinder-id"])
+        self.assertEqual(testvol['id'], dmd.odm.calls[0][3]["cinder-id"])
         self.assertEqual("resize_volume", dmd.odm.calls[1][0])
         self.assertEqual("res", dmd.odm.calls[1][1])
         self.assertEqual(2, dmd.odm.calls[1][2])
         self.assertEqual(-1, dmd.odm.calls[1][3])
-        self.assertEqual(5242880, dmd.odm.calls[1][4])
+        self.assertEqual(5242880, dmd.odm.calls[1][4]['size'])
 
     def test_create_cloned_volume(self):
         srcvol = {'project_id': 'testprjid',
@@ -446,136 +301,14 @@ class DrbdManageIscsiTestCase(test.TestCase):
 
         newvol = {'id': 'ca253fd0-8068-11e4-98c0-5254008ea111'}
 
-        dmd = drv.DrbdManageIscsiDriver(configuration=self.configuration)
+        dmd = drbdmanagedrv.DrbdManageDriver(configuration=self.configuration)
         dmd.odm = DrbdManageFakeDriver()
         dmd.create_cloned_volume(newvol, srcvol)
         self.assertEqual("list_volumes", dmd.odm.calls[0][0])
         self.assertEqual("list_assignments", dmd.odm.calls[1][0])
         self.assertEqual("create_snapshot", dmd.odm.calls[2][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[3][0])
-        self.assertEqual("list_snapshots", dmd.odm.calls[4][0])
-        self.assertEqual("restore_snapshot", dmd.odm.calls[5][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[6][0])
-        self.assertEqual("list_snapshots", dmd.odm.calls[7][0])
-        self.assertEqual("remove_snapshot", dmd.odm.calls[8][0])
-
-    def test_create_cloned_volume_larger_size(self):
-        srcvol = {'project_id': 'testprjid',
-                  'name': 'testvol',
-                  'size': 1,
-                  'id': 'ba253fd0-8068-11e4-98c0-5254008ea111',
-                  'volume_type_id': 'drbdmanage',
-                  'created_at': timeutils.utcnow()}
-
-        newvol = {'size': 5,
-                  'id': 'ca253fd0-8068-11e4-98c0-5254008ea111'}
-
-        dmd = drv.DrbdManageIscsiDriver(configuration=self.configuration)
-        dmd.odm = DrbdManageFakeDriver()
-        dmd.create_cloned_volume(newvol, srcvol)
-        self.assertEqual("list_volumes", dmd.odm.calls[0][0])
-        self.assertEqual("list_assignments", dmd.odm.calls[1][0])
-        self.assertEqual("create_snapshot", dmd.odm.calls[2][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[3][0])
-        self.assertEqual("list_snapshots", dmd.odm.calls[4][0])
-        self.assertEqual("restore_snapshot", dmd.odm.calls[5][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[6][0])
-        self.assertEqual("list_snapshots", dmd.odm.calls[7][0])
-        self.assertEqual("remove_snapshot", dmd.odm.calls[8][0])
-
-        # resize image checks
-        self.assertEqual("list_volumes", dmd.odm.calls[9][0])
-        self.assertEqual(newvol['id'], dmd.odm.calls[9][3]["aux:cinder-id"])
-        self.assertEqual("resize_volume", dmd.odm.calls[10][0])
-        self.assertEqual("res", dmd.odm.calls[10][1])
-        self.assertEqual(2, dmd.odm.calls[10][2])
-        self.assertEqual(-1, dmd.odm.calls[10][3])
-        self.assertEqual(5242880, dmd.odm.calls[10][4])
-
-
-class DrbdManageDrbdTestCase(DrbdManageIscsiTestCase):
-
-    def setUp(self):
-        super(DrbdManageDrbdTestCase, self).setUp()
-
-        self.stubs.Set(drv.DrbdManageDrbdDriver,
-                       '_is_external_node',
-                       self.fake_is_external_node)
-
-    def test_drbd_create_export(self):
-        volume = {'project_id': 'testprjid',
-                  'name': 'testvol',
-                  'size': 1,
-                  'id': 'ba253fd0-8068-11e4-98c0-5254008ea111',
-                  'volume_type_id': 'drbdmanage',
-                  'created_at': timeutils.utcnow()}
-
-        connector = {'host': 'node99',
-                     'ip': '127.0.0.99'}
-
-        dmd = drv.DrbdManageDrbdDriver(configuration=self.configuration)
-        dmd.odm = DrbdManageFakeDriver()
-
-        x = dmd.create_export({}, volume, connector)
-        self.assertEqual("list_volumes", dmd.odm.calls[0][0])
-        self.assertEqual("create_node", dmd.odm.calls[1][0])
-        self.assertEqual("assign", dmd.odm.calls[2][0])
-        # local_path
-        self.assertEqual("list_volumes", dmd.odm.calls[3][0])
-        self.assertEqual("text_query", dmd.odm.calls[4][0])
-        self.assertEqual("local", x["driver_volume_type"])
-
-
-class DrbdManageCommonTestCase(DrbdManageIscsiTestCase):
-    def setUp(self):
-        super(DrbdManageCommonTestCase, self).setUp()
-
-    def test_drbd_policy_loop_timeout(self):
-        dmd = drv.DrbdManageDrbdDriver(configuration=self.configuration)
-        dmd.odm = DrbdManageFakeDriver()
-
-        res = dmd._call_policy_plugin('void', {},
-                                      {'retry': 4,
-                                       'run-into-timeout': True})
-        self.assertFalse(res)
-        self.assertEqual(4, len(dmd.odm.calls))
-        self.assertEqual("run_external_plugin", dmd.odm.calls[0][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[1][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[2][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[3][0])
-
-    def test_drbd_policy_loop_success(self):
-        dmd = drv.DrbdManageDrbdDriver(configuration=self.configuration)
-        dmd.odm = DrbdManageFakeDriver()
-
-        res = dmd._call_policy_plugin('void',
-                                      {'base': 'data',
-                                       'retry': 4},
-                                      {'override': 'xyz'})
-        self.assertTrue(res)
-        self.assertEqual(4, len(dmd.odm.calls))
-        self.assertEqual("run_external_plugin", dmd.odm.calls[0][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[1][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[2][0])
-        self.assertEqual("run_external_plugin", dmd.odm.calls[3][0])
-
-    def test_drbd_policy_loop_simple(self):
-        dmd = drv.DrbdManageDrbdDriver(configuration=self.configuration)
-        dmd.odm = DrbdManageFakeDriver()
-
-        res = dmd._call_policy_plugin('policy-name',
-                                      {'base': "value",
-                                       'over': "ignore"},
-                                      {'over': "ride",
-                                       'starttime': 0})
-        self.assertTrue(res)
-
-        self.assertEqual(1, len(dmd.odm.calls))
-        self.assertEqual("run_external_plugin", dmd.odm.calls[0][0])
-        self.assertEqual('policy-name', dmd.odm.calls[0][1])
-
-        incoming = dmd.odm.calls[0][2]
-        self.assertGreaterEqual(4, abs(float(incoming['starttime']) -
-                                       time.time()))
-        self.assertEqual('value', incoming['base'])
-        self.assertEqual('ride', incoming['over'])
+        self.assertEqual("list_snapshots", dmd.odm.calls[3][0])
+        self.assertEqual("restore_snapshot", dmd.odm.calls[4][0])
+        self.assertEqual("list_snapshots", dmd.odm.calls[5][0])
+        self.assertEqual("remove_snapshot", dmd.odm.calls[6][0])
+        self.assertEqual("remove_snapshot", dmd.odm.calls[6][0])

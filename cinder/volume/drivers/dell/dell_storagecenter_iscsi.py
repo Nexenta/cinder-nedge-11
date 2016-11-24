@@ -43,17 +43,15 @@ class DellStorageCenterISCSIDriver(dell_storagecenter_common.DellCommonDriver,
                 Added API 2.2 support.
         2.3.0 - Added Legacy Port Mode Support
         2.3.1 - Updated error handling.
-        2.4.0 - Added Replication V2 support.
-        2.4.1 - Updated Replication support to V2.1.
-        2.5.0 - ManageableSnapshotsVD implemented.
     """
 
-    VERSION = '2.5.0'
+    VERSION = '2.3.1'
 
     def __init__(self, *args, **kwargs):
         super(DellStorageCenterISCSIDriver, self).__init__(*args, **kwargs)
         self.backend_name = (
-            self.configuration.safe_get('volume_backend_name') or 'Dell-iSCSI')
+            self.configuration.safe_get('volume_backend_name')
+            or 'Dell-iSCSI')
 
     def initialize_connection(self, volume, connector):
         # Initialize_connection will find or create a server identified by the
@@ -67,6 +65,7 @@ class DellStorageCenterISCSIDriver(dell_storagecenter_common.DellCommonDriver,
         #           'target_portals': all portals,
         #           'target_lun': preferred lun,
         #           'target_luns': all luns,
+        #           'access_mode': access_mode
         #         }
 
         # We use id to name the volume name as it is a
@@ -124,7 +123,6 @@ class DellStorageCenterISCSIDriver(dell_storagecenter_common.DellCommonDriver,
                                                                 port))
 
                         # Return our iscsi properties.
-                        iscsiprops['discard'] = True
                         return {'driver_volume_type': 'iscsi',
                                 'data': iscsiprops}
             # Re-raise any backend exception.

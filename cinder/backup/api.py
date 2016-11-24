@@ -19,15 +19,11 @@
 Handles all requests relating to the volume backups service.
 """
 
-from datetime import datetime
 from eventlet import greenthread
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import strutils
-from oslo_utils import versionutils
-from pytz import timezone
-import random
 
 from cinder.backup import rpcapi as backup_rpcapi
 from cinder import context
@@ -35,21 +31,13 @@ from cinder.db import base
 from cinder import exception
 from cinder.i18n import _, _LI, _LW
 from cinder import objects
-from cinder.objects import fields
 import cinder.policy
 from cinder import quota
 from cinder import utils
 import cinder.volume
 from cinder.volume import utils as volume_utils
 
-backup_api_opts = [
-    cfg.BoolOpt('backup_use_same_host',
-                default=False,
-                help='Backup services use same backend.')
-]
-
 CONF = cfg.CONF
-CONF.register_opts(backup_api_opts)
 LOG = logging.getLogger(__name__)
 QUOTAS = quota.QUOTAS
 
@@ -89,11 +77,9 @@ class API(base.Base):
         :param force: indicate force delete or not
         :raises: InvalidBackup
         :raises: BackupDriverException
-        :raises: ServiceNotFound
         """
         check_policy(context, 'delete')
-        if not force and backup.status not in [fields.BackupStatus.AVAILABLE,
-                                               fields.BackupStatus.ERROR]:
+        if not force and backup.status not in ['available', 'error']:
             msg = _('Backup status must be available or error')
             raise exception.InvalidBackup(reason=msg)
         if force and not self._check_support_to_force_delete(context,
@@ -108,9 +94,7 @@ class API(base.Base):
             msg = _('Incremental backups exist for this backup.')
             raise exception.InvalidBackup(reason=msg)
 
-        backup.status = fields.BackupStatus.DELETING
-        backup.host = self._get_available_backup_service_host(
-            backup.host, backup.availability_zone)
+        backup.status = 'deleting'
         backup.save()
         self.backup_rpcapi.delete_backup(context, backup)
 
@@ -137,88 +121,18 @@ class API(base.Base):
 
         return backups
 
-    def _is_scalable_only(self):
-        """True if we're running in deployment where all c-bak are scalable.
-
-        We need this method to decide if we can assume that all of our c-bak
-        services are decoupled from c-vol.
-
-        FIXME(dulek): This shouldn't be needed in Newton.
-        """
-        cap = self.backup_rpcapi.client.version_cap
-        if cap:
-            cap = versionutils.convert_version_to_tuple(cap)
-            return cap >= (1, 3)  # Mitaka is marked by c-bak 1.3+.
-        else:
-            # NOTE(dulek): No version cap means we're running in an environment
-            # without c-bak services. Letting it pass as Mitaka, request will
-            # just fail anyway so it doesn't really matter.
-            return True
-
-    def _az_matched(self, service, availability_zone):
-        return ((not availability_zone) or
-                service.availability_zone == availability_zone)
-
-    def _is_backup_service_enabled(self, availability_zone, host):
+    def _is_backup_service_enabled(self, volume, volume_host):
         """Check if there is a backup service available."""
         topic = CONF.backup_topic
         ctxt = context.get_admin_context()
         services = objects.ServiceList.get_all_by_topic(
             ctxt, topic, disabled=False)
         for srv in services:
-            if (self._az_matched(srv, availability_zone) and
-                    srv.host == host and
+            if (srv.availability_zone == volume['availability_zone'] and
+                    srv.host == volume_host and
                     utils.service_is_up(srv)):
                 return True
         return False
-
-    def _get_any_available_backup_service(self, availability_zone):
-        """Get an available backup service host.
-
-        Get an available backup service host in the specified
-        availability zone.
-        """
-        services = [srv for srv in self._list_backup_services()]
-        random.shuffle(services)
-        # Get the next running service with matching availability zone.
-        idx = 0
-        while idx < len(services):
-            srv = services[idx]
-            if(self._az_matched(srv, availability_zone) and
-               utils.service_is_up(srv)):
-                return srv.host
-            idx = idx + 1
-        return None
-
-    def _get_available_backup_service_host(self, host, az, volume_host=None):
-        """Return an appropriate backup service host."""
-
-        # FIXME(dulek): We need to keep compatibility with Liberty, where c-bak
-        # were coupled with c-vol. If we're running in mixed Liberty-Mitaka
-        # environment we will be scheduling backup jobs the old way.
-        #
-        # This snippet should go away in Newton. Note that volume_host
-        # parameter will also be unnecessary then.
-        if not self._is_scalable_only():
-            if volume_host:
-                volume_host = volume_utils.extract_host(volume_host,
-                                                        level='host')
-            if volume_host and self._is_backup_service_enabled(az,
-                                                               volume_host):
-                return volume_host
-            elif host and self._is_backup_service_enabled(az, host):
-                return host
-            else:
-                raise exception.ServiceNotFound(service_id='cinder-backup')
-
-        backup_host = None
-        if (not host or not CONF.backup_use_same_host):
-            backup_host = self._get_any_available_backup_service(az)
-        elif self._is_backup_service_enabled(az, host):
-            backup_host = host
-        if not backup_host:
-            raise exception.ServiceNotFound(service_id='cinder-backup')
-        return backup_host
 
     def _list_backup_services(self):
         """List all enabled backup services.
@@ -227,50 +141,30 @@ class API(base.Base):
         """
         topic = CONF.backup_topic
         ctxt = context.get_admin_context()
-        services = objects.ServiceList.get_all_by_topic(
-            ctxt, topic, disabled=False)
-        return services
-
-    def _list_backup_hosts(self):
-        services = self._list_backup_services()
-        return [srv.host for srv in services
-                if not srv.disabled and utils.service_is_up(srv)]
+        services = objects.ServiceList.get_all_by_topic(ctxt, topic)
+        return [srv.host for srv in services if not srv.disabled]
 
     def create(self, context, name, description, volume_id,
                container, incremental=False, availability_zone=None,
-               force=False, snapshot_id=None):
+               force=False):
         """Make the RPC call to create a volume backup."""
         check_policy(context, 'create')
         volume = self.volume_api.get(context, volume_id)
-        snapshot = None
-        if snapshot_id:
-            snapshot = self.volume_api.get_snapshot(context, snapshot_id)
 
-            if volume_id != snapshot.volume_id:
-                msg = (_('Volume %(vol1)s does not match with '
-                         'snapshot.volume_id %(vol2)s.')
-                       % {'vol1': volume_id,
-                          'vol2': snapshot.volume_id})
-                raise exception.InvalidVolume(reason=msg)
         if volume['status'] not in ["available", "in-use"]:
             msg = (_('Volume to be backed up must be available '
                      'or in-use, but the current status is "%s".')
                    % volume['status'])
             raise exception.InvalidVolume(reason=msg)
-        elif volume['status'] in ["in-use"] and not snapshot_id and not force:
+        elif volume['status'] in ["in-use"] and not force:
             msg = _('Backing up an in-use volume must use '
                     'the force flag.')
             raise exception.InvalidVolume(reason=msg)
-        elif snapshot_id and snapshot['status'] not in ["available"]:
-            msg = (_('Snapshot to be backed up must be available, '
-                     'but the current status is "%s".')
-                   % snapshot['status'])
-            raise exception.InvalidSnapshot(reason=msg)
 
         previous_status = volume['status']
-        host = self._get_available_backup_service_host(
-            None, volume.availability_zone,
-            volume_utils.extract_host(volume.host, 'host'))
+        volume_host = volume_utils.extract_host(volume['host'], 'host')
+        if not self._is_backup_service_enabled(volume, volume_host):
+            raise exception.ServiceNotFound(service_id='cinder-backup')
 
         # Reserve a quota before setting volume status and backup status
         try:
@@ -309,36 +203,15 @@ class API(base.Base):
                     raise exception.BackupLimitExceeded(
                         allowed=quotas[over])
 
-        # Find the latest backup and use it as the parent backup to do an
-        # incremental backup.
+        # Find the latest backup of the volume and use it as the parent
+        # backup to do an incremental backup.
         latest_backup = None
         if incremental:
             backups = objects.BackupList.get_all_by_volume(context.elevated(),
                                                            volume_id)
             if backups.objects:
-                # NOTE(xyang): The 'data_timestamp' field records the time
-                # when the data on the volume was first saved. If it is
-                # a backup from volume, 'data_timestamp' will be the same
-                # as 'created_at' for a backup. If it is a backup from a
-                # snapshot, 'data_timestamp' will be the same as
-                # 'created_at' for a snapshot.
-                # If not backing up from snapshot, the backup with the latest
-                # 'data_timestamp' will be the parent; If backing up from
-                # snapshot, the backup with the latest 'data_timestamp' will
-                # be chosen only if 'data_timestamp' is earlier than the
-                # 'created_at' timestamp of the snapshot; Otherwise, the
-                # backup will not be chosen as the parent.
-                # For example, a volume has a backup taken at 8:00, then
-                # a snapshot taken at 8:10, and then a backup at 8:20.
-                # When taking an incremental backup of the snapshot, the
-                # parent should be the backup at 8:00, not 8:20, and the
-                # 'data_timestamp' of this new backup will be 8:10.
-                latest_backup = max(
-                    backups.objects,
-                    key=lambda x: x['data_timestamp']
-                    if (not snapshot or (snapshot and x['data_timestamp']
-                                         < snapshot['created_at']))
-                    else datetime(1, 1, 1, 1, 1, 1, tzinfo=timezone('UTC')))
+                latest_backup = max(backups.objects,
+                                    key=lambda x: x['created_at'])
             else:
                 msg = _('No backups available to do an incremental backup.')
                 raise exception.InvalidBackup(reason=msg)
@@ -346,21 +219,14 @@ class API(base.Base):
         parent_id = None
         if latest_backup:
             parent_id = latest_backup.id
-            if latest_backup['status'] != fields.BackupStatus.AVAILABLE:
+            if latest_backup['status'] != "available":
                 msg = _('The parent backup must be available for '
                         'incremental backup.')
                 raise exception.InvalidBackup(reason=msg)
 
-        data_timestamp = None
-        if snapshot_id:
-            snapshot = objects.Snapshot.get_by_id(context, snapshot_id)
-            data_timestamp = snapshot.created_at
-
         self.db.volume_update(context, volume_id,
                               {'status': 'backing-up',
                                'previous_status': previous_status})
-
-        backup = None
         try:
             kwargs = {
                 'user_id': context.user_id,
@@ -368,25 +234,19 @@ class API(base.Base):
                 'display_name': name,
                 'display_description': description,
                 'volume_id': volume_id,
-                'status': fields.BackupStatus.CREATING,
+                'status': 'creating',
                 'container': container,
                 'parent_id': parent_id,
                 'size': volume['size'],
-                'host': host,
-                'snapshot_id': snapshot_id,
-                'data_timestamp': data_timestamp,
+                'host': volume_host,
             }
             backup = objects.Backup(context=context, **kwargs)
             backup.create()
-            if not snapshot_id:
-                backup.data_timestamp = backup.created_at
-                backup.save()
             QUOTAS.commit(context, reservations)
         except Exception:
             with excutils.save_and_reraise_exception():
                 try:
-                    if backup and 'id' in backup:
-                        backup.destroy()
+                    backup.destroy()
                 finally:
                     QUOTAS.rollback(context, reservations)
 
@@ -401,7 +261,7 @@ class API(base.Base):
         """Make the RPC call to restore a volume backup."""
         check_policy(context, 'restore')
         backup = self.get(context, backup_id)
-        if backup['status'] != fields.BackupStatus.AVAILABLE:
+        if backup['status'] != 'available':
             msg = _('Backup status must be available')
             raise exception.InvalidBackup(reason=msg)
 
@@ -452,15 +312,13 @@ class API(base.Base):
 
         # Setting the status here rather than setting at start and unrolling
         # for each error condition, it should be a very small window
-        backup.host = self._get_available_backup_service_host(
-            backup.host, backup.availability_zone, volume_host=volume.host)
-        backup.status = fields.BackupStatus.RESTORING
-        backup.restore_volume_id = volume.id
+        backup.status = 'restoring'
         backup.save()
+        volume_host = volume_utils.extract_host(volume['host'], 'host')
         self.db.volume_update(context, volume_id, {'status':
                                                    'restoring-backup'})
 
-        self.backup_rpcapi.restore_backup(context, backup.host, backup,
+        self.backup_rpcapi.restore_backup(context, volume_host, backup,
                                           volume_id)
 
         d = {'backup_id': backup_id,
@@ -480,9 +338,6 @@ class API(base.Base):
         """
         # get backup info
         backup = self.get(context, backup_id)
-        backup.host = self._get_available_backup_service_host(
-            backup.host, backup.availability_zone)
-        backup.save()
         # send to manager to do reset operation
         self.backup_rpcapi.reset_status(ctxt=context, backup=backup,
                                         status=status)
@@ -500,7 +355,7 @@ class API(base.Base):
         """
         check_policy(context, 'backup-export')
         backup = self.get(context, backup_id)
-        if backup['status'] != fields.BackupStatus.AVAILABLE:
+        if backup['status'] != 'available':
             msg = (_('Backup status must be available and not %s.') %
                    backup['status'])
             raise exception.InvalidBackup(reason=msg)
@@ -510,10 +365,6 @@ class API(base.Base):
                   {'ctx': context,
                    'host': backup['host'],
                    'id': backup['id']})
-
-        backup.host = self._get_available_backup_service_host(
-            backup.host, backup.availability_zone)
-        backup.save()
         export_data = self.backup_rpcapi.export_record(context, backup)
 
         return export_data
@@ -551,7 +402,7 @@ class API(base.Base):
             'user_id': context.user_id,
             'project_id': context.project_id,
             'volume_id': '0000-0000-0000-0000',
-            'status': fields.BackupStatus.CREATING,
+            'status': 'creating',
         }
 
         try:
@@ -564,7 +415,7 @@ class API(base.Base):
 
             # If record exists and it's not deleted we cannot proceed with the
             # import
-            if backup.status != fields.BackupStatus.DELETED:
+            if backup.status != 'deleted':
                 msg = _('Backup already exists in database.')
                 raise exception.InvalidBackup(reason=msg)
 
@@ -598,7 +449,7 @@ class API(base.Base):
         # We  send it to the first backup service host, and the backup manager
         # on that host will forward it to other hosts on the hosts list if it
         # cannot support correct service itself.
-        hosts = self._list_backup_hosts()
+        hosts = self._list_backup_services()
         if len(hosts) == 0:
             raise exception.ServiceNotFound(service_id=backup_service)
 

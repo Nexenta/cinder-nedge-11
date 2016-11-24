@@ -24,6 +24,9 @@ from cinder import objects
 from cinder.objects import base
 
 CONF = cfg.CONF
+# NOTE(thangp): OPTIONAL_FIELDS are fields that would be lazy-loaded. They are
+# typically the relationship in the sqlalchemy object.
+OPTIONAL_FIELDS = ['volume', 'metadata']
 LOG = logging.getLogger(__name__)
 
 
@@ -33,21 +36,17 @@ class Snapshot(base.CinderPersistentObject, base.CinderObject,
     # Version 1.0: Initial version
     VERSION = '1.0'
 
-    # NOTE(thangp): OPTIONAL_FIELDS are fields that would be lazy-loaded. They
-    # are typically the relationship in the sqlalchemy object.
-    OPTIONAL_FIELDS = ('volume', 'metadata', 'cgsnapshot')
-
     fields = {
         'id': fields.UUIDField(),
 
         'user_id': fields.UUIDField(nullable=True),
         'project_id': fields.UUIDField(nullable=True),
 
-        'volume_id': fields.UUIDField(nullable=True),
+        'volume_id': fields.UUIDField(),
         'cgsnapshot_id': fields.UUIDField(nullable=True),
         'status': fields.StringField(nullable=True),
         'progress': fields.StringField(nullable=True),
-        'volume_size': fields.IntegerField(nullable=True),
+        'volume_size': fields.IntegerField(),
 
         'display_name': fields.StringField(nullable=True),
         'display_description': fields.StringField(nullable=True),
@@ -61,12 +60,7 @@ class Snapshot(base.CinderPersistentObject, base.CinderObject,
         'provider_auth': fields.StringField(nullable=True),
 
         'volume': fields.ObjectField('Volume', nullable=True),
-        'cgsnapshot': fields.ObjectField('CGSnapshot', nullable=True),
     }
-
-    @classmethod
-    def _get_expected_attrs(cls, context):
-        return 'metadata',
 
     # NOTE(thangp): obj_extra_fields is used to hold properties that are not
     # usually part of the model
@@ -112,7 +106,7 @@ class Snapshot(base.CinderPersistentObject, base.CinderObject,
         if expected_attrs is None:
             expected_attrs = []
         for name, field in snapshot.fields.items():
-            if name in Snapshot.OPTIONAL_FIELDS:
+            if name in OPTIONAL_FIELDS:
                 continue
             value = db_snapshot.get(name)
             if isinstance(field, fields.IntegerField):
@@ -123,11 +117,6 @@ class Snapshot(base.CinderPersistentObject, base.CinderObject,
             volume = objects.Volume(context)
             volume._from_db_object(context, volume, db_snapshot['volume'])
             snapshot.volume = volume
-        if 'cgsnapshot' in expected_attrs:
-            cgsnapshot = objects.CGSnapshot(context)
-            cgsnapshot._from_db_object(context, cgsnapshot,
-                                       db_snapshot['cgsnapshot'])
-            snapshot.cgsnapshot = cgsnapshot
         if 'metadata' in expected_attrs:
             metadata = db_snapshot.get('snapshot_metadata')
             if metadata is None:
@@ -137,6 +126,12 @@ class Snapshot(base.CinderPersistentObject, base.CinderObject,
         snapshot._context = context
         snapshot.obj_reset_changes()
         return snapshot
+
+    @base.remotable_classmethod
+    def get_by_id(cls, context, id):
+        db_snapshot = db.snapshot_get(context, id)
+        return cls._from_db_object(context, cls(context), db_snapshot,
+                                   expected_attrs=['metadata'])
 
     @base.remotable
     def create(self):
@@ -148,9 +143,6 @@ class Snapshot(base.CinderPersistentObject, base.CinderObject,
         if 'volume' in updates:
             raise exception.ObjectActionError(action='create',
                                               reason=_('volume assigned'))
-        if 'cgsnapshot' in updates:
-            raise exception.ObjectActionError(action='create',
-                                              reason=_('cgsnapshot assigned'))
 
         db_snapshot = db.snapshot_create(self._context, updates)
         self._from_db_object(self._context, self, db_snapshot)
@@ -162,9 +154,6 @@ class Snapshot(base.CinderPersistentObject, base.CinderObject,
             if 'volume' in updates:
                 raise exception.ObjectActionError(action='save',
                                                   reason=_('volume changed'))
-            if 'cgsnapshot' in updates:
-                raise exception.ObjectActionError(
-                    action='save', reason=_('cgsnapshot changed'))
 
             if 'metadata' in updates:
                 # Metadata items that are not specified in the
@@ -183,7 +172,7 @@ class Snapshot(base.CinderPersistentObject, base.CinderObject,
         db.snapshot_destroy(self._context, self.id)
 
     def obj_load_attr(self, attrname):
-        if attrname not in self.OPTIONAL_FIELDS:
+        if attrname not in OPTIONAL_FIELDS:
             raise exception.ObjectActionError(
                 action='obj_load_attr',
                 reason=_('attribute %s not lazy-loadable') % attrname)
@@ -194,10 +183,6 @@ class Snapshot(base.CinderPersistentObject, base.CinderObject,
         if attrname == 'volume':
             self.volume = objects.Volume.get_by_id(self._context,
                                                    self.volume_id)
-
-        if attrname == 'cgsnapshot':
-            self.cgsnapshot = objects.CGSnapshot.get_by_id(self._context,
-                                                           self.cgsnapshot_id)
 
         self.obj_reset_changes(fields=[attrname])
 
@@ -225,22 +210,23 @@ class SnapshotList(base.ObjectListBase, base.CinderObject):
     fields = {
         'objects': fields.ListOfObjectsField('Snapshot'),
     }
+    child_versions = {
+        '1.0': '1.0'
+    }
 
     @base.remotable_classmethod
     def get_all(cls, context, search_opts, marker=None, limit=None,
                 sort_keys=None, sort_dirs=None, offset=None):
         snapshots = db.snapshot_get_all(context, search_opts, marker, limit,
                                         sort_keys, sort_dirs, offset)
-        expected_attrs = Snapshot._get_expected_attrs(context)
-        return base.obj_make_list(context, cls(context), objects.Snapshot,
-                                  snapshots, expected_attrs=expected_attrs)
+        return base.obj_make_list(context, cls(), objects.Snapshot,
+                                  snapshots, expected_attrs=['metadata'])
 
     @base.remotable_classmethod
     def get_by_host(cls, context, host, filters=None):
         snapshots = db.snapshot_get_by_host(context, host, filters)
-        expected_attrs = Snapshot._get_expected_attrs(context)
         return base.obj_make_list(context, cls(context), objects.Snapshot,
-                                  snapshots, expected_attrs=expected_attrs)
+                                  snapshots, expected_attrs=['metadata'])
 
     @base.remotable_classmethod
     def get_all_by_project(cls, context, project_id, search_opts, marker=None,
@@ -249,27 +235,23 @@ class SnapshotList(base.ObjectListBase, base.CinderObject):
         snapshots = db.snapshot_get_all_by_project(
             context, project_id, search_opts, marker, limit, sort_keys,
             sort_dirs, offset)
-        expected_attrs = Snapshot._get_expected_attrs(context)
         return base.obj_make_list(context, cls(context), objects.Snapshot,
-                                  snapshots, expected_attrs=expected_attrs)
+                                  snapshots, expected_attrs=['metadata'])
 
     @base.remotable_classmethod
     def get_all_for_volume(cls, context, volume_id):
         snapshots = db.snapshot_get_all_for_volume(context, volume_id)
-        expected_attrs = Snapshot._get_expected_attrs(context)
         return base.obj_make_list(context, cls(context), objects.Snapshot,
-                                  snapshots, expected_attrs=expected_attrs)
+                                  snapshots, expected_attrs=['metadata'])
 
     @base.remotable_classmethod
     def get_active_by_window(cls, context, begin, end):
         snapshots = db.snapshot_get_active_by_window(context, begin, end)
-        expected_attrs = Snapshot._get_expected_attrs(context)
         return base.obj_make_list(context, cls(context), objects.Snapshot,
-                                  snapshots, expected_attrs=expected_attrs)
+                                  snapshots, expected_attrs=['metadata'])
 
     @base.remotable_classmethod
     def get_all_for_cgsnapshot(cls, context, cgsnapshot_id):
         snapshots = db.snapshot_get_all_for_cgsnapshot(context, cgsnapshot_id)
-        expected_attrs = Snapshot._get_expected_attrs(context)
         return base.obj_make_list(context, cls(context), objects.Snapshot,
-                                  snapshots, expected_attrs=expected_attrs)
+                                  snapshots, expected_attrs=['metadata'])

@@ -21,7 +21,6 @@ inline callbacks.
 
 """
 
-import copy
 import logging
 import os
 import shutil
@@ -44,15 +43,20 @@ from cinder.common import config  # noqa Need to register global_opts
 from cinder.db import migration
 from cinder.db.sqlalchemy import api as sqla_api
 from cinder import i18n
-from cinder.objects import base as objects_base
+from cinder import objects
 from cinder import rpc
 from cinder import service
 from cinder.tests import fixtures as cinder_fixtures
 from cinder.tests.unit import conf_fixture
 from cinder.tests.unit import fake_notifier
 
+test_opts = [
+    cfg.StrOpt('sqlite_clean_db',
+               default='clean.sqlite',
+               help='File name of clean sqlite db'), ]
 
 CONF = cfg.CONF
+CONF.register_opts(test_opts)
 
 LOG = log.getLogger(__name__)
 
@@ -124,6 +128,9 @@ class TestCase(testtools.TestCase):
                        side_effect=self._get_joined_notifier)
         p.start()
 
+        # Import cinder objects for test cases
+        objects.register_all()
+
         # Unit tests do not need to use lazy gettext
         i18n.enable_lazy(False)
 
@@ -160,14 +167,6 @@ class TestCase(testtools.TestCase):
         self.useFixture(self.messaging_conf)
         rpc.init(CONF)
 
-        # NOTE(geguileo): This is required because _determine_obj_version_cap
-        # and _determine_rpc_version_cap functions in cinder.rpc.RPCAPI cache
-        # versions in LAST_RPC_VERSIONS and LAST_OBJ_VERSIONS so we may have
-        # weird interactions between tests if we don't clear them before each
-        # test.
-        rpc.LAST_OBJ_VERSIONS = {}
-        rpc.LAST_RPC_VERSIONS = {}
-
         conf_fixture.set_defaults(CONF)
         CONF([], default_config_files=[])
 
@@ -184,16 +183,8 @@ class TestCase(testtools.TestCase):
             _DB_CACHE = Database(sqla_api, migration,
                                  sql_connection=CONF.database.connection,
                                  sqlite_db=CONF.database.sqlite_db,
-                                 sqlite_clean_db='clean.sqlite')
+                                 sqlite_clean_db=CONF.sqlite_clean_db)
         self.useFixture(_DB_CACHE)
-
-        # NOTE(danms): Make sure to reset us back to non-remote objects
-        # for each test to avoid interactions. Also, backup the object
-        # registry.
-        objects_base.CinderObject.indirection_api = None
-        self._base_test_obj_backup = copy.copy(
-            objects_base.CinderObjectRegistry._registry._obj_classes)
-        self.addCleanup(self._restore_obj_registry)
 
         # emulate some of the mox stuff, we can't use the metaclass
         # because it screws with our generators
@@ -227,16 +218,6 @@ class TestCase(testtools.TestCase):
                              group='oslo_policy')
 
         self._disable_osprofiler()
-
-        # NOTE(geguileo): This is required because common get_by_id method in
-        # cinder.db.sqlalchemy.api caches get methods and if we use a mocked
-        # get method in one test it would carry on to the next test.  So we
-        # clear out the cache.
-        sqla_api._GET_METHODS = {}
-
-    def _restore_obj_registry(self):
-        objects_base.CinderObjectRegistry._registry._obj_classes = \
-            self._base_test_obj_backup
 
     def _disable_osprofiler(self):
         """Disable osprofiler.

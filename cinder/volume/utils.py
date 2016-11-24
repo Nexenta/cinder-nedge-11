@@ -108,7 +108,6 @@ def _usage_from_backup(backup_ref, **kw):
                       fail_reason=backup_ref['fail_reason'],
                       parent_id=backup_ref['parent_id'],
                       num_dependent_backups=num_dependent_backups,
-                      snapshot_id=backup_ref['snapshot_id'],
                       )
 
     usage_info.update(kw)
@@ -240,15 +239,15 @@ def notify_about_consistencygroup_usage(context, group, event_suffix,
         usage_info)
 
 
-def _usage_from_cgsnapshot(cgsnapshot, **kw):
+def _usage_from_cgsnapshot(cgsnapshot_ref, **kw):
     usage_info = dict(
-        tenant_id=cgsnapshot.project_id,
-        user_id=cgsnapshot.user_id,
-        cgsnapshot_id=cgsnapshot.id,
-        name=cgsnapshot.name,
-        consistencygroup_id=cgsnapshot.consistencygroup_id,
-        created_at=cgsnapshot.created_at.isoformat(),
-        status=cgsnapshot.status)
+        tenant_id=cgsnapshot_ref['project_id'],
+        user_id=cgsnapshot_ref['user_id'],
+        cgsnapshot_id=cgsnapshot_ref['id'],
+        name=cgsnapshot_ref['name'],
+        consistencygroup_id=cgsnapshot_ref['consistencygroup_id'],
+        created_at=cgsnapshot_ref['created_at'].isoformat(),
+        status=cgsnapshot_ref['status'])
 
     usage_info.update(kw)
     return usage_info
@@ -299,15 +298,9 @@ def check_for_odirect_support(src, dest, flag='oflag=direct'):
 
     # Check whether O_DIRECT is supported
     try:
-        # iflag=direct and if=/dev/zero combination does not work
-        # error: dd: failed to open '/dev/zero': Invalid argument
-        if (src == '/dev/zero' and flag == 'iflag=direct'):
-            return False
-        else:
-            utils.execute('dd', 'count=0', 'if=%s' % src,
-                          'of=%s' % dest,
-                          flag, run_as_root=True)
-            return True
+        utils.execute('dd', 'count=0', 'if=%s' % src, 'of=%s' % dest,
+                      flag, run_as_root=True)
+        return True
     except processutils.ProcessExecutionError:
         return False
 
@@ -384,13 +377,13 @@ def _transfer_data(src, dest, length, chunk_size):
     LOG.debug("%(chunks)s chunks of %(bytes)s bytes to be transferred.",
               {'chunks': chunks, 'bytes': chunk_size})
 
-    for chunk in range(0, chunks):
+    for chunk in xrange(0, chunks):
         before = time.time()
         data = tpool.execute(src.read, min(chunk_size, remaining_length))
 
         # If we have reached end of source, discard any extraneous bytes from
         # destination volume if trim is enabled and stop writing.
-        if data == b'':
+        if data == '':
             break
 
         tpool.execute(dest.write, data)
@@ -621,14 +614,6 @@ def extract_host(host, level='backend', default_pool_name=False):
             return DEFAULT_POOL_NAME
         else:
             return None
-
-
-def get_volume_rpc_host(host):
-    if CONF.rpc_backend and CONF.rpc_backend == "zmq":
-        # ZeroMQ RPC driver requires only the hostname.
-        # So, return just that.
-        return extract_host(host, 'host')
-    return extract_host(host)
 
 
 def append_host(host, pool):

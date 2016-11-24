@@ -20,7 +20,6 @@
 import eventlet
 eventlet.monkey_patch()
 
-import logging as python_logging
 import sys
 
 from cinder import objects
@@ -28,13 +27,12 @@ from cinder import objects
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_reports import guru_meditation_report as gmr
-from oslo_reports import opts as gmr_opts
 
 from cinder import i18n
 i18n.enable_lazy()
 
 # Need to register global_opts
-from cinder.common import config
+from cinder.common import config  # noqa
 from cinder import rpc
 from cinder import service
 from cinder import utils
@@ -46,15 +44,12 @@ CONF = cfg.CONF
 
 def main():
     objects.register_all()
-    gmr_opts.set_defaults(CONF)
     CONF(sys.argv[1:], project='cinder',
          version=version.version_string())
-    config.set_middleware_defaults()
     logging.setup(CONF, "cinder")
-    python_logging.captureWarnings(True)
     utils.monkey_patch()
 
-    gmr.TextGuruMeditation.setup_autorun(version, conf=CONF)
+    gmr.TextGuruMeditation.setup_autorun(version)
 
     rpc.init(CONF)
     launcher = service.process_launcher()

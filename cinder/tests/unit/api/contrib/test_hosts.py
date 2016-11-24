@@ -70,7 +70,7 @@ def stub_utcnow(with_timezone=False):
     return datetime.datetime(2013, 7, 3, 0, 0, 2, tzinfo=tzinfo)
 
 
-def stub_service_get_all(context, filters=None):
+def stub_service_get_all(self, req):
     return SERVICE_LIST
 
 

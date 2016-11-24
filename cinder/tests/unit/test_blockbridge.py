@@ -297,7 +297,6 @@ class BlockbridgeISCSIDriverTestCase(test.TestCase):
             volume_id=self.snapshot['volume_id'])
         create_params = dict(
             name=self.volume_name,
-            capacity=self.volume_size * units.Gi,
             src=vol_src)
         kwargs = dict(
             method='PUT',
@@ -326,7 +325,6 @@ class BlockbridgeISCSIDriverTestCase(test.TestCase):
             volume_id=self.snapshot['volume_id'])
         create_params = dict(
             name=self.volume_name,
-            capacity=self.volume_size * units.Gi,
             src=vol_src)
         kwargs = dict(
             method='PUT',
@@ -350,7 +348,6 @@ class BlockbridgeISCSIDriverTestCase(test.TestCase):
 
         create_params = dict(
             name=self.volume_name,
-            capacity=self.volume_size * units.Gi,
             src=dict(volume_id=src_vref['id']))
         kwargs = dict(
             method='PUT',
@@ -383,7 +380,6 @@ class BlockbridgeISCSIDriverTestCase(test.TestCase):
 
         create_params = dict(
             name=self.volume_name,
-            capacity=self.volume_size * units.Gi,
             src=dict(volume_id=src_vref['id']))
         kwargs = dict(
             method='PUT',

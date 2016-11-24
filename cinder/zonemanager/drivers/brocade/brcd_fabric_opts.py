@@ -1,6 +1,8 @@
 #    (c) Copyright 2014 Brocade Communications Systems Inc.
 #    All Rights Reserved.
 #
+#    Copyright 2014 OpenStack Foundation
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -19,47 +21,36 @@ from oslo_log import log as logging
 from cinder.volume import configuration
 
 brcd_zone_opts = [
-    cfg.StrOpt('fc_southbound_protocol',
-               default='HTTP',
-               choices=('SSH', 'HTTP', 'HTTPS'),
-               help='South bound connector for the fabric.'),
     cfg.StrOpt('fc_fabric_address',
                default='',
-               help='Management IP of fabric.'),
+               help='Management IP of fabric'),
     cfg.StrOpt('fc_fabric_user',
                default='',
-               help='Fabric user ID.'),
+               help='Fabric user ID'),
     cfg.StrOpt('fc_fabric_password',
                default='',
-               help='Password for user.',
+               help='Password for user',
                secret=True),
-    cfg.PortOpt('fc_fabric_port',
-                default=22,
-                help='Connecting port'),
-    cfg.StrOpt('fc_fabric_ssh_cert_path',
-               default='',
-               help='Local SSH certificate Path.'),
+    cfg.IntOpt('fc_fabric_port',
+               default=22,
+               min=1, max=65535,
+               help='Connecting port'),
     cfg.StrOpt('zoning_policy',
                default='initiator-target',
-               help='Overridden zoning policy.'),
+               help='overridden zoning policy'),
     cfg.BoolOpt('zone_activate',
                 default=True,
-                help='Overridden zoning activation state.'),
+                help='overridden zoning activation state'),
     cfg.StrOpt('zone_name_prefix',
-               default='openstack',
-               help='Overridden zone name prefix.'),
-    cfg.StrOpt('fc_virtual_fabric_id',
                default=None,
-               help='Virtual Fabric ID.'),
+               help='overridden zone name prefix'),
     cfg.StrOpt('principal_switch_wwn',
                default=None,
-               deprecated_for_removal=True,
-               help='Principal switch WWN of the fabric. This option is not '
-               'used anymore.')
+               help='Principal switch WWN of the fabric'),
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(brcd_zone_opts, group='BRCD_FABRIC_EXAMPLE')
+CONF.register_opts(brcd_zone_opts, 'BRCD_FABRIC_EXAMPLE')
 LOG = logging.getLogger(__name__)
 
 
@@ -67,7 +58,7 @@ def load_fabric_configurations(fabric_names):
     fabric_configs = {}
     for fabric_name in fabric_names:
         config = configuration.Configuration(brcd_zone_opts, fabric_name)
-        LOG.debug("Loaded FC fabric config %(fabricname)s",
-                  {'fabricname': fabric_name})
+        LOG.debug("Loaded FC fabric config %s", fabric_name)
         fabric_configs[fabric_name] = config
+
     return fabric_configs

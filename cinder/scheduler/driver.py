@@ -23,8 +23,8 @@ from oslo_config import cfg
 from oslo_utils import importutils
 from oslo_utils import timeutils
 
+from cinder import db
 from cinder.i18n import _
-from cinder import objects
 from cinder.volume import rpcapi as volume_rpcapi
 
 
@@ -34,7 +34,7 @@ scheduler_driver_opts = [
                help='The scheduler host manager class to use'),
     cfg.IntOpt('scheduler_max_attempts',
                default=3,
-               help='Maximum number of attempts to schedule a volume'),
+               help='Maximum number of attempts to schedule an volume'),
 ]
 
 CONF = cfg.CONF
@@ -46,14 +46,8 @@ def volume_update_db(context, volume_id, host):
 
     :returns: A Volume with the updated fields set properly.
     """
-    volume = objects.Volume.get_by_id(context, volume_id)
-    volume.host = host
-    volume.scheduled_at = timeutils.utcnow()
-    volume.save()
-
-    # A volume object is expected to be returned, as it is used by
-    # filter_scheduler.
-    return volume
+    values = {'host': host, 'scheduled_at': timeutils.utcnow()}
+    return db.volume_update(context, volume_id, values)
 
 
 def group_update_db(context, group, host):
@@ -72,10 +66,6 @@ class Scheduler(object):
     def __init__(self):
         self.host_manager = importutils.import_object(
             CONF.scheduler_host_manager)
-        self.volume_rpcapi = volume_rpcapi.VolumeAPI()
-
-    def reset(self):
-        """Reset volume RPC API object to load new version pins."""
         self.volume_rpcapi = volume_rpcapi.VolumeAPI()
 
     def is_ready(self):

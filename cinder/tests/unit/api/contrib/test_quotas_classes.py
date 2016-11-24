@@ -86,14 +86,14 @@ class QuotaClassSetsControllerTest(test.TestCase):
         self.controller = quota_classes.QuotaClassSetsController()
 
         self.ctxt = context.get_admin_context()
-        self.req = mock.Mock()
+        self.req = self.mox.CreateMockAnything()
         self.req.environ = {'cinder.context': self.ctxt}
         self.req.environ['cinder.context'].is_admin = True
 
     def test_show(self):
         volume_types.create(self.ctxt, 'fake_type')
         result = self.controller.show(self.req, 'foo')
-        self.assertDictMatch(make_body(), result)
+        self.assertDictMatch(result, make_body())
 
     def test_show_not_authorized(self):
         self.req.environ['cinder.context'].is_admin = False
@@ -107,10 +107,10 @@ class QuotaClassSetsControllerTest(test.TestCase):
         body = make_body(gigabytes=2000, snapshots=15,
                          volumes=5, tenant_id=None)
         result = self.controller.update(self.req, 'foo', body)
-        self.assertDictMatch(body, result)
+        self.assertDictMatch(result, body)
 
     @mock.patch('cinder.api.openstack.wsgi.Controller.validate_string_length')
-    @mock.patch('cinder.utils.validate_integer')
+    @mock.patch('cinder.api.openstack.wsgi.Controller.validate_integer')
     def test_update_limit(self, mock_validate_integer, mock_validate):
         mock_validate_integer.return_value = 5
         volume_types.create(self.ctxt, 'fake_type')
@@ -124,7 +124,7 @@ class QuotaClassSetsControllerTest(test.TestCase):
         volume_types.create(self.ctxt, 'fake_type')
         body = {'quota_class_set': {'bad': 'bad'}}
         result = self.controller.update(self.req, 'foo', body)
-        self.assertDictMatch(make_body(tenant_id=None), result)
+        self.assertDictMatch(result, make_body(tenant_id=None))
 
     def test_update_invalid_key_value(self):
         body = {'quota_class_set': {'gigabytes': "should_be_int"}}
@@ -147,18 +147,17 @@ class QuotaClassSetsControllerTest(test.TestCase):
         body = {'quota_class_set': {'gigabytes_fake_type_1': 1111,
                                     'volumes_fake_type_2': 2222}}
         result = self.controller.update(self.req, 'foo', body)
-        self.assertDictMatch(make_response_body(ctxt=self.ctxt,
-                                                quota_class='foo',
-                                                request_body=body,
-                                                tenant_id=None),
-                             result)
+        self.assertDictMatch(result, make_response_body(ctxt=self.ctxt,
+                                                        quota_class='foo',
+                                                        request_body=body,
+                                                        tenant_id=None))
 
 
 class QuotaClassesSerializerTest(test.TestCase):
 
     def setUp(self):
         super(QuotaClassesSerializerTest, self).setUp()
-        self.req = mock.Mock()
+        self.req = self.mox.CreateMockAnything()
         self.req.environ = {'cinder.context': context.get_admin_context()}
 
     def test_update_serializer(self):

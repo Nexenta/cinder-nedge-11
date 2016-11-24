@@ -12,7 +12,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-from six.moves import urllib
+import urllib
 
 from cinder import context
 from cinder import exception
@@ -34,8 +34,8 @@ class TestDeleteSnapShot(scaleio.TestScaleIODriver):
 
         self.snapshot = fake_snapshot_obj(
             ctx, **{'provider_id': 'snap_1'})
-        self.snapshot_name_2x_enc = urllib.parse.quote(
-            urllib.parse.quote(
+        self.snapshot_name_2x_enc = urllib.quote(
+            urllib.quote(
                 self.driver._id_to_base64(self.snapshot.id)
             )
         )
@@ -81,7 +81,16 @@ class TestDeleteSnapShot(scaleio.TestScaleIODriver):
         self.assertRaises(exception.VolumeBackendAPIException,
                           self.driver.delete_snapshot, self.snapshot)
 
+    def test_delete_invalid_snapshot_force_delete(self):
+        self.driver.configuration.set_override('sio_force_delete',
+                                               override=True)
+        self.set_https_response_mode(self.RESPONSE_MODE.Valid)
+        self.driver.delete_snapshot(self.snapshot)
+
     def test_delete_invalid_snapshot(self):
+        self.driver.configuration.set_override(
+            'sio_unmap_volume_before_deletion',
+            override=True)
         self.set_https_response_mode(self.RESPONSE_MODE.Valid)
         self.driver.delete_snapshot(self.snapshot)
 

@@ -15,23 +15,22 @@
 from oslo_versionedobjects import fields
 
 from cinder import objects
-from cinder.tests.unit import fake_constants as fake
 
 
 def fake_db_volume(**updates):
     db_volume = {
-        'id': fake.volume_id,
+        'id': '1',
         'size': 1,
-        'name': 'volume-%s' % fake.volume_id,
+        'name': 'volume-1',
         'availability_zone': 'fake_availability_zone',
         'status': 'available',
         'attach_status': 'detached',
         'previous_status': None,
+        'metadata': {},
+        'admin_metadata': {},
         'volume_attachment': [],
         'volume_metadata': [],
         'volume_admin_metadata': [],
-        'volume_glance_metadata': [],
-        'snapshots': [],
     }
 
     for name, field in objects.Volume.fields.items():
@@ -52,7 +51,7 @@ def fake_db_volume(**updates):
 
 def fake_db_volume_type(**updates):
     db_volume_type = {
-        'id': fake.volume_type_id,
+        'id': '1',
         'name': 'type-1',
         'description': 'A fake volume type',
         'is_public': True,
@@ -78,8 +77,8 @@ def fake_db_volume_type(**updates):
 
 def fake_db_volume_attachment(**updates):
     db_volume_attachment = {
-        'id': fake.attachment_id,
-        'volume_id': fake.volume_id,
+        'id': '1',
+        'volume_id': '1',
     }
 
     for name, field in objects.VolumeAttachment.fields.items():

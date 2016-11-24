@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_versionedobjects import fields
 
@@ -21,6 +22,7 @@ from cinder import objects
 from cinder.objects import base
 from cinder.volume import volume_types
 
+CONF = cfg.CONF
 OPTIONAL_FIELDS = ['extra_specs', 'projects']
 LOG = logging.getLogger(__name__)
 
@@ -35,14 +37,10 @@ class VolumeType(base.CinderPersistentObject, base.CinderObject,
         'id': fields.UUIDField(),
         'name': fields.StringField(nullable=True),
         'description': fields.StringField(nullable=True),
-        'is_public': fields.BooleanField(default=True, nullable=True),
+        'is_public': fields.BooleanField(default=True),
         'projects': fields.ListOfStringsField(nullable=True),
         'extra_specs': fields.DictOfStringsField(nullable=True),
     }
-
-    @classmethod
-    def _get_expected_attrs(cls, context):
-        return 'extra_specs', 'projects'
 
     @staticmethod
     def _from_db_object(context, type, db_type, expected_attrs=None):
@@ -73,6 +71,14 @@ class VolumeType(base.CinderPersistentObject, base.CinderObject,
         type.obj_reset_changes()
         return type
 
+    @base.remotable_classmethod
+    def get_by_id(cls, context, id):
+        db_volume_type = volume_types.get_volume_type(
+            context, id, expected_fields=['extra_specs', 'projects'])
+        expected_attrs = ['extra_specs', 'projects']
+        return cls._from_db_object(context, cls(context), db_volume_type,
+                                   expected_attrs=expected_attrs)
+
     @base.remotable
     def create(self):
         if self.obj_attr_is_set('id'):
@@ -100,22 +106,20 @@ class VolumeType(base.CinderPersistentObject, base.CinderObject,
 
 @base.CinderObjectRegistry.register
 class VolumeTypeList(base.ObjectListBase, base.CinderObject):
-    # Version 1.0: Initial version
-    # Version 1.1: Add pagination support to volume type
-    VERSION = '1.1'
+    VERSION = '1.0'
 
     fields = {
         'objects': fields.ListOfObjectsField('VolumeType'),
     }
 
+    child_versions = {
+        '1.0': '1.0',
+    }
+
     @base.remotable_classmethod
-    def get_all(cls, context, inactive=0, filters=None, marker=None,
-                limit=None, sort_keys=None, sort_dirs=None, offset=None):
-        types = volume_types.get_all_types(context, inactive, filters,
-                                           marker=marker, limit=limit,
-                                           sort_keys=sort_keys,
-                                           sort_dirs=sort_dirs, offset=offset)
-        expected_attrs = VolumeType._get_expected_attrs(context)
+    def get_all(cls, context, inactive=0, search_opts=None):
+        types = volume_types.get_all_types(context, inactive, search_opts)
+        expected_attrs = ['extra_specs', 'projects']
         return base.obj_make_list(context, cls(context),
-                                  objects.VolumeType, types.values(),
+                                  objects.VolumeType, types,
                                   expected_attrs=expected_attrs)

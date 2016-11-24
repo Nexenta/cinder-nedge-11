@@ -46,7 +46,7 @@ glance_opts = [
                      'via the direct_url.  Currently supported schemes: '
                      '[file].'),
 ]
-glance_core_properties_opts = [
+glance_core_properties = [
     cfg.ListOpt('glance_core_properties',
                 default=['checksum', 'container_format',
                          'disk_format', 'image_name', 'image_id',
@@ -55,7 +55,7 @@ glance_core_properties_opts = [
 ]
 CONF = cfg.CONF
 CONF.register_opts(glance_opts)
-CONF.register_opts(glance_core_properties_opts)
+CONF.register_opts(glance_core_properties)
 CONF.import_opt('glance_api_version', 'cinder.common.config')
 
 LOG = logging.getLogger(__name__)
@@ -225,15 +225,10 @@ class GlanceImageService(object):
             if param in params:
                 _params[param] = params.get(param)
 
-        # NOTE(geguileo): We set is_public default value for v1 because we want
-        # to retrieve all images by default.  We don't need to send v2
-        # equivalent - "visible" - because its default value when omited is
-        # "public, private, shared", which will return all.
-        if CONF.glance_api_version <= 1:
-            # ensure filters is a dict
-            _params.setdefault('filters', {})
-            # NOTE(vish): don't filter out private images
-            _params['filters'].setdefault('is_public', 'none')
+        # ensure filters is a dict
+        _params.setdefault('filters', {})
+        # NOTE(vish): don't filter out private images
+        _params['filters'].setdefault('is_public', 'none')
 
         return _params
 

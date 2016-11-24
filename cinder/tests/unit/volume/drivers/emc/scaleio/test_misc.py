@@ -17,7 +17,6 @@ from six.moves import urllib
 
 from cinder import context
 from cinder import exception
-from cinder.tests.unit import fake_constants as fake
 from cinder.tests.unit import fake_volume
 from cinder.tests.unit.volume.drivers.emc import scaleio
 from cinder.tests.unit.volume.drivers.emc.scaleio import mocks
@@ -157,8 +156,7 @@ class TestMisc(scaleio.TestScaleIODriver):
         test_vol = self.driver.update_migrated_volume(
             self.ctx, self.volume, self.new_volume, 'unavailable')
         self.assertFalse(mock_rename.called)
-        self.assertEqual({'_name_id': fake.volume_id,
-                          'provider_location': None},
+        self.assertEqual({'_name_id': '1', 'provider_location': None},
                          test_vol)
 
     @mock.patch(

@@ -17,19 +17,13 @@ from cinder import exception
 from cinder.i18n import _
 from cinder import objects
 from cinder.objects import base
-from cinder.objects import fields as c_fields
 from oslo_versionedobjects import fields
-
-OPTIONAL_FIELDS = ['cgsnapshots', 'volumes']
 
 
 @base.CinderObjectRegistry.register
 class ConsistencyGroup(base.CinderPersistentObject, base.CinderObject,
                        base.CinderObjectDictCompat):
-    # Version 1.0: Initial version
-    # Version 1.1: Added cgsnapshots and volumes relationships
-    # Version 1.2: Changed 'status' field to use ConsistencyGroupStatusField
-    VERSION = '1.2'
+    VERSION = '1.0'
 
     fields = {
         'id': fields.UUIDField(),
@@ -40,41 +34,26 @@ class ConsistencyGroup(base.CinderPersistentObject, base.CinderObject,
         'name': fields.StringField(nullable=True),
         'description': fields.StringField(nullable=True),
         'volume_type_id': fields.UUIDField(nullable=True),
-        'status': c_fields.ConsistencyGroupStatusField(nullable=True),
+        'status': fields.StringField(nullable=True),
         'cgsnapshot_id': fields.UUIDField(nullable=True),
         'source_cgid': fields.UUIDField(nullable=True),
-        'cgsnapshots': fields.ObjectField('CGSnapshotList', nullable=True),
-        'volumes': fields.ObjectField('VolumeList', nullable=True),
     }
 
     @staticmethod
-    def _from_db_object(context, consistencygroup, db_consistencygroup,
-                        expected_attrs=None):
-        if expected_attrs is None:
-            expected_attrs = []
+    def _from_db_object(context, consistencygroup, db_consistencygroup):
         for name, field in consistencygroup.fields.items():
-            if name in OPTIONAL_FIELDS:
-                continue
             value = db_consistencygroup.get(name)
             setattr(consistencygroup, name, value)
-
-        if 'cgsnapshots' in expected_attrs:
-            cgsnapshots = base.obj_make_list(
-                context, objects.CGSnapshotsList(context),
-                objects.CGSnapshot,
-                db_consistencygroup['cgsnapshots'])
-            consistencygroup.cgsnapshots = cgsnapshots
-
-        if 'volumes' in expected_attrs:
-            volumes = base.obj_make_list(
-                context, objects.VolumeList(context),
-                objects.Volume,
-                db_consistencygroup['volumes'])
-            consistencygroup.cgsnapshots = volumes
 
         consistencygroup._context = context
         consistencygroup.obj_reset_changes()
         return consistencygroup
+
+    @base.remotable_classmethod
+    def get_by_id(cls, context, id):
+        db_consistencygroup = db.consistencygroup_get(context, id)
+        return cls._from_db_object(context, cls(context),
+                                   db_consistencygroup)
 
     @base.remotable
     def create(self):
@@ -82,49 +61,14 @@ class ConsistencyGroup(base.CinderPersistentObject, base.CinderObject,
             raise exception.ObjectActionError(action='create',
                                               reason=_('already_created'))
         updates = self.cinder_obj_get_changes()
-
-        if 'cgsnapshots' in updates:
-            raise exception.ObjectActionError(action='create',
-                                              reason=_('cgsnapshots assigned'))
-
-        if 'volumes' in updates:
-            raise exception.ObjectActionError(action='create',
-                                              reason=_('volumes assigned'))
-
         db_consistencygroups = db.consistencygroup_create(self._context,
                                                           updates)
         self._from_db_object(self._context, self, db_consistencygroups)
-
-    def obj_load_attr(self, attrname):
-        if attrname not in OPTIONAL_FIELDS:
-            raise exception.ObjectActionError(
-                action='obj_load_attr',
-                reason=_('attribute %s not lazy-loadable') % attrname)
-        if not self._context:
-            raise exception.OrphanedObjectError(method='obj_load_attr',
-                                                objtype=self.obj_name())
-
-        if attrname == 'cgsnapshots':
-            self.cgsnapshots = objects.CGSnapshotList.get_all_by_group(
-                self._context, self.id)
-
-        if attrname == 'volumes':
-            self.volumes = objects.VolumeList.get_all_by_group(self._context,
-                                                               self.id)
-
-        self.obj_reset_changes(fields=[attrname])
 
     @base.remotable
     def save(self):
         updates = self.cinder_obj_get_changes()
         if updates:
-            if 'cgsnapshots' in updates:
-                raise exception.ObjectActionError(
-                    action='save', reason=_('cgsnapshots changed'))
-            if 'volumes' in updates:
-                raise exception.ObjectActionError(
-                    action='save', reason=_('volumes changed'))
-
             db.consistencygroup_update(self._context, self.id, updates)
             self.obj_reset_changes()
 
@@ -136,31 +80,26 @@ class ConsistencyGroup(base.CinderPersistentObject, base.CinderObject,
 
 @base.CinderObjectRegistry.register
 class ConsistencyGroupList(base.ObjectListBase, base.CinderObject):
-    # Version 1.0: Initial version
-    # Version 1.1: Add pagination support to consistency group
-    VERSION = '1.1'
+    VERSION = '1.0'
 
     fields = {
         'objects': fields.ListOfObjectsField('ConsistencyGroup')
     }
+    child_version = {
+        '1.0': '1.0'
+    }
 
     @base.remotable_classmethod
-    def get_all(cls, context, filters=None, marker=None, limit=None,
-                offset=None, sort_keys=None, sort_dirs=None):
-        consistencygroups = db.consistencygroup_get_all(
-            context, filters=filters, marker=marker, limit=limit,
-            offset=offset, sort_keys=sort_keys, sort_dirs=sort_dirs)
+    def get_all(cls, context):
+        consistencygroups = db.consistencygroup_get_all(context)
         return base.obj_make_list(context, cls(context),
                                   objects.ConsistencyGroup,
                                   consistencygroups)
 
     @base.remotable_classmethod
-    def get_all_by_project(cls, context, project_id, filters=None, marker=None,
-                           limit=None, offset=None, sort_keys=None,
-                           sort_dirs=None):
-        consistencygroups = db.consistencygroup_get_all_by_project(
-            context, project_id, filters=filters, marker=marker, limit=limit,
-            offset=offset, sort_keys=sort_keys, sort_dirs=sort_dirs)
+    def get_all_by_project(cls, context, project_id):
+        consistencygroups = db.consistencygroup_get_all_by_project(context,
+                                                                   project_id)
         return base.obj_make_list(context, cls(context),
                                   objects.ConsistencyGroup,
                                   consistencygroups)

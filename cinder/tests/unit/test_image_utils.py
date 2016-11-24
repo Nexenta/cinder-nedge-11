@@ -28,7 +28,7 @@ from cinder.volume import throttling
 
 
 class TestQemuImgInfo(test.TestCase):
-    @mock.patch('oslo_utils.imageutils.QemuImgInfo')
+    @mock.patch('cinder.openstack.common.imageutils.QemuImgInfo')
     @mock.patch('cinder.utils.execute')
     def test_qemu_img_info(self, mock_exec, mock_info):
         mock_out = mock.sentinel.out
@@ -42,7 +42,7 @@ class TestQemuImgInfo(test.TestCase):
                                           prlimit=image_utils.QEMU_IMG_LIMITS)
         self.assertEqual(mock_info.return_value, output)
 
-    @mock.patch('oslo_utils.imageutils.QemuImgInfo')
+    @mock.patch('cinder.openstack.common.imageutils.QemuImgInfo')
     @mock.patch('cinder.utils.execute')
     def test_qemu_img_info_not_root(self, mock_exec, mock_info):
         mock_out = mock.sentinel.out
@@ -57,7 +57,7 @@ class TestQemuImgInfo(test.TestCase):
         self.assertEqual(mock_info.return_value, output)
 
     @mock.patch('cinder.image.image_utils.os')
-    @mock.patch('oslo_utils.imageutils.QemuImgInfo')
+    @mock.patch('cinder.openstack.common.imageutils.QemuImgInfo')
     @mock.patch('cinder.utils.execute')
     def test_qemu_img_info_on_nt(self, mock_exec, mock_info, mock_os):
         mock_out = mock.sentinel.out
@@ -117,15 +117,15 @@ class TestQemuImgInfo(test.TestCase):
 
 
 class TestConvertImage(test.TestCase):
-    @mock.patch('cinder.image.image_utils.qemu_img_info')
+    @mock.patch('cinder.image.image_utils.os.stat')
     @mock.patch('cinder.utils.execute')
     @mock.patch('cinder.utils.is_blk_device', return_value=True)
-    def test_defaults_block_dev_with_size_info(self, mock_isblk,
-                                               mock_exec, mock_info):
+    def test_defaults_block_dev(self, mock_isblk, mock_exec,
+                                mock_stat):
         source = mock.sentinel.source
         dest = mock.sentinel.dest
         out_format = mock.sentinel.out_format
-        mock_info.return_value.virtual_size = 1048576
+        mock_stat.return_value.st_size = 1048576
         throttle = throttling.Throttle(prefix=['cgcmd'])
 
         with mock.patch('cinder.volume.utils.check_for_odirect_support',
@@ -149,75 +149,17 @@ class TestConvertImage(test.TestCase):
                                               '-O', out_format, source, dest,
                                               run_as_root=True)
 
-    @mock.patch('cinder.image.image_utils.qemu_img_info')
-    @mock.patch('cinder.utils.execute')
-    @mock.patch('cinder.utils.is_blk_device', return_value=True)
-    def test_defaults_block_dev_without_size_info(self, mock_isblk,
-                                                  mock_exec,
-                                                  mock_info):
-        source = mock.sentinel.source
-        dest = mock.sentinel.dest
-        out_format = mock.sentinel.out_format
-        mock_info.side_effect = ValueError
-        throttle = throttling.Throttle(prefix=['cgcmd'])
-
-        with mock.patch('cinder.volume.utils.check_for_odirect_support',
-                        return_value=True):
-            output = image_utils.convert_image(source, dest, out_format,
-                                               throttle=throttle)
-
-            mock_info.assert_called_once_with(source, run_as_root=True)
-            self.assertIsNone(output)
-            mock_exec.assert_called_once_with('cgcmd', 'qemu-img', 'convert',
-                                              '-t', 'none', '-O', out_format,
-                                              source, dest, run_as_root=True)
-
-        mock_exec.reset_mock()
-
-        with mock.patch('cinder.volume.utils.check_for_odirect_support',
-                        return_value=False):
-            output = image_utils.convert_image(source, dest, out_format)
-
-            self.assertIsNone(output)
-            mock_exec.assert_called_once_with('qemu-img', 'convert',
-                                              '-O', out_format, source, dest,
-                                              run_as_root=True)
-
     @mock.patch('cinder.volume.utils.check_for_odirect_support',
                 return_value=True)
-    @mock.patch('cinder.image.image_utils.qemu_img_info')
+    @mock.patch('cinder.image.image_utils.os.stat')
     @mock.patch('cinder.utils.execute')
     @mock.patch('cinder.utils.is_blk_device', return_value=False)
-    def test_defaults_not_block_dev_with_size_info(self, mock_isblk,
-                                                   mock_exec,
-                                                   mock_info,
-                                                   mock_odirect):
+    def test_defaults_not_block_dev(self, mock_isblk, mock_exec,
+                                    mock_stat, mock_odirect):
         source = mock.sentinel.source
         dest = mock.sentinel.dest
         out_format = mock.sentinel.out_format
-        mock_info.return_value.virtual_size = 1048576
-
-        output = image_utils.convert_image(source, dest, out_format)
-
-        self.assertIsNone(output)
-        mock_exec.assert_called_once_with('qemu-img', 'convert', '-O',
-                                          out_format, source, dest,
-                                          run_as_root=True)
-
-    @mock.patch('cinder.volume.utils.check_for_odirect_support',
-                return_value=True)
-    @mock.patch('cinder.image.image_utils.qemu_img_info')
-    @mock.patch('cinder.utils.execute')
-    @mock.patch('cinder.utils.is_blk_device', return_value=False)
-    def test_defaults_not_block_dev_without_size_info(self,
-                                                      mock_isblk,
-                                                      mock_exec,
-                                                      mock_info,
-                                                      mock_odirect):
-        source = mock.sentinel.source
-        dest = mock.sentinel.dest
-        out_format = mock.sentinel.out_format
-        mock_info.side_effect = ValueError
+        mock_stat.return_value.st_size = 1048576
 
         output = image_utils.convert_image(source, dest, out_format)
 

@@ -44,9 +44,8 @@ LOG = logging.getLogger(__name__)
 flashsystem_fc_opts = [
     cfg.BoolOpt('flashsystem_multipath_enabled',
                 default=False,
-                help='This option no longer has any affect. It is deprecated '
-                     'and will be removed in the next release.',
-                deprecated_for_removal=True)
+                help='Connect with multipath (FC only).'
+                     '(Default is false.)')
 ]
 
 CONF = cfg.CONF
@@ -67,12 +66,10 @@ class FlashSystemFCDriver(fscommon.FlashSystemDriver,
     1.0.5 - Report capability of volume multiattach
     1.0.6 - Fix bug #1469581, add I/T mapping check in
             terminate_connection
-    1.0.7 - Fix bug #1505477, add host name check in
-            _find_host_exhaustive for FC
 
     """
 
-    VERSION = "1.0.7"
+    VERSION = "1.0.6"
 
     def __init__(self, *args, **kwargs):
         super(FlashSystemFCDriver, self).__init__(*args, **kwargs)
@@ -135,27 +132,19 @@ class FlashSystemFCDriver(fscommon.FlashSystemDriver,
         return host_name
 
     def _find_host_exhaustive(self, connector, hosts):
-        hname = connector['host']
-        hnames = [ihost[0:ihost.rfind('-')] for ihost in hosts]
-        if hname in hnames:
-            host = hosts[hnames.index(hname)]
+        for host in hosts:
             ssh_cmd = ['svcinfo', 'lshost', '-delim', '!', host]
             out, err = self._ssh(ssh_cmd)
             self._assert_ssh_return(
                 out.strip(),
                 '_find_host_exhaustive', ssh_cmd, out, err)
-            attr_lines = [attr_line for attr_line in out.split('\n')]
-            attr_parm = {}
-            for attr_line in attr_lines:
+            for attr_line in out.split('\n'):
+                # If '!' not found, return the string and two empty strings
                 attr_name, foo, attr_val = attr_line.partition('!')
-                attr_parm[attr_name] = attr_val
-            if ('WWPN' in attr_parm.keys() and 'wwpns' in connector and
-                    attr_parm['WWPN'].lower() in
-                    map(str.lower, map(str, connector['wwpns']))):
-                return host
-        else:
-            LOG.warning(_LW('Host %(host)s was not found on backend storage.'),
-                        {'host': hname})
+                if (attr_name == 'WWPN' and
+                        'wwpns' in connector and attr_val.lower() in
+                        map(str.lower, map(str, connector['wwpns']))):
+                    return host
         return None
 
     def _get_conn_fc_wwpns(self):
@@ -198,12 +187,17 @@ class FlashSystemFCDriver(fscommon.FlashSystemDriver,
             'enter: _get_vdisk_map_properties: vdisk '
             '%(vdisk_name)s.', {'vdisk_name': vdisk_name})
 
+        preferred_node = '0'
         IO_group = '0'
 
+        # Get preferred node and other nodes in I/O group
+        preferred_node_entry = None
         io_group_nodes = []
         for k, node in self._storage_nodes.items():
             if vdisk_params['protocol'] != node['protocol']:
                 continue
+            if node['id'] == preferred_node:
+                preferred_node_entry = node
             if node['IO_group'] == IO_group:
                 io_group_nodes.append(node)
 
@@ -214,6 +208,11 @@ class FlashSystemFCDriver(fscommon.FlashSystemDriver,
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
+        if not preferred_node_entry and not vdisk_params['multipath']:
+            # Get 1st node in I/O group
+            preferred_node_entry = io_group_nodes[0]
+            LOG.warning(_LW('_get_vdisk_map_properties: Did not find a '
+                            'preferred node for vdisk %s.'), vdisk_name)
         properties = {}
         properties['target_discovered'] = False
         properties['target_lun'] = lun_id

@@ -16,6 +16,7 @@
 import errno
 import os
 import stat
+import warnings
 
 from os_brick.remotefs import remotefs as remotefs_brick
 from oslo_concurrency import processutils
@@ -47,7 +48,7 @@ CONF = cfg.CONF
 CONF.register_opts(volume_opts)
 
 
-class GlusterfsDriver(remotefs_drv.RemoteFSSnapDriver,
+class GlusterfsDriver(remotefs_drv.RemoteFSSnapDriver, driver.CloneableVD,
                       driver.ExtendVD):
     """Gluster based cinder driver.
 
@@ -151,12 +152,6 @@ class GlusterfsDriver(remotefs_drv.RemoteFSSnapDriver,
                           hashed)
         return path
 
-    def _active_volume_path(self, volume):
-        volume_dir = self._local_volume_dir(volume)
-        path = os.path.join(volume_dir,
-                            self.get_active_image_from_info(volume))
-        return path
-
     def _update_volume_stats(self):
         """Retrieve stats info from volume group."""
         super(GlusterfsDriver, self)._update_volume_stats()
@@ -245,7 +240,9 @@ class GlusterfsDriver(remotefs_drv.RemoteFSSnapDriver,
 
         self._ensure_share_mounted(volume['provider_location'])
 
-        mounted_path = self._active_volume_path(volume)
+        volume_dir = self._local_volume_dir(volume)
+        mounted_path = os.path.join(volume_dir,
+                                    self.get_active_image_from_info(volume))
 
         self._execute('rm', '-f', mounted_path, run_as_root=True)
 
@@ -312,7 +309,7 @@ class GlusterfsDriver(remotefs_drv.RemoteFSSnapDriver,
 
     @remotefs_drv.locked_volume_id_operation
     def extend_volume(self, volume, size_gb):
-        volume_path = self._active_volume_path(volume)
+        volume_path = self.local_path(volume)
 
         info = self._qemu_img_info(volume_path, volume['name'])
         backing_fmt = info.file_format
@@ -347,9 +344,8 @@ class GlusterfsDriver(remotefs_drv.RemoteFSSnapDriver,
                 self._fallocate(volume_path, volume_size)
             except processutils.ProcessExecutionError as exc:
                 if 'Operation not supported' in exc.stderr:
-                    LOG.warning(_LW('Fallocate not supported by current '
-                                    'version of glusterfs. So falling '
-                                    'back to dd.'))
+                    warnings.warn('Fallocate not supported by current version '
+                                  'of glusterfs. So falling back to dd.')
                     self._create_regular_file(volume_path, volume_size)
                 else:
                     fileutils.delete_if_exists(volume_path)
@@ -450,7 +446,10 @@ class GlusterfsDriver(remotefs_drv.RemoteFSSnapDriver,
 
         volume = self.db.volume_get(context, backup['volume_id'])
 
-        active_file_path = self._active_volume_path(volume)
+        volume_dir = self._local_volume_dir(volume)
+        active_file_path = os.path.join(
+            volume_dir,
+            self.get_active_image_from_info(volume))
 
         info = self._qemu_img_info(active_file_path, volume['name'])
 

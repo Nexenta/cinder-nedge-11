@@ -31,7 +31,6 @@ from cinder import context
 from cinder import exception
 from cinder.i18n import _, _LE, _LI
 from cinder.image import image_utils
-from cinder.objects import fields
 from cinder import utils
 from cinder.volume import driver
 from cinder.volume.drivers import nfs
@@ -47,12 +46,15 @@ LOG = logging.getLogger(__name__)
 
 gpfs_opts = [
     cfg.StrOpt('gpfs_mount_point_base',
+               default=None,
                help='Specifies the path of the GPFS directory where Block '
                     'Storage volume and snapshot files are stored.'),
     cfg.StrOpt('gpfs_images_dir',
+               default=None,
                help='Specifies the path of the Image service repository in '
                     'GPFS.  Leave undefined if not storing images in GPFS.'),
     cfg.StrOpt('gpfs_images_share_mode',
+               default=None,
                choices=['copy', 'copy_on_write', None],
                help='Specifies the type of image copy to be used.  Set this '
                     'when the Image service repository also uses GPFS so '
@@ -106,7 +108,7 @@ def _sizestr(size_in_g):
 
 
 class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
-                 driver.LocalVD, driver.TransferVD,
+                 driver.LocalVD, driver.TransferVD, driver.CloneableVD,
                  driver.CloneableImageVD, driver.SnapshotVD,
                  driver.MigrateVD,
                  driver.BaseVD):
@@ -479,20 +481,20 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         set_pool = False
         options = []
         for item in metadata:
-            if item == 'data_pool_name':
-                options.extend(['-P', metadata[item]])
+            if item['key'] == 'data_pool_name':
+                options.extend(['-P', item['value']])
                 set_pool = True
-            elif item == 'replicas':
-                options.extend(['-r', metadata[item], '-m', metadata[item]])
-            elif item == 'dio':
-                options.extend(['-D', metadata[item]])
-            elif item == 'write_affinity_depth':
-                options.extend(['--write-affinity-depth', metadata[item]])
-            elif item == 'block_group_factor':
-                options.extend(['--block-group-factor', metadata[item]])
-            elif item == 'write_affinity_failure_group':
+            elif item['key'] == 'replicas':
+                options.extend(['-r', item['value'], '-m', item['value']])
+            elif item['key'] == 'dio':
+                options.extend(['-D', item['value']])
+            elif item['key'] == 'write_affinity_depth':
+                options.extend(['--write-affinity-depth', item['value']])
+            elif item['key'] == 'block_group_factor':
+                options.extend(['--block-group-factor', item['value']])
+            elif item['key'] == 'write_affinity_failure_group':
                 options.extend(['--write-affinity-failure-group',
-                               metadata[item]])
+                               item['value']])
 
         # metadata value has precedence over value set in volume type
         if self.configuration.gpfs_storage_pool and not set_pool:
@@ -504,20 +506,12 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         fstype = None
         fslabel = None
         for item in metadata:
-            if item == 'fstype':
-                fstype = metadata[item]
-            elif item == 'fslabel':
-                fslabel = metadata[item]
+            if item['key'] == 'fstype':
+                fstype = item['value']
+            elif item['key'] == 'fslabel':
+                fslabel = item['value']
         if fstype:
             self._mkfs(volume, fstype, fslabel)
-
-    def _get_volume_metadata(self, volume):
-        volume_metadata = {}
-        if 'volume_metadata' in volume:
-            for metadata in volume['volume_metadata']:
-                volume_metadata[metadata['key']] = metadata['value']
-            return volume_metadata
-        return volume['metadata'] if 'metadata' in volume else {}
 
     def create_volume(self, volume):
         """Creates a GPFS volume."""
@@ -532,7 +526,7 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         self._set_rw_permission(volume_path)
         # Set the attributes prior to allocating any blocks so that
         # they are allocated according to the policy
-        v_metadata = self._get_volume_metadata(volume)
+        v_metadata = volume.get('volume_metadata')
         self._set_volume_attributes(volume, volume_path, v_metadata)
 
         if not self.configuration.gpfs_sparse_volumes:
@@ -543,11 +537,12 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         # check if the snapshot lies in the same CG as the volume to be created
         # if yes, clone the volume from the snapshot, else perform full copy
         clone = False
-        ctxt = context.get_admin_context()
-        snap_parent_vol = self.db.volume_get(ctxt, snapshot['volume_id'])
-        if (volume['consistencygroup_id'] ==
-                snap_parent_vol['consistencygroup_id']):
-            clone = True
+        if volume['consistencygroup_id'] is not None:
+            ctxt = context.get_admin_context()
+            snap_parent_vol = self.db.volume_get(ctxt, snapshot['volume_id'])
+            if (volume['consistencygroup_id'] ==
+                    snap_parent_vol['consistencygroup_id']):
+                clone = True
         volume_path = self._get_volume_path(volume)
         if clone:
             self._create_gpfs_copy(src=snapshot_path, dest=volume_path)
@@ -556,7 +551,7 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
             self._gpfs_full_copy(snapshot_path, volume_path)
 
         self._set_rw_permission(volume_path)
-        v_metadata = self._get_volume_metadata(volume)
+        v_metadata = volume.get('volume_metadata')
         self._set_volume_attributes(volume, volume_path, v_metadata)
 
     def create_volume_from_snapshot(self, volume, snapshot):
@@ -576,7 +571,7 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
         else:
             self._gpfs_full_copy(src, dest)
         self._set_rw_permission(dest)
-        v_metadata = self._get_volume_metadata(volume)
+        v_metadata = volume.get('volume_metadata')
         self._set_volume_attributes(volume, dest, v_metadata)
 
     def create_cloned_volume(self, volume, src_vref):
@@ -610,17 +605,10 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
             else:
                 path = mount_point
 
-            # -ignore_readdir_race is to prevent the command from exiting
-            # with nonzero RC when some files in the directory are removed
-            # by other delete operations. -quit is to end the execution as
-            # soon as we get one filename; it is not expected that two or
-            # more filenames found.
             (out, err) = self._execute('find', path, '-maxdepth', '1',
-                                       '-ignore_readdir_race',
-                                       '-inum', inode, '-print0', '-quit',
-                                       run_as_root=True)
+                                       '-inum', inode, run_as_root=True)
             if out:
-                fparent = out.split('\0', 1)[0]
+                fparent = out.split('\n', 1)[0]
 
         if mount_point is None:
             self._execute(
@@ -1170,10 +1158,10 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
-        model_update = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
+        model_update = {'status': 'available'}
         return model_update
 
-    def delete_consistencygroup(self, context, group, volumes):
+    def delete_consistencygroup(self, context, group):
         """Delete consistency group of GPFS volumes."""
         cgname = "consisgroup-%s" % group['id']
         fsdev = self._gpfs_device
@@ -1209,7 +1197,7 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
 
         return model_update, volumes
 
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def create_cgsnapshot(self, context, cgsnapshot):
         """Create snapshot of a consistency group of GPFS volumes."""
         snapshots = self.db.snapshot_get_all_for_cgsnapshot(
             context, cgsnapshot['id'])
@@ -1222,7 +1210,7 @@ class GPFSDriver(driver.ConsistencyGroupVD, driver.ExtendVD,
 
         return model_update, snapshots
 
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def delete_cgsnapshot(self, context, cgsnapshot):
         """Delete snapshot of a consistency group of GPFS volumes."""
         snapshots = self.db.snapshot_get_all_for_cgsnapshot(
             context, cgsnapshot['id'])

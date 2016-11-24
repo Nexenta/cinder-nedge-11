@@ -13,9 +13,9 @@
 #   under the License.
 
 """The Volume Image Metadata API extension."""
-import webob
+import logging
 
-from oslo_log import log as logging
+import webob
 
 from cinder.api import common
 from cinder.api import extensions
@@ -128,12 +128,6 @@ class VolumeImageMetadataController(wsgi.Controller):
             raise webob.exc.HTTPBadRequest(explanation=error.msg)
         except exception.InvalidVolumeMetadataSize as error:
             raise webob.exc.HTTPRequestEntityTooLarge(explanation=error.msg)
-
-    @wsgi.action("os-show_image_metadata")
-    @wsgi.serializers(xml=common.MetadataTemplate)
-    def index(self, req, id, body):
-        context = req.environ['cinder.context']
-        return {'metadata': self._get_image_metadata(context, id)[1]}
 
     @wsgi.action("os-unset_image_metadata")
     def delete(self, req, id, body):

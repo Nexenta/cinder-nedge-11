@@ -24,8 +24,6 @@ import oslo_versionedobjects
 from cinder import context
 from cinder import db
 from cinder import objects
-from cinder.objects import fields
-from cinder.tests.unit import fake_constants as fake
 
 
 def get_test_admin_context():
@@ -54,8 +52,7 @@ def create_volume(ctxt,
     vol['user_id'] = ctxt.user_id
     vol['project_id'] = ctxt.project_id
     vol['status'] = status
-    if migration_status:
-        vol['migration_status'] = migration_status
+    vol['migration_status'] = migration_status
     vol['display_name'] = display_name
     vol['display_description'] = display_description
     vol['attach_status'] = 'detached'
@@ -67,16 +64,11 @@ def create_volume(ctxt,
     for key in kwargs:
         vol[key] = kwargs[key]
     vol['replication_status'] = replication_status
-    if replication_extended_status:
-        vol['replication_extended_status'] = replication_extended_status
-    if replication_driver_data:
-        vol['replication_driver_data'] = replication_driver_data
-    if previous_status:
-        vol['previous_status'] = previous_status
+    vol['replication_extended_status'] = replication_extended_status
+    vol['replication_driver_data'] = replication_driver_data
+    vol['previous_status'] = previous_status
 
-    volume = objects.Volume(ctxt, **vol)
-    volume.create()
-    return volume
+    return db.volume_create(ctxt, vol)
 
 
 def attach_volume(ctxt, volume_id, instance_uuid, attached_host,
@@ -104,8 +96,8 @@ def create_snapshot(ctxt,
     vol = db.volume_get(ctxt, volume_id)
     snap = objects.Snapshot(ctxt)
     snap.volume_id = volume_id
-    snap.user_id = ctxt.user_id or fake.user_id
-    snap.project_id = ctxt.project_id or fake.project_id
+    snap.user_id = ctxt.user_id or 'fake_user_id'
+    snap.project_id = ctxt.project_id or 'fake_project_id'
     snap.status = status
     snap.volume_size = vol['size']
     snap.display_name = display_name
@@ -119,7 +111,7 @@ def create_consistencygroup(ctxt,
                             host='test_host@fakedrv#fakepool',
                             name='test_cg',
                             description='this is a test cg',
-                            status=fields.ConsistencyGroupStatus.AVAILABLE,
+                            status='available',
                             availability_zone='fake_az',
                             volume_type_id=None,
                             cgsnapshot_id=None,
@@ -129,8 +121,8 @@ def create_consistencygroup(ctxt,
 
     cg = objects.ConsistencyGroup(ctxt)
     cg.host = host
-    cg.user_id = ctxt.user_id or fake.user_id
-    cg.project_id = ctxt.project_id or fake.project_id
+    cg.user_id = ctxt.user_id or 'fake_user_id'
+    cg.project_id = ctxt.project_id or 'fake_project_id'
     cg.status = status
     cg.name = name
     cg.description = description
@@ -147,35 +139,32 @@ def create_consistencygroup(ctxt,
 
 
 def create_cgsnapshot(ctxt,
-                      consistencygroup_id,
-                      name='test_cgsnapshot',
-                      description='this is a test cgsnapshot',
-                      status='creating',
+                      name='test_cgsnap',
+                      description='this is a test cgsnap',
+                      status='available',
+                      consistencygroup_id=None,
                       **kwargs):
     """Create a cgsnapshot object in the DB."""
-    cgsnap = objects.CGSnapshot(ctxt)
-    cgsnap.user_id = ctxt.user_id or fake.user_id
-    cgsnap.project_id = ctxt.project_id or fake.project_id
-    cgsnap.status = status
-    cgsnap.name = name
-    cgsnap.description = description
-    cgsnap.consistencygroup_id = consistencygroup_id
+    cgsnap = {}
+    cgsnap['user_id'] = ctxt.user_id
+    cgsnap['project_id'] = ctxt.project_id
+    cgsnap['status'] = status
+    cgsnap['name'] = name
+    cgsnap['description'] = description
+    cgsnap['consistencygroup_id'] = consistencygroup_id
     for key in kwargs:
-        setattr(cgsnap, key, kwargs[key])
-    cgsnap.create()
-    return cgsnap
+        cgsnap[key] = kwargs[key]
+    return db.cgsnapshot_create(ctxt, cgsnap)
 
 
 def create_backup(ctxt,
                   volume_id,
                   display_name='test_backup',
                   display_description='This is a test backup',
-                  status=fields.BackupStatus.CREATING,
+                  status='creating',
                   parent_id=None,
                   temp_volume_id=None,
-                  temp_snapshot_id=None,
-                  snapshot_id=None,
-                  data_timestamp=None):
+                  temp_snapshot_id=None):
     backup = {}
     backup['volume_id'] = volume_id
     backup['user_id'] = ctxt.user_id
@@ -193,8 +182,6 @@ def create_backup(ctxt,
     backup['object_count'] = 22
     backup['temp_volume_id'] = temp_volume_id
     backup['temp_snapshot_id'] = temp_snapshot_id
-    backup['snapshot_id'] = snapshot_id
-    backup['data_timestamp'] = data_timestamp
     return db.backup_create(ctxt, backup)
 
 
@@ -246,18 +233,3 @@ def get_file_spec():
                 set(dir(_io.BytesIO))))
         else:
             file_spec = file
-
-
-def generate_timeout_series(timeout):
-    """Generate a series of times that exceeds the given timeout.
-
-    Yields a series of fake time.time() floating point numbers
-    such that the difference between each pair in the series just
-    exceeds the timeout value that is passed in.  Useful for
-    mocking time.time() in methods that otherwise wait for timeout
-    seconds.
-    """
-    iteration = 0
-    while True:
-        iteration += 1
-        yield (iteration * timeout) + iteration

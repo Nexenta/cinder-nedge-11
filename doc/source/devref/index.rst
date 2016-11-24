@@ -27,16 +27,13 @@ Programming HowTos and Tutorials
     :maxdepth: 3
 
     development.environment
-    api_microversion_dev
-    api_microversion_history
     unit_tests
     addmethod.openstackapi
     drivers
     gmr
     replication
-    migration
     api.apache
-    rolling.upgrades
+
 
 Background Concepts for Cinder
 ------------------------------
@@ -44,7 +41,6 @@ Background Concepts for Cinder
    :maxdepth: 3
 
    architecture
-   attach_detach_conventions
    threading
    i18n
    rpc
@@ -57,7 +53,6 @@ Other Resources
    launchpad
    gerrit
    jenkins
-   releasenotes
 
 API Reference
 -------------
@@ -79,6 +74,7 @@ Module Reference
    scheduler
    fakes
    cinder
+
 
 Indices and tables
 ------------------

@@ -21,7 +21,6 @@ from oslo_utils import units
 from six.moves import http_client
 
 from cinder import exception
-from cinder.objects import fields
 from cinder import test
 from cinder.tests.unit import fake_snapshot
 from cinder.volume import configuration as conf
@@ -622,7 +621,7 @@ class TestProphetStorDPLDriver(test.TestCase):
         res = self.dpldriver.initialize_connection(DATA_IN_VOLUME,
                                                    DATA_IN_CONNECTOR)
         self.assertEqual('iscsi', res['driver_volume_type'])
-        self.assertEqual(101, res['data']['target_lun'])
+        self.assertEqual('101', res['data']['target_lun'])
         self.assertTrue(res['data']['target_discovered'])
         self.assertEqual('172.31.1.210:3260', res['data']['target_portal'])
         self.assertEqual(
@@ -684,8 +683,7 @@ class TestProphetStorDPLDriver(test.TestCase):
         self.DPL_MOCK.create_vg.assert_called_once_with(
             self._conver_uuid2hex(DATA_IN_GROUP['id']), DATA_IN_GROUP['name'],
             DATA_IN_GROUP['description'])
-        self.assertDictMatch({'status': (
-            fields.ConsistencyGroupStatus.AVAILABLE)}, model_update)
+        self.assertDictMatch({'status': 'available'}, model_update)
 
     def test_delete_consistency_group(self):
         self.DB_MOCK.volume_get_all_by_group.return_value = (
@@ -693,13 +691,12 @@ class TestProphetStorDPLDriver(test.TestCase):
         self.DPL_MOCK.delete_vdev.return_value = DATA_OUTPUT
         self.DPL_MOCK.delete_cg.return_value = DATA_OUTPUT
         model_update, volumes = self.dpldriver.delete_consistencygroup(
-            self.context, DATA_IN_GROUP, [])
+            self.context, DATA_IN_GROUP)
         self.DPL_MOCK.delete_vg.assert_called_once_with(
             self._conver_uuid2hex(DATA_IN_GROUP['id']))
         self.DPL_MOCK.delete_vdev.assert_called_once_with(
             self._conver_uuid2hex((DATA_IN_VOLUME_VG['id'])))
-        self.assertDictMatch({'status': (
-            fields.ConsistencyGroupStatus.DELETED)}, model_update)
+        self.assertDictMatch({'status': 'deleted'}, model_update, )
 
     def test_update_consistencygroup(self):
         self.DPL_MOCK.get_vg.return_value = (0, DATA_OUT_CG)
@@ -718,8 +715,7 @@ class TestProphetStorDPLDriver(test.TestCase):
         self.DPL_MOCK.leave_vg.assert_called_once_with(
             self._conver_uuid2hex(remove_vol['id']),
             self._conver_uuid2hex(DATA_IN_GROUP['id']))
-        self.assertDictMatch({'status': (
-            fields.ConsistencyGroupStatus.AVAILABLE)}, model_update)
+        self.assertDictMatch({'status': 'available'}, model_update)
 
     def test_update_consistencygroup_exception_join(self):
         self.DPL_MOCK.get_vg.return_value = (0, DATA_OUT_CG)
@@ -752,7 +748,7 @@ class TestProphetStorDPLDriver(test.TestCase):
         get_all_for_cgsnapshot.return_value = [snapshot_obj]
         self.DPL_MOCK.create_vdev_snapshot.return_value = DATA_OUTPUT
         model_update, snapshots = self.dpldriver.create_cgsnapshot(
-            self.context, snapshot_obj, [])
+            self.context, snapshot_obj)
         self.assertDictMatch({'status': 'available'}, model_update)
 
     @mock.patch('cinder.objects.snapshot.SnapshotList.get_all_for_cgsnapshot')
@@ -763,7 +759,7 @@ class TestProphetStorDPLDriver(test.TestCase):
         get_all_for_cgsnapshot.return_value = [snapshot_obj]
         self.DPL_MOCK.delete_cgsnapshot.return_value = DATA_OUTPUT
         model_update, snapshots = self.dpldriver.delete_cgsnapshot(
-            self.context, DATA_IN_CG_SNAPSHOT, [])
+            self.context, DATA_IN_CG_SNAPSHOT)
         self.DPL_MOCK.delete_vdev_snapshot.assert_called_once_with(
             self._conver_uuid2hex(DATA_IN_CG_SNAPSHOT['consistencygroup_id']),
             self._conver_uuid2hex(DATA_IN_CG_SNAPSHOT['id']),

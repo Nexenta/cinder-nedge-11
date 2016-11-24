@@ -12,8 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_utils import versionutils
 from oslo_versionedobjects import fields
 
 from cinder import db
@@ -21,8 +21,9 @@ from cinder import exception
 from cinder.i18n import _
 from cinder import objects
 from cinder.objects import base
-from cinder.objects import fields as c_fields
+from cinder import utils
 
+CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
@@ -31,10 +32,7 @@ class Service(base.CinderPersistentObject, base.CinderObject,
               base.CinderObjectDictCompat,
               base.CinderComparableObject):
     # Version 1.0: Initial version
-    # Version 1.1: Add rpc_current_version and object_current_version fields
-    # Version 1.2: Add get_minimum_rpc_version() and get_minimum_obj_version()
-    # Version 1.3: Add replication fields
-    VERSION = '1.3'
+    VERSION = '1.0'
 
     fields = {
         'id': fields.IntegerField(),
@@ -42,20 +40,17 @@ class Service(base.CinderPersistentObject, base.CinderObject,
         'binary': fields.StringField(nullable=True),
         'topic': fields.StringField(nullable=True),
         'report_count': fields.IntegerField(default=0),
-        'disabled': fields.BooleanField(default=False, nullable=True),
+        'disabled': fields.BooleanField(default=False),
         'availability_zone': fields.StringField(nullable=True,
                                                 default='cinder'),
         'disabled_reason': fields.StringField(nullable=True),
 
         'modified_at': fields.DateTimeField(nullable=True),
-        'rpc_current_version': fields.StringField(nullable=True),
-        'object_current_version': fields.StringField(nullable=True),
-
-        # Replication properties
-        'replication_status': c_fields.ReplicationStatusField(nullable=True),
-        'frozen': fields.BooleanField(default=False),
-        'active_backend_id': fields.StringField(nullable=True),
     }
+
+    def obj_make_compatible(self, primitive, target_version):
+        """Make an object representation compatible with a target version."""
+        target_version = utils.convert_version_to_tuple(target_version)
 
     @staticmethod
     def _from_db_object(context, service, db_service):
@@ -70,6 +65,11 @@ class Service(base.CinderPersistentObject, base.CinderObject,
         service._context = context
         service.obj_reset_changes()
         return service
+
+    @base.remotable_classmethod
+    def get_by_id(cls, context, id):
+        db_service = db.service_get(context, id)
+        return cls._from_db_object(context, cls(context), db_service)
 
     @base.remotable_classmethod
     def get_by_host_and_topic(cls, context, host, topic):
@@ -102,45 +102,16 @@ class Service(base.CinderPersistentObject, base.CinderObject,
         with self.obj_as_admin():
             db.service_destroy(self._context, self.id)
 
-    @classmethod
-    def _get_minimum_version(cls, attribute, context, binary):
-        services = ServiceList.get_all_by_binary(context, binary)
-        min_ver = None
-        min_ver_str = None
-        for s in services:
-            ver_str = getattr(s, attribute)
-            if ver_str is None:
-                # FIXME(dulek) None in *_current_version means that this
-                # service is in Liberty version, so we must assume this is the
-                # lowest one. We use handy and easy to remember token to
-                # indicate that. This may go away as soon as we drop
-                # compatibility with Liberty, possibly in early N.
-                return 'liberty'
-            ver = versionutils.convert_version_to_int(ver_str)
-            if min_ver is None or ver < min_ver:
-                min_ver = ver
-                min_ver_str = ver_str
-
-        return min_ver_str
-
-    @base.remotable_classmethod
-    def get_minimum_rpc_version(cls, context, binary):
-        return cls._get_minimum_version('rpc_current_version', context, binary)
-
-    @base.remotable_classmethod
-    def get_minimum_obj_version(cls, context, binary):
-        return cls._get_minimum_version('object_current_version', context,
-                                        binary)
-
 
 @base.CinderObjectRegistry.register
 class ServiceList(base.ObjectListBase, base.CinderObject):
-    # Version 1.0: Initial version
-    # Version 1.1: Service object 1.2
-    VERSION = '1.1'
+    VERSION = '1.0'
 
     fields = {
         'objects': fields.ListOfObjectsField('Service'),
+    }
+    child_versions = {
+        '1.0': '1.0'
     }
 
     @base.remotable_classmethod
@@ -153,12 +124,5 @@ class ServiceList(base.ObjectListBase, base.CinderObject):
     def get_all_by_topic(cls, context, topic, disabled=None):
         services = db.service_get_all_by_topic(context, topic,
                                                disabled=disabled)
-        return base.obj_make_list(context, cls(context), objects.Service,
-                                  services)
-
-    @base.remotable_classmethod
-    def get_all_by_binary(cls, context, binary, disabled=None):
-        services = db.service_get_all_by_binary(context, binary,
-                                                disabled=disabled)
         return base.obj_make_list(context, cls(context), objects.Service,
                                   services)

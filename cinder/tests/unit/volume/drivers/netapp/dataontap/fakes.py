@@ -1,6 +1,5 @@
 # Copyright (c) - 2014, Clinton Knight.  All rights reserved.
 # Copyright (c) - 2015, Tom Barron.  All rights reserved.
-# Copyright (c) - 2016 Chuck Fouts. All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -33,12 +32,11 @@ POOL_NAME = 'aggr1'
 SHARE_IP = '192.168.99.24'
 EXPORT_PATH = '/fake/export/path'
 NFS_SHARE = '%s:%s' % (SHARE_IP, EXPORT_PATH)
-HOST_STRING = '%s@%s#%s' % (HOST_NAME, BACKEND_NAME, NFS_SHARE)
+HOST_STRING = '%s@%s#%s' % (HOST_NAME, BACKEND_NAME, POOL_NAME)
 NFS_HOST_STRING = '%s@%s#%s' % (HOST_NAME, BACKEND_NAME, NFS_SHARE)
 FLEXVOL = 'openstack-flexvol'
 NFS_FILE_PATH = 'nfsvol'
 PATH = '/vol/%s/%s' % (POOL_NAME, LUN_NAME)
-IMAGE_FILE_ID = 'img-cache-imgid'
 LUN_METADATA = {
     'OsType': None,
     'SpaceReserved': 'true',
@@ -103,6 +101,7 @@ FC_FABRIC_MAP = {'fabricB':
 FC_TARGET_INFO = {'driver_volume_type': 'fibre_channel',
                   'data': {'target_lun': 1,
                            'initiator_target_map': FC_I_T_MAP,
+                           'access_mode': 'rw',
                            'target_wwn': FC_TARGET_WWPNS,
                            'target_discovered': True}}
 
@@ -132,12 +131,9 @@ ISCSI_SERVICE_IQN = 'fake_iscsi_service_iqn'
 
 ISCSI_CONNECTION_PROPERTIES = {
     'data': {
-        'auth_method': 'fake_method',
+        'auth_method': 'fake',
         'auth_password': 'auth',
         'auth_username': 'provider',
-        'discovery_auth_method': 'fake_method',
-        'discovery_auth_username': 'provider',
-        'discovery_auth_password': 'auth',
         'target_discovered': False,
         'target_iqn': ISCSI_SERVICE_IQN,
         'target_lun': 42,
@@ -211,14 +207,10 @@ CLONE_DESTINATION = {
     'id': CLONE_DESTINATION_ID,
 }
 
-SNAPSHOT_NAME = 'fake_snapshot_name'
-SNAPSHOT_LUN_HANDLE = 'fake_snapshot_lun_handle'
-
 SNAPSHOT = {
-    'name': SNAPSHOT_NAME,
+    'name': 'fake_snapshot_name',
     'volume_size': SIZE,
     'volume_id': 'fake_volume_id',
-    'busy': False,
 }
 
 VOLUME_REF = {'name': 'fake_vref_name', 'size': 42}
@@ -226,7 +218,6 @@ VOLUME_REF = {'name': 'fake_vref_name', 'size': 42}
 FAKE_CMODE_POOLS = [
     {
         'QoS_support': True,
-        'consistencygroup_support': True,
         'free_capacity_gb': 3.72,
         'netapp_compression': u'true',
         'netapp_dedup': u'true',
@@ -241,13 +232,10 @@ FAKE_CMODE_POOLS = [
         'pool_name': 'open123',
         'reserved_percentage': 0,
         'total_capacity_gb': 4.65,
-        'thin_provisioning_support': True,
-        'thick_provisioning_support': False,
+        'thin_provisioned_support': True,
+        'thick_provisioned_support': False,
         'provisioned_capacity_gb': 0.93,
         'max_over_subscription_ratio': 20.0,
-        'utilization': 30.0,
-        'filter_function': 'filter',
-        'goodness_function': 'goodness',
     }
 ]
 
@@ -342,88 +330,16 @@ FAKE_7MODE_VOL1 = [netapp_api.NaElement(
 FAKE_7MODE_POOLS = [
     {
         'pool_name': 'open123',
-        'consistencygroup_support': True,
         'QoS_support': False,
         'reserved_percentage': 0,
         'total_capacity_gb': 0.0,
         'free_capacity_gb': 0.0,
         'max_over_subscription_ratio': 20.0,
-        'thin_provisioning_support': False,
-        'thick_provisioning_support': True,
+        'thin_provisioned_support': False,
+        'thick_provisioned_support': True,
         'provisioned_capacity_gb': 0.0,
-        'utilization': 30.0,
-        'filter_function': 'filter',
-        'goodness_function': 'goodness',
     }
 ]
-
-CG_VOLUME_NAME = 'fake_cg_volume'
-CG_GROUP_NAME = 'fake_consistency_group'
-SOURCE_CG_VOLUME_NAME = 'fake_source_cg_volume'
-CG_VOLUME_ID = 'fake_cg_volume_id'
-CG_VOLUME_SIZE = 100
-SOURCE_CG_VOLUME_ID = 'fake_source_cg_volume_id'
-CONSISTENCY_GROUP_NAME = 'fake_cg'
-SOURCE_CONSISTENCY_GROUP_ID = 'fake_source_cg_id'
-CONSISTENCY_GROUP_ID = 'fake_cg_id'
-CG_SNAPSHOT_ID = 'fake_cg_snapshot_id'
-CG_SNAPSHOT_NAME = 'snapshot-' + CG_SNAPSHOT_ID
-CG_VOLUME_SNAPSHOT_ID = 'fake_cg_volume_snapshot_id'
-
-CG_LUN_METADATA = {
-    'OsType': None,
-    'Path': '/vol/aggr1/fake_cg_volume',
-    'SpaceReserved': 'true',
-    'Qtree': None,
-    'Volume': POOL_NAME,
-}
-
-SOURCE_CG_VOLUME = {
-    'name': SOURCE_CG_VOLUME_NAME,
-    'size': CG_VOLUME_SIZE,
-    'id': SOURCE_CG_VOLUME_ID,
-    'host': 'hostname@backend#cdot',
-    'consistencygroup_id': None,
-    'status': 'fake_status',
-}
-
-CG_VOLUME = {
-    'name': CG_VOLUME_NAME,
-    'size': 100,
-    'id': CG_VOLUME_ID,
-    'host': 'hostname@backend#cdot',
-    'consistencygroup_id': CONSISTENCY_GROUP_ID,
-    'status': 'fake_status',
-}
-
-SOURCE_CONSISTENCY_GROUP = {
-    'id': SOURCE_CONSISTENCY_GROUP_ID,
-    'status': 'fake_status',
-}
-
-CONSISTENCY_GROUP = {
-    'id': CONSISTENCY_GROUP_ID,
-    'status': 'fake_status',
-    'name': CG_GROUP_NAME,
-}
-
-CG_SNAPSHOT = {
-    'id': CG_SNAPSHOT_ID,
-    'name': CG_SNAPSHOT_NAME,
-    'volume_size': CG_VOLUME_SIZE,
-    'consistencygroup_id': CONSISTENCY_GROUP_ID,
-    'status': 'fake_status',
-    'volume_id': 'fake_source_volume_id',
-}
-
-CG_VOLUME_SNAPSHOT = {
-    'name': CG_SNAPSHOT_NAME,
-    'volume_size': CG_VOLUME_SIZE,
-    'cgsnapshot_id': CG_SNAPSHOT_ID,
-    'id': CG_VOLUME_SNAPSHOT_ID,
-    'status': 'fake_status',
-    'volume_id': CG_VOLUME_ID,
-}
 
 
 class test_volume(object):

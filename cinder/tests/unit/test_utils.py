@@ -15,19 +15,22 @@
 
 import datetime
 import functools
+import hashlib
 import os
 import time
+import uuid
 
 import mock
 from oslo_concurrency import processutils as putils
 from oslo_config import cfg
 from oslo_utils import timeutils
+import paramiko
 import six
 from six.moves import range
-import webob.exc
 
 import cinder
 from cinder import exception
+from cinder import ssh_utils
 from cinder import test
 from cinder import utils
 
@@ -65,6 +68,161 @@ class ExecuteTestCase(test.TestCase):
                                                 root_helper=mock_helper)
 
 
+class GetFromPathTestCase(test.TestCase):
+    def test_tolerates_nones(self):
+        f = utils.get_from_path
+
+        input = []
+        self.assertEqual([], f(input, "a"))
+        self.assertEqual([], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [None]
+        self.assertEqual([], f(input, "a"))
+        self.assertEqual([], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': None}]
+        self.assertEqual([], f(input, "a"))
+        self.assertEqual([], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': {'b': None}}]
+        self.assertEqual([{'b': None}], f(input, "a"))
+        self.assertEqual([], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': {'b': {'c': None}}}]
+        self.assertEqual([{'b': {'c': None}}], f(input, "a"))
+        self.assertEqual([{'c': None}], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': {'b': {'c': None}}}, {'a': None}]
+        self.assertEqual([{'b': {'c': None}}], f(input, "a"))
+        self.assertEqual([{'c': None}], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': {'b': {'c': None}}}, {'a': {'b': None}}]
+        self.assertEqual([{'b': {'c': None}}, {'b': None}], f(input, "a"))
+        self.assertEqual([{'c': None}], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+    def test_does_select(self):
+        f = utils.get_from_path
+
+        input = [{'a': 'a_1'}]
+        self.assertEqual(['a_1'], f(input, "a"))
+        self.assertEqual([], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': {'b': 'b_1'}}]
+        self.assertEqual([{'b': 'b_1'}], f(input, "a"))
+        self.assertEqual(['b_1'], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': {'b': {'c': 'c_1'}}}]
+        self.assertEqual([{'b': {'c': 'c_1'}}], f(input, "a"))
+        self.assertEqual([{'c': 'c_1'}], f(input, "a/b"))
+        self.assertEqual(['c_1'], f(input, "a/b/c"))
+
+        input = [{'a': {'b': {'c': 'c_1'}}}, {'a': None}]
+        self.assertEqual([{'b': {'c': 'c_1'}}], f(input, "a"))
+        self.assertEqual([{'c': 'c_1'}], f(input, "a/b"))
+        self.assertEqual(['c_1'], f(input, "a/b/c"))
+
+        input = [{'a': {'b': {'c': 'c_1'}}},
+                 {'a': {'b': None}}]
+        self.assertEqual([{'b': {'c': 'c_1'}}, {'b': None}], f(input, "a"))
+        self.assertEqual([{'c': 'c_1'}], f(input, "a/b"))
+        self.assertEqual(['c_1'], f(input, "a/b/c"))
+
+        input = [{'a': {'b': {'c': 'c_1'}}},
+                 {'a': {'b': {'c': 'c_2'}}}]
+        self.assertEqual([{'b': {'c': 'c_1'}}, {'b': {'c': 'c_2'}}],
+                         f(input, "a"))
+        self.assertEqual([{'c': 'c_1'}, {'c': 'c_2'}], f(input, "a/b"))
+        self.assertEqual(['c_1', 'c_2'], f(input, "a/b/c"))
+
+        self.assertEqual([], f(input, "a/b/c/d"))
+        self.assertEqual([], f(input, "c/a/b/d"))
+        self.assertEqual([], f(input, "i/r/t"))
+
+    def test_flattens_lists(self):
+        f = utils.get_from_path
+
+        input = [{'a': [1, 2, 3]}]
+        self.assertEqual([1, 2, 3], f(input, "a"))
+        self.assertEqual([], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': {'b': [1, 2, 3]}}]
+        self.assertEqual([{'b': [1, 2, 3]}], f(input, "a"))
+        self.assertEqual([1, 2, 3], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': {'b': [1, 2, 3]}}, {'a': {'b': [4, 5, 6]}}]
+        self.assertEqual([1, 2, 3, 4, 5, 6], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': [{'b': [1, 2, 3]}, {'b': [4, 5, 6]}]}]
+        self.assertEqual([1, 2, 3, 4, 5, 6], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = [{'a': [1, 2, {'b': 'b_1'}]}]
+        self.assertEqual([1, 2, {'b': 'b_1'}], f(input, "a"))
+        self.assertEqual(['b_1'], f(input, "a/b"))
+
+    def test_bad_xpath(self):
+        f = utils.get_from_path
+
+        self.assertRaises(exception.Error, f, [], None)
+        self.assertRaises(exception.Error, f, [], "")
+        self.assertRaises(exception.Error, f, [], "/")
+        self.assertRaises(exception.Error, f, [], "/a")
+        self.assertRaises(exception.Error, f, [], "/a/")
+        self.assertRaises(exception.Error, f, [], "//")
+        self.assertRaises(exception.Error, f, [], "//a")
+        self.assertRaises(exception.Error, f, [], "a//a")
+        self.assertRaises(exception.Error, f, [], "a//a/")
+        self.assertRaises(exception.Error, f, [], "a/a/")
+
+    def test_real_failure1(self):
+        # Real world failure case...
+        #  We weren't coping when the input was a Dictionary instead of a List
+        # This led to test_accepts_dictionaries
+        f = utils.get_from_path
+
+        inst = {'fixed_ip': {'floating_ips': [{'address': '1.2.3.4'}],
+                             'address': '192.168.0.3'},
+                'hostname': ''}
+
+        private_ips = f(inst, 'fixed_ip/address')
+        public_ips = f(inst, 'fixed_ip/floating_ips/address')
+        self.assertEqual(['192.168.0.3'], private_ips)
+        self.assertEqual(['1.2.3.4'], public_ips)
+
+    def test_accepts_dictionaries(self):
+        f = utils.get_from_path
+
+        input = {'a': [1, 2, 3]}
+        self.assertEqual([1, 2, 3], f(input, "a"))
+        self.assertEqual([], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = {'a': {'b': [1, 2, 3]}}
+        self.assertEqual([{'b': [1, 2, 3]}], f(input, "a"))
+        self.assertEqual([1, 2, 3], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = {'a': [{'b': [1, 2, 3]}, {'b': [4, 5, 6]}]}
+        self.assertEqual([1, 2, 3, 4, 5, 6], f(input, "a/b"))
+        self.assertEqual([], f(input, "a/b/c"))
+
+        input = {'a': [1, 2, {'b': 'b_1'}]}
+        self.assertEqual([1, 2, {'b': 'b_1'}], f(input, "a"))
+        self.assertEqual(['b_1'], f(input, "a/b"))
+
+
 class GenericUtilsTestCase(test.TestCase):
 
     @mock.patch('os.path.exists', return_value=True)
@@ -90,6 +248,16 @@ class GenericUtilsTestCase(test.TestCase):
                           utils.as_int,
                           obj,
                           quiet=False)
+
+    def test_is_int_like(self):
+        self.assertTrue(utils.is_int_like(1))
+        self.assertTrue(utils.is_int_like(-1))
+        self.assertTrue(utils.is_int_like(0b1))
+        self.assertTrue(utils.is_int_like(0o1))
+        self.assertTrue(utils.is_int_like(0x1))
+        self.assertTrue(utils.is_int_like('1'))
+        self.assertFalse(utils.is_int_like(1.0))
+        self.assertFalse(utils.is_int_like('abc'))
 
     def test_check_exclusive_options(self):
         utils.check_exclusive_options()
@@ -182,50 +350,6 @@ class GenericUtilsTestCase(test.TestCase):
                           utils.read_file_as_root,
                           test_filepath)
 
-    @mock.patch('tempfile.NamedTemporaryFile')
-    @mock.patch.object(os, 'open')
-    @mock.patch.object(os, 'fdatasync')
-    @mock.patch.object(os, 'fsync')
-    @mock.patch.object(os, 'rename')
-    @mock.patch.object(os, 'close')
-    @mock.patch.object(os.path, 'isfile')
-    @mock.patch.object(os, 'unlink')
-    def test_write_configfile(self, mock_unlink, mock_isfile, mock_close,
-                              mock_rename, mock_fsync, mock_fdatasync,
-                              mock_open, mock_tmp):
-        filename = 'foo'
-        directory = '/some/random/path'
-        filepath = os.path.join(directory, filename)
-        expected = ('\n<target iqn.2010-10.org.openstack:volume-%(id)s>\n'
-                    '    backing-store %(bspath)s\n'
-                    '    driver iscsi\n'
-                    '    incominguser chap_foo chap_bar\n'
-                    '    bsoflags foo\n'
-                    '    write-cache bar\n'
-                    '</target>\n' % {'id': filename,
-                                     'bspath': filepath})
-
-        # Normal case
-        utils.robust_file_write(directory, filename, expected)
-        mock_open.assert_called_once_with(directory, os.O_DIRECTORY)
-        mock_rename.assert_called_once_with(mock.ANY, filepath)
-        self.assertEqual(
-            expected.encode('utf-8'),
-            mock_tmp.return_value.__enter__.return_value.write.call_args[0][0]
-        )
-
-        # Failure to write persistent file.
-        tempfile = '/some/tempfile'
-        mock_tmp.return_value.__enter__.return_value.name = tempfile
-        mock_rename.side_effect = OSError
-        self.assertRaises(OSError,
-                          utils.robust_file_write,
-                          directory,
-                          filename,
-                          mock.MagicMock())
-        mock_isfile.assert_called_once_with(tempfile)
-        mock_unlink.assert_called_once_with(tempfile)
-
     @mock.patch('oslo_utils.timeutils.utcnow')
     def test_service_is_up(self, mock_utcnow):
         fts_func = datetime.datetime.fromtimestamp
@@ -283,6 +407,17 @@ class GenericUtilsTestCase(test.TestCase):
                           utils.safe_minidom_parse_string,
                           killer_body())
 
+    def test_xhtml_escape(self):
+        self.assertEqual('&quot;foo&quot;', utils.xhtml_escape('"foo"'))
+        self.assertEqual('&apos;foo&apos;', utils.xhtml_escape("'foo'"))
+
+    def test_hash_file(self):
+        data = b'Mary had a little lamb, its fleece as white as snow'
+        flo = six.BytesIO(data)
+        h1 = utils.hash_file(flo)
+        h2 = hashlib.sha1(data).hexdigest()
+        self.assertEqual(h1, h2)
+
     def test_check_ssh_injection(self):
         cmd_list = ['ssh', '-D', 'my_name@name_of_remote_computer']
         self.assertIsNone(utils.check_ssh_injection(cmd_list))
@@ -333,6 +468,17 @@ class GenericUtilsTestCase(test.TestCase):
                           utils.check_ssh_injection,
                           with_multiple_quotes)
 
+    @mock.patch('paramiko.SSHClient')
+    def test_create_channel(self, mock_client):
+        test_width = 600
+        test_height = 800
+        mock_channel = mock.Mock()
+        mock_client.invoke_shell.return_value = mock_channel
+        utils.create_channel(mock_client, test_width, test_height)
+        mock_client.invoke_shell.assert_called_once_with()
+        mock_channel.resize_pty.assert_called_once_with(test_width,
+                                                        test_height)
+
     @mock.patch('os.stat')
     def test_get_file_mode(self, mock_stat):
         class stat_result(object):
@@ -364,6 +510,15 @@ class GenericUtilsTestCase(test.TestCase):
         self.assertEqual('sudo cinder-rootwrap /path/to/conf',
                          utils.get_root_helper())
 
+    def test_list_of_dicts_to_dict(self):
+        a = {'id': '1', 'color': 'orange'}
+        b = {'id': '2', 'color': 'blue'}
+        c = {'id': '3', 'color': 'green'}
+        lst = [a, b, c]
+
+        resp = utils.list_of_dicts_to_dict(lst, 'id')
+        self.assertEqual(c['id'], resp['3']['id'])
+
 
 class TemporaryChownTestCase(test.TestCase):
     @mock.patch('os.stat')
@@ -375,7 +530,7 @@ class TemporaryChownTestCase(test.TestCase):
         with utils.temporary_chown(test_filename):
             mock_exec.assert_called_once_with('chown', 1234, test_filename,
                                               run_as_root=True)
-        mock_getuid.assert_called_once_with()
+        mock_getuid.asset_called_once_with()
         mock_stat.assert_called_once_with(test_filename)
         calls = [mock.call('chown', 1234, test_filename, run_as_root=True),
                  mock.call('chown', 5678, test_filename, run_as_root=True)]
@@ -404,7 +559,7 @@ class TemporaryChownTestCase(test.TestCase):
         test_filename = 'a_file'
         with utils.temporary_chown(test_filename):
             pass
-        mock_getuid.assert_called_once_with()
+        mock_getuid.asset_called_once_with()
         mock_stat.assert_called_once_with(test_filename)
         self.assertFalse(mock_exec.called)
 
@@ -786,6 +941,279 @@ class AuditPeriodTest(test.TestCase):
         self.assertEqual(60.0 * 60 * 24, (end2 - begin2).total_seconds())
 
 
+class FakeSSHClient(object):
+
+    def __init__(self):
+        self.id = uuid.uuid4()
+        self.transport = FakeTransport()
+
+    def set_missing_host_key_policy(self, policy):
+        self.policy = policy
+
+    def load_system_host_keys(self):
+        self.system_host_keys = 'system_host_keys'
+
+    def load_host_keys(self, hosts_key_file):
+        self.hosts_key_file = hosts_key_file
+
+    def connect(self, ip, port=22, username=None, password=None,
+                pkey=None, timeout=10):
+        pass
+
+    def get_transport(self):
+        return self.transport
+
+    def get_policy(self):
+        return self.policy
+
+    def get_host_keys(self):
+        return '127.0.0.1 ssh-rsa deadbeef'
+
+    def close(self):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        pass
+
+
+class FakeSock(object):
+    def settimeout(self, timeout):
+        pass
+
+
+class FakeTransport(object):
+
+    def __init__(self):
+        self.active = True
+        self.sock = FakeSock()
+
+    def set_keepalive(self, timeout):
+        pass
+
+    def is_active(self):
+        return self.active
+
+
+class SSHPoolTestCase(test.TestCase):
+    """Unit test for SSH Connection Pool."""
+    @mock.patch('cinder.ssh_utils.CONF')
+    @mock.patch('six.moves.builtins.open')
+    @mock.patch('paramiko.SSHClient')
+    @mock.patch('os.path.isfile', return_value=True)
+    def test_ssh_default_hosts_key_file(self, mock_isfile, mock_sshclient,
+                                        mock_open, mock_conf):
+        mock_ssh = mock.MagicMock()
+        mock_sshclient.return_value = mock_ssh
+        mock_conf.ssh_hosts_key_file = '/var/lib/cinder/ssh_known_hosts'
+
+        # create with customized setting
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    password="test",
+                                    min_size=1,
+                                    max_size=1)
+
+        host_key_files = sshpool.hosts_key_file
+
+        self.assertEqual('/var/lib/cinder/ssh_known_hosts', host_key_files)
+
+        mock_ssh.load_host_keys.assert_called_once_with(
+            '/var/lib/cinder/ssh_known_hosts')
+
+    @mock.patch('cinder.ssh_utils.CONF')
+    @mock.patch('six.moves.builtins.open')
+    @mock.patch('paramiko.SSHClient')
+    @mock.patch('os.path.isfile', return_value=True)
+    def test_ssh_host_key_file_kwargs(self, mock_isfile, mock_sshclient,
+                                      mock_open, mock_conf):
+        mock_ssh = mock.MagicMock()
+        mock_sshclient.return_value = mock_ssh
+        mock_conf.ssh_hosts_key_file = '/var/lib/cinder/ssh_known_hosts'
+
+        # create with customized setting
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    password="test",
+                                    min_size=1,
+                                    max_size=1,
+                                    hosts_key_file='dummy_host_keyfile')
+
+        host_key_files = sshpool.hosts_key_file
+
+        self.assertIn('dummy_host_keyfile', host_key_files)
+        self.assertIn('/var/lib/cinder/ssh_known_hosts', host_key_files)
+
+        expected = [
+            mock.call.load_host_keys('dummy_host_keyfile'),
+            mock.call.load_host_keys('/var/lib/cinder/ssh_known_hosts')]
+
+        mock_ssh.assert_has_calls(expected, any_order=True)
+
+    @mock.patch('cinder.ssh_utils.CONF')
+    @mock.patch('six.moves.builtins.open')
+    @mock.patch('os.path.isfile', return_value=True)
+    @mock.patch('paramiko.RSAKey.from_private_key_file')
+    @mock.patch('paramiko.SSHClient')
+    def test_single_ssh_connect(self, mock_sshclient, mock_pkey, mock_isfile,
+                                mock_open, mock_conf):
+        mock_conf.ssh_hosts_key_file = '/var/lib/cinder/ssh_known_hosts'
+
+        # create with password
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    password="test",
+                                    min_size=1,
+                                    max_size=1)
+        with sshpool.item() as ssh:
+            first_id = ssh.id
+
+        with sshpool.item() as ssh:
+            second_id = ssh.id
+
+        self.assertEqual(first_id, second_id)
+        self.assertEqual(1, mock_sshclient.return_value.connect.call_count)
+
+        # create with private key
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    privatekey="test",
+                                    min_size=1,
+                                    max_size=1)
+        self.assertEqual(2, mock_sshclient.return_value.connect.call_count)
+
+        # attempt to create with no password or private key
+        self.assertRaises(paramiko.SSHException,
+                          ssh_utils.SSHPool,
+                          "127.0.0.1", 22, 10,
+                          "test",
+                          min_size=1,
+                          max_size=1)
+
+    @mock.patch('six.moves.builtins.open')
+    @mock.patch('paramiko.SSHClient')
+    def test_closed_reopened_ssh_connections(self, mock_sshclient, mock_open):
+        mock_sshclient.return_value = eval('FakeSSHClient')()
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    password="test",
+                                    min_size=1,
+                                    max_size=4)
+        with sshpool.item() as ssh:
+            mock_sshclient.reset_mock()
+            first_id = ssh.id
+
+        with sshpool.item() as ssh:
+            second_id = ssh.id
+            ssh.get_transport().active = False
+            sshpool.remove(ssh)
+
+        self.assertEqual(first_id, second_id)
+
+        # create a new client
+        mock_sshclient.return_value = FakeSSHClient()
+        with sshpool.item() as ssh:
+            third_id = ssh.id
+
+        self.assertNotEqual(first_id, third_id)
+
+    @mock.patch('cinder.ssh_utils.CONF')
+    @mock.patch('six.moves.builtins.open')
+    @mock.patch('paramiko.SSHClient')
+    def test_missing_ssh_hosts_key_config(self, mock_sshclient, mock_open,
+                                          mock_conf):
+        mock_sshclient.return_value = FakeSSHClient()
+
+        mock_conf.ssh_hosts_key_file = None
+        # create with password
+        self.assertRaises(exception.ParameterNotFound,
+                          ssh_utils.SSHPool,
+                          "127.0.0.1", 22, 10,
+                          "test",
+                          password="test",
+                          min_size=1,
+                          max_size=1)
+
+    @mock.patch('six.moves.builtins.open')
+    @mock.patch('paramiko.SSHClient')
+    def test_create_default_known_hosts_file(self, mock_sshclient,
+                                             mock_open):
+        mock_sshclient.return_value = FakeSSHClient()
+
+        CONF.state_path = '/var/lib/cinder'
+        CONF.ssh_hosts_key_file = '/var/lib/cinder/ssh_known_hosts'
+
+        default_file = '/var/lib/cinder/ssh_known_hosts'
+
+        ssh_pool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                     "test",
+                                     password="test",
+                                     min_size=1,
+                                     max_size=1)
+
+        with ssh_pool.item() as ssh:
+            mock_open.assert_called_once_with(default_file, 'a')
+            ssh_pool.remove(ssh)
+
+    @mock.patch('os.path.isfile', return_value=False)
+    @mock.patch('six.moves.builtins.open')
+    @mock.patch('paramiko.SSHClient')
+    def test_ssh_missing_hosts_key_file(self, mock_sshclient, mock_open,
+                                        mock_isfile):
+        mock_sshclient.return_value = FakeSSHClient()
+
+        CONF.ssh_hosts_key_file = '/tmp/blah'
+
+        self.assertNotIn(CONF.state_path, CONF.ssh_hosts_key_file)
+        self.assertRaises(exception.InvalidInput,
+                          ssh_utils.SSHPool,
+                          "127.0.0.1", 22, 10,
+                          "test",
+                          password="test",
+                          min_size=1,
+                          max_size=1)
+
+    @mock.patch.multiple('cinder.ssh_utils.CONF',
+                         strict_ssh_host_key_policy=True,
+                         ssh_hosts_key_file='/var/lib/cinder/ssh_known_hosts')
+    @mock.patch('six.moves.builtins.open')
+    @mock.patch('paramiko.SSHClient')
+    @mock.patch('os.path.isfile', return_value=True)
+    def test_ssh_strict_host_key_policy(self, mock_isfile, mock_sshclient,
+                                        mock_open):
+        mock_sshclient.return_value = FakeSSHClient()
+
+        # create with customized setting
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    password="test",
+                                    min_size=1,
+                                    max_size=1)
+
+        with sshpool.item() as ssh:
+            self.assertTrue(isinstance(ssh.get_policy(),
+                                       paramiko.RejectPolicy))
+
+    @mock.patch('six.moves.builtins.open')
+    @mock.patch('paramiko.SSHClient')
+    @mock.patch('os.path.isfile', return_value=True)
+    def test_ssh_not_strict_host_key_policy(self, mock_isfile, mock_sshclient,
+                                            mock_open):
+        mock_sshclient.return_value = FakeSSHClient()
+
+        CONF.strict_ssh_host_key_policy = False
+
+        # create with customized setting
+        sshpool = ssh_utils.SSHPool("127.0.0.1", 22, 10,
+                                    "test",
+                                    password="test",
+                                    min_size=1,
+                                    max_size=1)
+
+        with sshpool.item() as ssh:
+            self.assertTrue(isinstance(ssh.get_policy(),
+                                       paramiko.AutoAddPolicy))
+
+
 class BrickUtils(test.TestCase):
     """Unit test to test the brick utility wrapper functions."""
 
@@ -948,7 +1376,7 @@ class IsBlkDeviceTestCase(test.TestCase):
 
 
 class WrongException(Exception):
-    pass
+        pass
 
 
 class TestRetryDecorator(test.TestCase):
@@ -1305,112 +1733,3 @@ class LogTracingTestCase(test.TestCase):
 
         self.assertEqual('OK', result)
         self.assertEqual(2, mock_log.debug.call_count)
-
-    def test_utils_calculate_virtual_free_capacity_with_thick(self):
-        host_stat = {'total_capacity_gb': 30.01,
-                     'free_capacity_gb': 28.01,
-                     'provisioned_capacity_gb': 2.0,
-                     'max_over_subscription_ratio': 1.0,
-                     'thin_provisioning_support': False,
-                     'thick_provisioning_support': True,
-                     'reserved_percentage': 5}
-
-        free = utils.calculate_virtual_free_capacity(
-            host_stat['total_capacity_gb'],
-            host_stat['free_capacity_gb'],
-            host_stat['provisioned_capacity_gb'],
-            host_stat['thin_provisioning_support'],
-            host_stat['max_over_subscription_ratio'],
-            host_stat['reserved_percentage'])
-
-        self.assertEqual(27.01, free)
-
-    def test_utils_calculate_virtual_free_capacity_with_thin(self):
-        host_stat = {'total_capacity_gb': 20.01,
-                     'free_capacity_gb': 18.01,
-                     'provisioned_capacity_gb': 2.0,
-                     'max_over_subscription_ratio': 2.0,
-                     'thin_provisioning_support': True,
-                     'thick_provisioning_support': False,
-                     'reserved_percentage': 5}
-
-        free = utils.calculate_virtual_free_capacity(
-            host_stat['total_capacity_gb'],
-            host_stat['free_capacity_gb'],
-            host_stat['provisioned_capacity_gb'],
-            host_stat['thin_provisioning_support'],
-            host_stat['max_over_subscription_ratio'],
-            host_stat['reserved_percentage'])
-
-        self.assertEqual(37.02, free)
-
-
-class Comparable(utils.ComparableMixin):
-    def __init__(self, value):
-        self.value = value
-
-    def _cmpkey(self):
-        return self.value
-
-
-class TestComparableMixin(test.TestCase):
-
-    def setUp(self):
-        super(TestComparableMixin, self).setUp()
-        self.one = Comparable(1)
-        self.two = Comparable(2)
-
-    def test_lt(self):
-        self.assertTrue(self.one < self.two)
-        self.assertFalse(self.two < self.one)
-        self.assertFalse(self.one < self.one)
-
-    def test_le(self):
-        self.assertTrue(self.one <= self.two)
-        self.assertFalse(self.two <= self.one)
-        self.assertTrue(self.one <= self.one)
-
-    def test_eq(self):
-        self.assertFalse(self.one == self.two)
-        self.assertFalse(self.two == self.one)
-        self.assertTrue(self.one == self.one)
-
-    def test_ge(self):
-        self.assertFalse(self.one >= self.two)
-        self.assertTrue(self.two >= self.one)
-        self.assertTrue(self.one >= self.one)
-
-    def test_gt(self):
-        self.assertFalse(self.one > self.two)
-        self.assertTrue(self.two > self.one)
-        self.assertFalse(self.one > self.one)
-
-    def test_ne(self):
-        self.assertTrue(self.one != self.two)
-        self.assertTrue(self.two != self.one)
-        self.assertFalse(self.one != self.one)
-
-    def test_compare(self):
-        self.assertEqual(NotImplemented,
-                         self.one._compare(1, self.one._cmpkey))
-
-
-class TestValidateInteger(test.TestCase):
-
-    def test_validate_integer_greater_than_max_int_limit(self):
-        value = (2 ** 31) + 1
-        self.assertRaises(webob.exc.HTTPBadRequest,
-                          utils.validate_integer,
-                          value, 'limit', min_value=-1, max_value=(2 ** 31))
-
-    def test_validate_integer_less_than_min_int_limit(self):
-        value = -12
-        self.assertRaises(webob.exc.HTTPBadRequest,
-                          utils.validate_integer,
-                          value, 'limit', min_value=-1, max_value=(2 ** 31))
-
-    def test_validate_integer_invalid_limit(self):
-        value = "should_be_int"
-        self.assertRaises(webob.exc.HTTPBadRequest,
-                          utils.validate_integer,
-                          value, 'limit', min_value=-1, max_value=(2 ** 31))

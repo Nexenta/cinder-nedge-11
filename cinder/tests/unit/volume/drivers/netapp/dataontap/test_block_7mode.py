@@ -2,7 +2,6 @@
 # Copyright (c) 2014 Clinton Knight.  All rights reserved.
 # Copyright (c) 2015 Tom Barron.  All rights reserved.
 # Copyright (c) 2015 Goutham Pacha Ravi. All rights reserved.
-# Copyright (c) 2016 Mike Rooney. All rights reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -34,7 +33,6 @@ from cinder.volume.drivers.netapp.dataontap import block_7mode
 from cinder.volume.drivers.netapp.dataontap import block_base
 from cinder.volume.drivers.netapp.dataontap.client import api as netapp_api
 from cinder.volume.drivers.netapp.dataontap.client import client_base
-from cinder.volume.drivers.netapp.dataontap.performance import perf_7mode
 from cinder.volume.drivers.netapp import utils as na_utils
 
 
@@ -51,7 +49,6 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
 
         self.library.zapi_client = mock.Mock()
         self.zapi_client = self.library.zapi_client
-        self.library.perf_library = mock.Mock()
         self.library.vfiler = mock.Mock()
         # Deprecated option
         self.library.configuration.netapp_volume_list = None
@@ -69,7 +66,6 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
         config.netapp_server_port = '80'
         return config
 
-    @mock.patch.object(perf_7mode, 'Performance7modeLibrary', mock.Mock())
     @mock.patch.object(client_base.Client, 'get_ontapi_version',
                        mock.MagicMock(return_value=(1, 20)))
     @mock.patch.object(block_7mode.NetAppBlockStorage7modeLibrary,
@@ -79,8 +75,6 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
     @mock.patch.object(block_base.NetAppBlockStorageLibrary, 'do_setup')
     def test_do_setup(self, super_do_setup, mock_do_partner_setup,
                       mock_get_root_volume_name):
-
-        self.mock_object(client_base.Client, '_init_ssh_client')
         mock_get_root_volume_name.return_value = 'vol0'
         context = mock.Mock()
 
@@ -93,7 +87,6 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
     @mock.patch.object(client_base.Client, 'get_ontapi_version',
                        mock.MagicMock(return_value=(1, 20)))
     def test_do_partner_setup(self):
-        self.mock_object(client_base.Client, '_init_ssh_client')
         self.library.configuration.netapp_partner_backend_name = 'partner'
 
         self.library._do_partner_setup()
@@ -103,7 +96,7 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
     @mock.patch.object(client_base.Client, 'get_ontapi_version',
                        mock.MagicMock(return_value=(1, 20)))
     def test_do_partner_setup_no_partner(self):
-        self.mock_object(client_base.Client, '_init_ssh_client')
+
         self.library._do_partner_setup()
 
         self.assertFalse(hasattr(self.library, 'partner_zapi_client'))
@@ -303,8 +296,7 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
 
         self.library.zapi_client.clone_lun.assert_called_once_with(
             '/vol/fake/fakeLUN', '/vol/fake/newFakeLUN', 'fakeLUN',
-            'newFakeLUN', 'false', block_count=0, dest_block=0,
-            source_snapshot=None, src_block=0)
+            'newFakeLUN', 'false', block_count=0, dest_block=0, src_block=0)
 
     def test_clone_lun_blocks(self):
         """Test for when clone lun is passed block information."""
@@ -324,8 +316,7 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
         self.library.zapi_client.clone_lun.assert_called_once_with(
             '/vol/fake/fakeLUN', '/vol/fake/newFakeLUN', 'fakeLUN',
             'newFakeLUN', 'false', block_count=block_count,
-            dest_block=dest_block, src_block=src_block,
-            source_snapshot=None)
+            dest_block=dest_block, src_block=src_block)
 
     def test_clone_lun_no_space_reservation(self):
         """Test for when space_reservation is not passed."""
@@ -340,8 +331,7 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
 
         self.library.zapi_client.clone_lun.assert_called_once_with(
             '/vol/fake/fakeLUN', '/vol/fake/newFakeLUN', 'fakeLUN',
-            'newFakeLUN', 'false', block_count=0, dest_block=0, src_block=0,
-            source_snapshot=None)
+            'newFakeLUN', 'false', block_count=0, dest_block=0, src_block=0)
 
     def test_clone_lun_qos_supplied(self):
         """Test for qos supplied in clone lun invocation."""
@@ -451,13 +441,13 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
         result = self.library._mark_qos_policy_group_for_deletion(
             fake.QOS_POLICY_GROUP_INFO)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
 
     def test_setup_qos_for_volume(self):
         result = self.library._setup_qos_for_volume(fake.VOLUME,
                                                     fake.EXTRA_SPECS)
 
-        self.assertIsNone(result)
+        self.assertEqual(None, result)
 
     def test_manage_existing_lun_same_name(self):
         mock_lun = block_base.NetAppLun('handle', 'name', '1',
@@ -520,28 +510,21 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
         self.library.vols = netapp_api.NaElement(
             client_fakes.VOLUME_LIST_INFO_RESPONSE).get_child_by_name(
             'volumes').get_children()
-        self.library.perf_library.get_node_utilization = (
-            mock.Mock(return_value=30.0))
 
         thick = netapp_lun_space_reservation == 'enabled'
 
-        result = self.library._get_pool_stats(filter_function='filter',
-                                              goodness_function='goodness')
+        result = self.library._get_pool_stats()
 
         expected = [{
             'pool_name': 'vol1',
-            'consistencygroup_support': True,
             'QoS_support': False,
-            'thin_provisioning_support': not thick,
-            'thick_provisioning_support': thick,
+            'thin_provisioned_support': not thick,
+            'thick_provisioned_support': thick,
             'provisioned_capacity_gb': 2.94,
             'free_capacity_gb': 1339.27,
             'total_capacity_gb': 1342.21,
             'reserved_percentage': 5,
-            'max_over_subscription_ratio': 10.0,
-            'utilization': 30.0,
-            'filter_function': 'filter',
-            'goodness_function': 'goodness',
+            'max_over_subscription_ratio': 10.0
         }]
 
         self.assertEqual(expected, result)
@@ -615,11 +598,8 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
             fake.FAKE_7MODE_VOL1[0].get_child_content('name')
         ]
         self.library.root_volume_name = ''
-        self.library.perf_library.get_node_utilization = (
-            mock.Mock(return_value=30.0))
 
-        pools = self.library._get_pool_stats(filter_function='filter',
-                                             goodness_function='goodness')
+        pools = self.library._get_pool_stats()
 
         self.assertListEqual(fake.FAKE_7MODE_POOLS, pools)
 
@@ -632,23 +612,3 @@ class NetAppBlockStorage7modeLibraryTestCase(test.TestCase):
         pools = self.library._get_pool_stats()
 
         self.assertListEqual([], pools)
-
-    def test_delete_volume(self):
-        self.library.vol_refresh_voluntary = False
-        mock_super_delete_volume = self.mock_object(
-            block_base.NetAppBlockStorageLibrary, 'delete_volume')
-
-        self.library.delete_volume(fake.VOLUME)
-
-        mock_super_delete_volume.assert_called_once_with(fake.VOLUME)
-        self.assertTrue(self.library.vol_refresh_voluntary)
-
-    def test_delete_snapshot(self):
-        self.library.vol_refresh_voluntary = False
-        mock_super_delete_snapshot = self.mock_object(
-            block_base.NetAppBlockStorageLibrary, 'delete_snapshot')
-
-        self.library.delete_snapshot(fake.SNAPSHOT)
-
-        mock_super_delete_snapshot.assert_called_once_with(fake.SNAPSHOT)
-        self.assertTrue(self.library.vol_refresh_voluntary)

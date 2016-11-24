@@ -20,7 +20,6 @@ from oslo_utils import strutils
 import six
 import webob
 
-from cinder.api import common
 from cinder.api import extensions
 from cinder.api.openstack import wsgi
 from cinder.api.views import qos_specs as view_qos_specs
@@ -116,20 +115,7 @@ class QoSSpecsController(wsgi.Controller):
         """Returns the list of qos_specs."""
         context = req.environ['cinder.context']
         authorize(context)
-
-        params = req.params.copy()
-
-        marker, limit, offset = common.get_pagination_params(params)
-        sort_keys, sort_dirs = common.get_sort_params(params)
-        filters = params
-        allowed_search_options = ('id', 'name', 'consumer')
-        utils.remove_invalid_filter_options(context, filters,
-                                            allowed_search_options)
-
-        specs = qos_specs.get_all_specs(context, filters=filters,
-                                        marker=marker, limit=limit,
-                                        offset=offset, sort_keys=sort_keys,
-                                        sort_dirs=sort_dirs)
+        specs = qos_specs.get_all_specs(context)
         return self._view_builder.summary_list(req, specs)
 
     @wsgi.serializers(xml=QoSSpecsTemplate)

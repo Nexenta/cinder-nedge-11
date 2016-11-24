@@ -19,7 +19,6 @@ Volume driver for HDS HNAS NFS storage.
 
 import math
 import os
-import re
 import six
 import socket
 import time
@@ -28,6 +27,7 @@ from xml.etree import ElementTree as ETree
 from oslo_concurrency import processutils
 from oslo_config import cfg
 from oslo_log import log as logging
+from oslo_utils import excutils
 from oslo_utils import units
 
 from cinder import exception
@@ -40,7 +40,7 @@ from cinder.volume import utils
 from cinder.volume import volume_types
 
 
-HDS_HNAS_NFS_VERSION = '4.1.0'
+HDS_HNAS_NFS_VERSION = '4.0.0'
 
 LOG = logging.getLogger(__name__)
 
@@ -56,30 +56,30 @@ HNAS_DEFAULT_CONFIG = {'hnas_cmd': 'ssc', 'ssh_port': '22'}
 
 
 def _xml_read(root, element, check=None):
-    """Read an xml element."""
+    """Read an xml element.
 
-    val = root.findtext(element)
+    :param root: XML object
+    :param element: string desired tag
+    :param check: string if present, throw exception if element missing
+    """
 
-    # mandatory parameter not found
-    if val is None and check:
-        raise exception.ParameterNotFound(param=element)
-
-    # tag not found
-    if val is None:
+    try:
+        val = root.findtext(element)
+        LOG.info(_LI("%(element)s: %(val)s"),
+                 {'element': element,
+                  'val': val if element != 'password' else '***'})
+        if val:
+            return val.strip()
+        if check:
+            raise exception.ParameterNotFound(param=element)
         return None
-
-    svc_tag_pattern = re.compile("svc_.$")
-    # tag found but empty parameter.
-    if not val.strip():
-        if svc_tag_pattern.search(element):
-            return ""
-        raise exception.ParameterNotFound(param=element)
-
-    LOG.debug(_LI("%(element)s: %(val)s"),
-              {'element': element,
-               'val': val if element != 'password' else '***'})
-
-    return val.strip()
+    except ETree.ParseError:
+        if check:
+            with excutils.save_and_reraise_exception():
+                LOG.error(_LE("XML exception reading parameter: %s"), element)
+        else:
+            LOG.info(_LI("XML exception reading parameter: %s"), element)
+            return None
 
 
 def _read_config(xml_config_file):
@@ -102,7 +102,7 @@ def _read_config(xml_config_file):
     config = {}
     arg_prereqs = ['mgmt_ip0', 'username']
     for req in arg_prereqs:
-        config[req] = _xml_read(root, req, True)
+        config[req] = _xml_read(root, req, 'check')
 
     # optional parameters
     opt_parameters = ['hnas_cmd', 'ssh_enabled', 'cluster_admin_ip0']
@@ -110,14 +110,14 @@ def _read_config(xml_config_file):
         config[req] = _xml_read(root, req)
 
     if config['ssh_enabled'] == 'True':
-        config['ssh_private_key'] = _xml_read(root, 'ssh_private_key', True)
+        config['ssh_private_key'] = _xml_read(root, 'ssh_private_key', 'check')
         config['password'] = _xml_read(root, 'password')
         config['ssh_port'] = _xml_read(root, 'ssh_port')
         if config['ssh_port'] is None:
             config['ssh_port'] = HNAS_DEFAULT_CONFIG['ssh_port']
     else:
         # password is mandatory when not using SSH
-        config['password'] = _xml_read(root, 'password', True)
+        config['password'] = _xml_read(root, 'password', 'check')
 
     if config['hnas_cmd'] is None:
         config['hnas_cmd'] = HNAS_DEFAULT_CONFIG['hnas_cmd']
@@ -133,7 +133,7 @@ def _read_config(xml_config_file):
 
         # none optional
         for arg in ['volume_type', 'hdp']:
-            service[arg] = _xml_read(root, svc + '/' + arg, True)
+            service[arg] = _xml_read(root, svc + '/' + arg, 'check')
         config['services'][service['volume_type']] = service
         config['hdp'][service['hdp']] = service['hdp']
 
@@ -159,7 +159,6 @@ class HDSNFSDriver(nfs.NfsDriver):
     Version 2.2.0: Added support to SSH authentication
     Version 3.0.0: Added pool aware scheduling
     Version 4.0.0: Added manage/unmanage features
-    Version 4.1.0: Fixed XML parser checks on blank options
     """
 
     def __init__(self, *args, **kwargs):
@@ -589,7 +588,7 @@ class HDSNFSDriver(nfs.NfsDriver):
         Convert that to an IP address and then restore the entire path.
 
         :param vol_ref:  driver-specific information used to identify a volume
-        :returns:         a volume reference where share is in IP format
+        :return:         a volume reference where share is in IP format
         """
 
         # First strip out share and convert to IP format.
@@ -616,7 +615,7 @@ class HDSNFSDriver(nfs.NfsDriver):
         if unsuccessful.
 
         :param vol_ref: driver-specific information used to identify a volume
-        :returns:        NFS Share, NFS mount, volume path or raise error
+        :return:        NFS Share, NFS mount, volume path or raise error
         """
         # Check that the reference is valid.
         if 'source-name' not in vol_ref:

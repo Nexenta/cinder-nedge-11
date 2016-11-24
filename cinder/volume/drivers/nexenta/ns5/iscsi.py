@@ -102,7 +102,7 @@ class NexentaISCSIDriver(driver.ISCSIDriver,
         try:
             self.nef.post(url, data)
         except exception.NexentaException as e:
-            if 'EEXIST' in e.args[0]:
+            if 'EEXIST' in e.args[0]['code']:
                 LOG.debug('volumeGroup already exists, skipping')
             else:
                 raise
@@ -451,7 +451,7 @@ class NexentaISCSIDriver(driver.ISCSIDriver,
                 self.nef.post(url, data)
                 self.volumes[tg_name].add(volume_path)
             except exception.NexentaException as e:
-                if 'No such target group' in e.args[0]:
+                if 'No such target group' in e.args[0]['message']:
                     self._create_target_group(tg_name, target_name)
                     self._fill_volumes(tg_name)
                     self.nef.post(url, data)

@@ -23,13 +23,13 @@ from cinder.tests.unit.api import fakes
 class RequestTest(test.TestCase):
     def test_content_type_missing(self):
         request = wsgi.Request.blank('/tests/123', method='POST')
-        request.body = b"<body />"
+        request.body = "<body />"
         self.assertIsNone(request.get_content_type())
 
     def test_content_type_unsupported(self):
         request = wsgi.Request.blank('/tests/123', method='POST')
         request.headers["Content-Type"] = "text/html"
-        request.body = b"asdf<br />"
+        request.body = "asdf<br />"
         self.assertRaises(exception.InvalidContentType,
                           request.get_content_type)
 
@@ -206,20 +206,20 @@ class DictSerializerTest(test.TestCase):
 class XMLDictSerializerTest(test.TestCase):
     def test_xml(self):
         input_dict = dict(servers=dict(a=(2, 3)))
-        expected_xml = b'<serversxmlns="asdf"><a>(2,3)</a></servers>'
+        expected_xml = '<serversxmlns="asdf"><a>(2,3)</a></servers>'
         serializer = wsgi.XMLDictSerializer(xmlns="asdf")
         result = serializer.serialize(input_dict)
-        result = result.replace(b'\n', b'').replace(b' ', b'')
+        result = result.replace('\n', '').replace(' ', '')
         self.assertEqual(expected_xml, result)
 
 
 class JSONDictSerializerTest(test.TestCase):
     def test_json(self):
         input_dict = dict(servers=dict(a=(2, 3)))
-        expected_json = b'{"servers":{"a":[2,3]}}'
+        expected_json = '{"servers":{"a":[2,3]}}'
         serializer = wsgi.JSONDictSerializer()
         result = serializer.serialize(input_dict)
-        result = result.replace(b'\n', b'').replace(b' ', b'')
+        result = result.replace('\n', '').replace(' ', '')
         self.assertEqual(expected_json, result)
 
 
@@ -317,7 +317,7 @@ class ResourceTest(test.TestCase):
         req = webob.Request.blank('/tests')
         app = fakes.TestRouter(Controller())
         response = req.get_response(app)
-        self.assertEqual(b'off', response.body)
+        self.assertEqual('off', response.body)
         self.assertEqual(200, response.status_int)
 
     def test_resource_not_authorized(self):
@@ -443,7 +443,7 @@ class ResourceTest(test.TestCase):
 
         request = wsgi.Request.blank('/', method='POST')
         request.headers['Content-Type'] = 'application/none'
-        request.body = b'foo'
+        request.body = 'foo'
 
         content_type, body = resource.get_body(request)
         self.assertIsNone(content_type)
@@ -458,7 +458,7 @@ class ResourceTest(test.TestCase):
         resource = wsgi.Resource(controller)
 
         request = wsgi.Request.blank('/', method='POST')
-        request.body = b'foo'
+        request.body = 'foo'
 
         content_type, body = resource.get_body(request)
         self.assertIsNone(content_type)
@@ -474,7 +474,7 @@ class ResourceTest(test.TestCase):
 
         request = wsgi.Request.blank('/', method='POST')
         request.headers['Content-Type'] = 'application/json'
-        request.body = b''
+        request.body = ''
 
         content_type, body = resource.get_body(request)
         self.assertIsNone(content_type)
@@ -490,11 +490,11 @@ class ResourceTest(test.TestCase):
 
         request = wsgi.Request.blank('/', method='POST')
         request.headers['Content-Type'] = 'application/json'
-        request.body = b'foo'
+        request.body = 'foo'
 
         content_type, body = resource.get_body(request)
         self.assertEqual('application/json', content_type)
-        self.assertEqual(b'foo', body)
+        self.assertEqual('foo', body)
 
     def test_deserialize_badtype(self):
         class Controller(object):
@@ -797,28 +797,6 @@ class ResourceTest(test.TestCase):
         self.assertEqual([2], called)
         self.assertEqual('foo', response)
 
-    def test_post_process_extensions_version_not_found(self):
-        class Controller(object):
-            def index(self, req, pants=None):
-                return pants
-
-        controller = Controller()
-        resource = wsgi.Resource(controller)
-
-        called = []
-
-        def extension1(req, resp_obj):
-            called.append(1)
-            return 'bar'
-
-        def extension2(req, resp_obj):
-            raise exception.VersionNotFoundForAPIMethod(version='fake_version')
-
-        response = resource.post_process_extensions([extension2, extension1],
-                                                    None, None, {})
-        self.assertEqual([1], called)
-        self.assertEqual('bar', response)
-
     def test_post_process_extensions_generator(self):
         class Controller(object):
             def index(self, req, pants=None):
@@ -974,7 +952,7 @@ class ResponseObjectTest(test.TestCase):
             self.assertEqual('header1', response.headers['X-header1'])
             self.assertEqual('header2', response.headers['X-header2'])
             self.assertEqual(202, response.status_int)
-            self.assertEqual(mtype, response.body.decode('utf-8'))
+            self.assertEqual(mtype, response.body)
 
 
 class ValidBodyTest(test.TestCase):
@@ -1060,3 +1038,21 @@ class ValidBodyTest(test.TestCase):
         body = {'name': 'a' * 255 + "  "}
         self.controller.validate_name_and_description(body)
         self.assertEqual('a' * 255, body['name'])
+
+    def test_validate_integer_greater_than_max_int_limit(self):
+        value = (2 ** 31) + 1
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.validate_integer,
+                          value, 'limit', min_value=-1, max_value=(2 ** 31))
+
+    def test_validate_integer_less_than_min_int_limit(self):
+        value = -12
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.validate_integer,
+                          value, 'limit', min_value=-1, max_value=(2 ** 31))
+
+    def test_validate_integer_invalid_limit(self):
+        value = "should_be_int"
+        self.assertRaises(webob.exc.HTTPBadRequest,
+                          self.controller.validate_integer,
+                          value, 'limit', min_value=-1, max_value=(2 ** 31))

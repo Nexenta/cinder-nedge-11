@@ -575,7 +575,7 @@ class WsgiLimiterTest(BaseLimitTestSuite):
 
     def _request_data(self, verb, path):
         """Get data describing a limit request verb/path."""
-        return jsonutils.dump_as_bytes({"verb": verb, "path": path})
+        return jsonutils.dumps({"verb": verb, "path": path})
 
     def _request(self, verb, url, username=None):
         """POST request to given url by given username.
@@ -641,11 +641,9 @@ class FakeHttplibSocket(object):
 
     def __init__(self, response_string):
         """Initialize new `FakeHttplibSocket`."""
-        if isinstance(response_string, six.text_type):
-            response_string = response_string.encode('utf-8')
-        self._buffer = six.BytesIO(response_string)
+        self._buffer = six.StringIO(response_string)
 
-    def makefile(self, mode, *args):
+    def makefile(self, _mode, _other):
         """Returns the socket's internal buffer."""
         return self._buffer
 
@@ -763,9 +761,8 @@ class WsgiLimiterProxyTest(BaseLimitTestSuite):
         delay, error = self.proxy.check_for_delay("GET", "/delayed")
         error = error.strip()
 
-        expected = ("60.00",
-                    b"403 Forbidden\n\nOnly 1 GET request(s) can be "
-                    b"made to /delayed every minute.")
+        expected = ("60.00", "403 Forbidden\n\nOnly 1 GET request(s) can be "
+                    "made to /delayed every minute.")
 
         self.assertEqual(expected, (delay, error))
 
@@ -837,7 +834,7 @@ class LimitsXMLSerializationTest(test.TestCase):
                    "absolute": {}}}
 
         output = serializer.serialize(fixture)
-        has_dec = output.startswith(b"<?xml version='1.0' encoding='UTF-8'?>")
+        has_dec = output.startswith("<?xml version='1.0' encoding='UTF-8'?>")
         self.assertTrue(has_dec)
 
     def test_index(self):

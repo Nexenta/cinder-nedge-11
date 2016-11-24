@@ -36,8 +36,10 @@ LOG = logging.getLogger(__name__)
 
 blockbridge_opts = [
     cfg.StrOpt("blockbridge_api_host",
+               default=None,
                help=_("IP address/hostname of Blockbridge API.")),
     cfg.IntOpt("blockbridge_api_port",
+               default=None,
                help=_("Override HTTPS port to connect to Blockbridge "
                       "API server.")),
     cfg.StrOpt("blockbridge_auth_scheme",
@@ -46,11 +48,14 @@ blockbridge_opts = [
                help=_("Blockbridge API authentication scheme (token "
                       "or password)")),
     cfg.StrOpt("blockbridge_auth_token",
+               default=None,
                help=_("Blockbridge API token (for auth scheme 'token')"),
                secret=True),
     cfg.StrOpt("blockbridge_auth_user",
+               default=None,
                help=_("Blockbridge API user (for auth scheme 'password')")),
     cfg.StrOpt("blockbridge_auth_password",
+               default=None,
                help=_("Blockbridge API password (for auth scheme 'password')"),
                secret=True),
     cfg.DictOpt("blockbridge_pools",
@@ -58,6 +63,7 @@ blockbridge_opts = [
                 help=_("Defines the set of exposed pools and their associated "
                        "backend query strings")),
     cfg.StrOpt("blockbridge_default_pool",
+               default=None,
                help=_("Default pool name if unspecified.")),
 ]
 
@@ -349,7 +355,6 @@ class BlockbridgeISCSIDriver(driver.ISCSIDriver):
 
         create_params = {
             'name': self._get_dbref_name(volume),
-            'capacity': int(volume['size'] * units.Gi),
             'src': {
                 'volume_id': src_vref['id'],
             },
@@ -402,7 +407,6 @@ class BlockbridgeISCSIDriver(driver.ISCSIDriver):
 
         create_params = {
             'name': self._get_dbref_name(volume),
-            'capacity': int(volume['size'] * units.Gi),
             'src': {
                 'volume_id': snapshot['volume_id'],
                 'snapshot_id': snapshot['id'],

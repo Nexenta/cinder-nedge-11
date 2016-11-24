@@ -12,17 +12,16 @@
 #   License for the specific language governing permissions and limitations
 #   under the License.
 
+import json
 import uuid
 
 from lxml import etree
-from oslo_serialization import jsonutils
+from oslo_utils import timeutils
 import webob
 
 from cinder import context
-from cinder import objects
 from cinder import test
 from cinder.tests.unit.api import fakes
-from cinder.tests.unit import fake_volume
 from cinder import volume
 
 
@@ -30,16 +29,26 @@ PROJECT_ID = '88fd1da4-f464-4a87-9ce5-26f2f40743b9'
 
 
 def fake_volume_get(*args, **kwargs):
-    ctx = context.RequestContext('non-admin', 'fake', False)
-    vol = {
+    return {
         'id': 'fake',
+        'host': 'host001',
+        'status': 'available',
+        'size': 5,
+        'availability_zone': 'somewhere',
+        'created_at': timeutils.utcnow(),
+        'attach_status': None,
+        'display_name': 'anothervolume',
+        'display_description': 'Just another volume!',
+        'volume_type_id': None,
+        'snapshot_id': None,
         'project_id': PROJECT_ID,
+        'migration_status': None,
+        '_name_id': 'fake2',
     }
-    return fake_volume.fake_volume_obj(ctx, **vol)
 
 
 def fake_volume_get_all(*args, **kwargs):
-    return objects.VolumeList(objects=[fake_volume_get()])
+    return [fake_volume_get()]
 
 
 def app():
@@ -64,7 +73,7 @@ class VolumeTenantAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volume']
+        vol = json.loads(res.body)['volume']
         self.assertEqual(PROJECT_ID, vol['os-vol-tenant-attr:tenant_id'])
 
     def test_get_volume_unallowed(self):
@@ -73,7 +82,7 @@ class VolumeTenantAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volume']
+        vol = json.loads(res.body)['volume']
         self.assertNotIn('os-vol-tenant-attr:tenant_id', vol)
 
     def test_list_detail_volumes_allowed(self):
@@ -82,7 +91,7 @@ class VolumeTenantAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volumes']
+        vol = json.loads(res.body)['volumes']
         self.assertEqual(PROJECT_ID, vol[0]['os-vol-tenant-attr:tenant_id'])
 
     def test_list_detail_volumes_unallowed(self):
@@ -91,7 +100,7 @@ class VolumeTenantAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volumes']
+        vol = json.loads(res.body)['volumes']
         self.assertNotIn('os-vol-tenant-attr:tenant_id', vol[0])
 
     def test_list_simple_volumes_no_tenant_id(self):
@@ -100,7 +109,7 @@ class VolumeTenantAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volumes']
+        vol = json.loads(res.body)['volumes']
         self.assertNotIn('os-vol-tenant-attr:tenant_id', vol[0])
 
     def test_get_volume_xml(self):

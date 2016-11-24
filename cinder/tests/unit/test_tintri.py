@@ -24,7 +24,6 @@ from cinder import exception
 from cinder import test
 from cinder.tests.unit import fake_snapshot
 from cinder.tests.unit import fake_volume
-from cinder.tests.unit import utils as cinder_utils
 from cinder.volume.drivers.tintri import TClient
 from cinder.volume.drivers.tintri import TintriDriver
 
@@ -33,7 +32,6 @@ class FakeImage(object):
     def __init__(self):
         self.id = 'image-id'
         self.name = 'image-name'
-        self.properties = {'provider_location': 'nfs://share'}
 
     def __getitem__(self, key):
         return self.__dict__[key]
@@ -49,7 +47,6 @@ class TintriDriverTestCase(test.TestCase):
         self._driver._username = 'user'
         self._driver._password = 'password'
         self._driver._api_version = 'v310'
-        self._driver._image_cache_expiry = 30
         self._provider_location = 'localhost:/share'
         self._driver._mounted_shares = [self._provider_location]
         self.fake_stubs()
@@ -59,14 +56,13 @@ class TintriDriverTestCase(test.TestCase):
         configuration.nfs_mount_point_base = '/mnt/test'
         configuration.nfs_mount_options = None
         configuration.nas_mount_options = None
+        configuration.nfs_used_ratio = 0.95
         return configuration
 
     def fake_stubs(self):
         self.stubs.Set(TClient, 'login', self.fake_login)
         self.stubs.Set(TClient, 'logout', self.fake_logout)
         self.stubs.Set(TClient, 'get_snapshot', self.fake_get_snapshot)
-        self.stubs.Set(TClient, 'get_image_snapshots_to_date',
-                       self.fake_get_image_snapshots_to_date)
         self.stubs.Set(TintriDriver, '_move_cloned_volume',
                        self.fake_move_cloned_volume)
         self.stubs.Set(TintriDriver, '_get_provider_location',
@@ -88,9 +84,6 @@ class TintriDriverTestCase(test.TestCase):
 
     def fake_get_snapshot(self, volume_id):
         return 'snapshot-id'
-
-    def fake_get_image_snapshots_to_date(self, date):
-        return [{'uuid': {'uuid': 'image_snapshot-id'}}]
 
     def fake_move_cloned_volume(self, clone_name, volume_id, share=None):
         pass
@@ -130,27 +123,6 @@ class TintriDriverTestCase(test.TestCase):
         snapshot.volume = volume
         self.assertRaises(exception.VolumeDriverException,
                           self._driver.create_snapshot, snapshot)
-
-    @mock.patch.object(TClient, 'delete_snapshot', mock.Mock())
-    @mock.patch('oslo_service.loopingcall.FixedIntervalLoopingCall', new=
-                cinder_utils.ZeroIntervalLoopingCall)
-    def test_cleanup_cache(self):
-        self.assertFalse(self._driver.cache_cleanup)
-        timer = self._driver._initiate_image_cache_cleanup()
-        # wait for cache cleanup to complete
-        timer.wait()
-        self.assertFalse(self._driver.cache_cleanup)
-
-    @mock.patch.object(TClient, 'delete_snapshot', mock.Mock(
-                       side_effect=exception.VolumeDriverException))
-    @mock.patch('oslo_service.loopingcall.FixedIntervalLoopingCall', new=
-                cinder_utils.ZeroIntervalLoopingCall)
-    def test_cleanup_cache_delete_fail(self):
-        self.assertFalse(self._driver.cache_cleanup)
-        timer = self._driver._initiate_image_cache_cleanup()
-        # wait for cache cleanup to complete
-        timer.wait()
-        self.assertFalse(self._driver.cache_cleanup)
 
     @mock.patch.object(TClient, 'delete_snapshot', mock.Mock())
     def test_delete_snapshot(self):
@@ -204,8 +176,7 @@ class TintriDriverTestCase(test.TestCase):
         self.assertEqual(({'provider_location': self._provider_location,
                            'bootable': True}, True),
                          self._driver.clone_image(
-                         None, volume, 'image-name', FakeImage().__dict__,
-                         None))
+                         None, volume, 'image-name', FakeImage(), None))
 
     @mock.patch.object(TClient, 'clone_volume', mock.Mock(
                        side_effect=exception.VolumeDriverException))
@@ -214,8 +185,7 @@ class TintriDriverTestCase(test.TestCase):
         self.assertEqual(({'provider_location': None,
                            'bootable': False}, False),
                          self._driver.clone_image(
-                         None, volume, 'image-name', FakeImage().__dict__,
-                         None))
+                         None, volume, 'image-name', FakeImage(), None))
 
     def test_manage_existing(self):
         volume = fake_volume.fake_volume_obj(self.context)
@@ -274,9 +244,3 @@ class TintriDriverTestCase(test.TestCase):
         volume = fake_volume.fake_volume_obj(self.context)
         volume.provider_location = self._provider_location
         self._driver.unmanage(volume)
-
-    def test_retype(self):
-        volume = fake_volume.fake_volume_obj(self.context)
-        retype, update = self._driver.retype(None, volume, None, None, None)
-        self.assertTrue(retype)
-        self.assertIsNone(update)

@@ -1,6 +1,8 @@
 #    (c) Copyright 2013 Brocade Communications Systems Inc.
 #    All Rights Reserved.
 #
+#    Copyright 2014 OpenStack Foundation
+#
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
 #    a copy of the License at
@@ -13,6 +15,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 #
+
 
 """Unit tests for fc san lookup service."""
 
@@ -54,7 +57,7 @@ class TestFCSanLookupService(san_service.FCSanLookupService, test.TestCase):
         target_list = ['20240002ac000a50', '20240002ac000a40']
         device_map = self.get_device_mapping_from_network(
             initiator_list, target_list)
-        self.assertDictMatch(_device_map_to_verify, device_map)
+        self.assertDictMatch(device_map, _device_map_to_verify)
 
     def test_get_device_mapping_from_network_for_invalid_config(self):
         GlobalParams._is_normal_test = False

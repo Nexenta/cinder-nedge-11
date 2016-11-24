@@ -20,59 +20,51 @@ Client side of the volume backup RPC API.
 
 from oslo_config import cfg
 from oslo_log import log as logging
+import oslo_messaging as messaging
 
+from cinder.objects import base as objects_base
 from cinder import rpc
 
 
 CONF = cfg.CONF
+
 LOG = logging.getLogger(__name__)
 
 
-class BackupAPI(rpc.RPCAPI):
+class BackupAPI(object):
     """Client side of the volume rpc API.
 
     API version history:
 
         1.0 - Initial version.
         1.1 - Changed methods to accept backup objects instead of IDs.
-        1.2 - A version that got in by mistake (without breaking anything).
-        1.3 - Dummy version bump to mark start of having cinder-backup service
-              decoupled from cinder-volume.
-
-        ... Mitaka supports messaging 1.3. Any changes to existing methods in
-        1.x after this point should be done so that they can handle version cap
-        set to 1.3.
-
-        2.0 - Remove 1.x compatibility
     """
 
-    RPC_API_VERSION = '1.3'
-    TOPIC = CONF.backup_topic
-    BINARY = 'cinder-backup'
+    BASE_RPC_API_VERSION = '1.0'
+    RPC_API_VERSION = '1.1'
 
-    def _compat_ver(self, current, legacy):
-        if self.client.can_send_version(current):
-            return current
-        else:
-            return legacy
+    def __init__(self):
+        super(BackupAPI, self).__init__()
+        target = messaging.Target(topic=CONF.backup_topic,
+                                  version=self.BASE_RPC_API_VERSION)
+        serializer = objects_base.CinderObjectSerializer()
+        self.client = rpc.get_client(target, self.RPC_API_VERSION,
+                                     serializer=serializer)
 
     def create_backup(self, ctxt, backup):
         LOG.debug("create_backup in rpcapi backup_id %s", backup.id)
-        version = self._compat_ver('2.0', '1.1')
-        cctxt = self.client.prepare(server=backup.host, version=version)
+        cctxt = self.client.prepare(server=backup.host)
         cctxt.cast(ctxt, 'create_backup', backup=backup)
 
     def restore_backup(self, ctxt, volume_host, backup, volume_id):
         LOG.debug("restore_backup in rpcapi backup_id %s", backup.id)
-        version = self._compat_ver('2.0', '1.1')
-        cctxt = self.client.prepare(server=volume_host, version=version)
+        cctxt = self.client.prepare(server=volume_host)
         cctxt.cast(ctxt, 'restore_backup', backup=backup,
                    volume_id=volume_id)
 
     def delete_backup(self, ctxt, backup):
         LOG.debug("delete_backup  rpcapi backup_id %s", backup.id)
-        version = self._compat_ver('2.0', '1.1')
-        cctxt = self.client.prepare(server=backup.host, version=version)
+        cctxt = self.client.prepare(server=backup.host)
         cctxt.cast(ctxt, 'delete_backup', backup=backup)
 
     def export_record(self, ctxt, backup):
@@ -80,8 +72,7 @@ class BackupAPI(rpc.RPCAPI):
                   "on host %(host)s.",
                   {'id': backup.id,
                    'host': backup.host})
-        version = self._compat_ver('2.0', '1.1')
-        cctxt = self.client.prepare(server=backup.host, version=version)
+        cctxt = self.client.prepare(server=backup.host)
         return cctxt.call(ctxt, 'export_record', backup=backup)
 
     def import_record(self,
@@ -96,8 +87,7 @@ class BackupAPI(rpc.RPCAPI):
                   {'id': backup.id,
                    'host': host,
                    'url': backup_url})
-        version = self._compat_ver('2.0', '1.1')
-        cctxt = self.client.prepare(server=host, version=version)
+        cctxt = self.client.prepare(server=host)
         cctxt.cast(ctxt, 'import_record',
                    backup=backup,
                    backup_service=backup_service,
@@ -109,13 +99,11 @@ class BackupAPI(rpc.RPCAPI):
                   "on host %(host)s.",
                   {'id': backup.id,
                    'host': backup.host})
-        version = self._compat_ver('2.0', '1.1')
-        cctxt = self.client.prepare(server=backup.host, version=version)
+        cctxt = self.client.prepare(server=backup.host)
         return cctxt.cast(ctxt, 'reset_status', backup=backup, status=status)
 
     def check_support_to_force_delete(self, ctxt, host):
         LOG.debug("Check if backup driver supports force delete "
                   "on host %(host)s.", {'host': host})
-        version = self._compat_ver('2.0', '1.1')
-        cctxt = self.client.prepare(server=host, version=version)
+        cctxt = self.client.prepare(server=host)
         return cctxt.call(ctxt, 'check_support_to_force_delete')

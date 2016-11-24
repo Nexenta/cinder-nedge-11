@@ -38,7 +38,6 @@ from cinder.backup import driver
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
 from cinder import objects
-from cinder.objects import fields
 from cinder.volume import utils as volume_utils
 
 LOG = logging.getLogger(__name__)
@@ -62,8 +61,7 @@ class ChunkedBackupDriver(driver.BackupDriver):
        the backed up cinder volume exceeds the size of a backup repository
        "chunk."
 
-       Provides abstract methods to be implemented in concrete chunking
-       drivers.
+       Provides abstract methods to be implmented in concrete chunking drivers.
     """
 
     DRIVER_VERSION = '1.0.0'
@@ -160,24 +158,12 @@ class ChunkedBackupDriver(driver.BackupDriver):
         return
 
     def _create_container(self, context, backup):
-        # Container's name will be decided by the driver (returned by method
-        # update_container_name), if no change is required by the driver then
-        # we'll use the one the backup object already has, but if it doesn't
-        # have one backup_default_container will be used.
-        new_container = self.update_container_name(backup, backup.container)
-        if new_container:
-            # If the driver is not really changing the name we don't want to
-            # dirty the field in the object and save it to the DB with the same
-            # value.
-            if new_container != backup.container:
-                backup.container = new_container
-        elif backup.container is None:
-            backup.container = self.backup_default_container
-
+        backup.container = self.update_container_name(backup, backup.container)
         LOG.debug('_create_container started, container: %(container)s,'
                   'backup: %(backup_id)s.',
                   {'container': backup.container, 'backup_id': backup.id})
-
+        if backup.container is None:
+            backup.container = self.backup_default_container
         backup.save()
         self.put_container(backup.container)
         return backup.container
@@ -463,7 +449,7 @@ class ChunkedBackupDriver(driver.BackupDriver):
         # 1. The notifications are periodically sent in a certain interval.
         # 2. The notifications are sent after a certain number of chunks.
         # Both of them are working simultaneously during the volume backup,
-        # when "chunked" backup drivers are deployed.
+        # when swift is taken as the backup backend.
         def _notify_progress():
             self._send_progress_notification(self.context, backup,
                                              object_meta,
@@ -482,8 +468,7 @@ class ChunkedBackupDriver(driver.BackupDriver):
             # has been changed to delete or has been deleted, we cancel the
             # backup process to do forcing delete.
             backup = objects.Backup.get_by_id(self.context, backup.id)
-            if backup.status in (fields.BackupStatus.DELETING,
-                                 fields.BackupStatus.DELETED):
+            if 'deleting' == backup.status or 'deleted' == backup.status:
                 is_backup_canceled = True
                 # To avoid the chunk left when deletion complete, need to
                 # clean up the object of chunk again.
@@ -722,7 +707,7 @@ class ChunkedBackupDriver(driver.BackupDriver):
             try:
                 object_names = self._generate_object_names(backup)
             except Exception:
-                LOG.warning(_LW('Error while listing objects, continuing'
+                LOG.warning(_LW('swift error while listing objects, continuing'
                                 ' with delete.'))
 
             for object_name in object_names:

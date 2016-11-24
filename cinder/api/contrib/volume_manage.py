@@ -12,6 +12,7 @@
 #   License for the specific language governing permissions and limitations
 #   under the License.
 
+from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import uuidutils
 from webob import exc
@@ -27,6 +28,7 @@ from cinder import volume as cinder_volume
 from cinder.volume import volume_types
 
 LOG = logging.getLogger(__name__)
+CONF = cfg.CONF
 authorize = extensions.extension_authorizer('volume', 'volume_manage')
 
 
@@ -137,9 +139,11 @@ class VolumeManageController(wsgi.Controller):
                                                          volume['host'],
                                                          volume['ref'],
                                                          **kwargs)
-        except exception.ServiceNotFound as error:
-            raise exc.HTTPNotFound(explanation=error.msg)
+        except exception.ServiceNotFound:
+            msg = _("Service not found.")
+            raise exc.HTTPNotFound(explanation=msg)
 
+        new_volume = dict(new_volume)
         utils.add_visible_admin_metadata(new_volume)
 
         return self._view_builder.detail(req, new_volume)

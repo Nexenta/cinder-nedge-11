@@ -20,7 +20,6 @@ from cinder import context
 from cinder import exception
 from cinder import test
 from cinder.tests.unit.api import fakes
-from cinder.tests.unit import fake_service
 
 
 def app():
@@ -62,13 +61,13 @@ class SnapshotManageTest(test.TestCase):
         req.environ['cinder.context'] = context.RequestContext('admin',
                                                                'fake',
                                                                True)
-        req.body = jsonutils.dump_as_bytes(body)
+        req.body = jsonutils.dumps(body)
         res = req.get_response(app())
         return res
 
     @mock.patch('cinder.volume.rpcapi.VolumeAPI.manage_existing_snapshot')
     @mock.patch('cinder.volume.api.API.create_snapshot_in_db')
-    @mock.patch('cinder.db.service_get_by_args')
+    @mock.patch('cinder.db.service_get_by_host_and_topic')
     def test_manage_snapshot_ok(self, mock_db,
                                 mock_create_snapshot, mock_rpcapi):
         """Test successful manage volume execution.
@@ -78,11 +77,6 @@ class SnapshotManageTest(test.TestCase):
         called with the correct arguments, and that we return the correct HTTP
         code to the caller.
         """
-        ctxt = context.RequestContext('admin', 'fake', True)
-        mock_db.return_value = fake_service.fake_service_obj(
-            ctxt,
-            binary='cinder-volume')
-
         body = {'snapshot': {'volume_id': 'fake_volume_id', 'ref': 'fake_ref'}}
         res = self._get_resp(body)
         self.assertEqual(202, res.status_int, res)
@@ -96,10 +90,7 @@ class SnapshotManageTest(test.TestCase):
         # Check the create_snapshot_in_db was called with correct arguments.
         self.assertEqual(1, mock_create_snapshot.call_count)
         args = mock_create_snapshot.call_args[0]
-        named_args = mock_create_snapshot.call_args[1]
         self.assertEqual('fake_volume_id', args[1].get('id'))
-        # We should commit quota in cinder-volume layer for this operation.
-        self.assertFalse(named_args['commit_quota'])
 
         # Check the volume_rpcapi.manage_existing_snapshot was called with
         # correct arguments.

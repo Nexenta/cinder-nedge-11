@@ -12,22 +12,20 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import json
 import uuid
 
 from lxml import etree
-from oslo_serialization import jsonutils
 from oslo_utils import timeutils
 import webob
 
 from cinder import context
-from cinder import objects
 from cinder import test
 from cinder.tests.unit.api import fakes
-from cinder.tests.unit import fake_volume
 from cinder import volume
 
 
-def fake_db_volume_get(*args, **kwargs):
+def fake_volume_get(*args, **kwargs):
     return {
         'id': 'fake',
         'host': 'host001',
@@ -35,7 +33,7 @@ def fake_db_volume_get(*args, **kwargs):
         'size': 5,
         'availability_zone': 'somewhere',
         'created_at': timeutils.utcnow(),
-        'attach_status': 'detached',
+        'attach_status': None,
         'display_name': 'anothervolume',
         'display_description': 'Just another volume!',
         'volume_type_id': None,
@@ -46,14 +44,8 @@ def fake_db_volume_get(*args, **kwargs):
     }
 
 
-def fake_volume_api_get(*args, **kwargs):
-    ctx = context.RequestContext('admin', 'fake', True)
-    db_volume = fake_db_volume_get()
-    return fake_volume.fake_volume_obj(ctx, **db_volume)
-
-
 def fake_volume_get_all(*args, **kwargs):
-    return objects.VolumeList(objects=[fake_volume_api_get()])
+    return [fake_volume_get()]
 
 
 def app():
@@ -68,7 +60,7 @@ class VolumeMigStatusAttributeTest(test.TestCase):
 
     def setUp(self):
         super(VolumeMigStatusAttributeTest, self).setUp()
-        self.stubs.Set(volume.api.API, 'get', fake_volume_api_get)
+        self.stubs.Set(volume.api.API, 'get', fake_volume_get)
         self.stubs.Set(volume.api.API, 'get_all', fake_volume_get_all)
         self.UUID = uuid.uuid4()
 
@@ -78,7 +70,7 @@ class VolumeMigStatusAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volume']
+        vol = json.loads(res.body)['volume']
         self.assertEqual('migrating', vol['os-vol-mig-status-attr:migstat'])
         self.assertEqual('fake2', vol['os-vol-mig-status-attr:name_id'])
 
@@ -88,7 +80,7 @@ class VolumeMigStatusAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volume']
+        vol = json.loads(res.body)['volume']
         self.assertNotIn('os-vol-mig-status-attr:migstat', vol)
         self.assertNotIn('os-vol-mig-status-attr:name_id', vol)
 
@@ -98,7 +90,7 @@ class VolumeMigStatusAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volumes']
+        vol = json.loads(res.body)['volumes']
         self.assertEqual('migrating', vol[0]['os-vol-mig-status-attr:migstat'])
         self.assertEqual('fake2', vol[0]['os-vol-mig-status-attr:name_id'])
 
@@ -108,7 +100,7 @@ class VolumeMigStatusAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volumes']
+        vol = json.loads(res.body)['volumes']
         self.assertNotIn('os-vol-mig-status-attr:migstat', vol[0])
         self.assertNotIn('os-vol-mig-status-attr:name_id', vol[0])
 
@@ -118,7 +110,7 @@ class VolumeMigStatusAttributeTest(test.TestCase):
         req.method = 'GET'
         req.environ['cinder.context'] = ctx
         res = req.get_response(app())
-        vol = jsonutils.loads(res.body)['volumes']
+        vol = json.loads(res.body)['volumes']
         self.assertNotIn('os-vol-mig-status-attr:migstat', vol[0])
         self.assertNotIn('os-vol-mig-status-attr:name_id', vol[0])
 

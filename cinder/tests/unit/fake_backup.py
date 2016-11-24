@@ -15,17 +15,15 @@
 from oslo_versionedobjects import fields
 
 from cinder import objects
-from cinder.objects import fields as c_fields
-from cinder.tests.unit import fake_constants as fake
 
 
 def fake_db_backup(**updates):
     db_backup = {
-        'id': fake.backup_id,
-        'user_id': fake.user_id,
-        'project_id': fake.project_id,
-        'volume_id': fake.volume_id,
-        'status': c_fields.BackupStatus.CREATING,
+        'id': 1,
+        'user_id': 'fake_user',
+        'project_id': 'fake_project',
+        'volume_id': 'fake_id',
+        'status': 'creating',
         'host': 'fake_host',
         'display_name': 'fake_name',
         'size': 5,

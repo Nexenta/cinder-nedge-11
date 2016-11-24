@@ -46,6 +46,7 @@ common_opts = [
                 default=False,
                 help="Whether to verify DotHill array SSL certificate."),
     cfg.StrOpt('dothill_verify_certificate_path',
+               default=None,
                help="DotHill array SSL certificate path."),
 ]
 
@@ -446,7 +447,7 @@ class DotHillCommon(object):
         :param host: A dictionary describing the host to migrate to, where
                      host['host'] is its name, and host['capabilities'] is a
                      dictionary of its reported capabilities.
-        :returns: (False, None) if the driver does not support migration,
+        :returns (False, None) if the driver does not support migration,
                  (True, None) if successful
 
         """

@@ -1,5 +1,7 @@
-#    (c) Copyright 2016 Brocade Communications Systems Inc.
+#    (c) Copyright 2014 Brocade Communications Systems Inc.
 #    All Rights Reserved.
+#
+#    Copyright 2014 OpenStack Foundation
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -18,13 +20,16 @@
 """Unit tests for brcd fc san lookup service."""
 
 import mock
+from oslo_concurrency import processutils as putils
 from oslo_config import cfg
-from oslo_utils import importutils
 
+from cinder import exception
+from cinder import ssh_utils
 from cinder import test
 from cinder.volume import configuration as conf
 import cinder.zonemanager.drivers.brocade.brcd_fc_san_lookup_service \
     as brcd_lookup
+from cinder.zonemanager.drivers.brocade import fc_zone_constants
 
 
 parsed_switch_port_wwns = ['20:1a:00:05:1e:e8:e3:29',
@@ -73,10 +78,6 @@ class TestBrcdFCSanLookupService(brcd_lookup.BrcdFCSanLookupService,
         self.configuration.set_default('fc_fabric_names', 'BRCD_FAB_2',
                                        'fc-zone-manager')
         self.configuration.fc_fabric_names = 'BRCD_FAB_2'
-        self.configuration.brcd_sb_connector = ('cinder.tests.unit.zonemanager'
-                                                '.test_brcd_fc_san_lookup_'
-                                                'service'
-                                                '.FakeBrcdFCZoneClientCLI')
         self.create_configuration()
 
     # override some of the functions
@@ -92,64 +93,60 @@ class TestBrcdFCSanLookupService(brcd_lookup.BrcdFCSanLookupService,
         fc_fabric_opts.append(cfg.StrOpt('fc_fabric_password',
                                          default='password', help='',
                                          secret=True))
-        fc_fabric_opts.append(cfg.PortOpt('fc_fabric_port',
-                                          default=22, help=''))
+        fc_fabric_opts.append(cfg.IntOpt('fc_fabric_port',
+                                         default=22, help=''))
         fc_fabric_opts.append(cfg.StrOpt('principal_switch_wwn',
                                          default='100000051e55a100', help=''))
         config = conf.Configuration(fc_fabric_opts, 'BRCD_FAB_2')
         self.fabric_configs = {'BRCD_FAB_2': config}
 
-    def get_client(self, protocol='HTTPS'):
-        conn = ('cinder.tests.unit.zonemanager.'
-                'test_brcd_fc_san_lookup_service.' +
-                ('FakeBrcdFCZoneClientCLI' if protocol == "CLI"
-                 else 'FakeBrcdHttpFCZoneClient'))
-        client = importutils.import_object(
-            conn,
-            ipaddress="10.24.48.213",
-            username="admin",
-            password="password",
-            key="/home/stack/.ssh/id_rsa",
-            port=22,
-            vfid="2",
-            protocol=protocol
-        )
-        return client
-
     @mock.patch.object(brcd_lookup.BrcdFCSanLookupService,
-                       '_get_southbound_client')
-    def test_get_device_mapping_from_network(self, get_southbound_client_mock):
+                       'get_nameserver_info')
+    @mock.patch('cinder.zonemanager.drivers.brocade.brcd_fc_san_lookup_service'
+                '.ssh_utils.SSHPool')
+    def test_get_device_mapping_from_network(self, mock_ssh_pool,
+                                             get_nameserver_info_mock):
         initiator_list = [parsed_switch_port_wwns[1]]
         target_list = [parsed_switch_port_wwns[0], '20240002ac000a40']
-        get_southbound_client_mock.return_value = self.get_client("HTTPS")
+        get_nameserver_info_mock.return_value = parsed_switch_port_wwns
         device_map = self.get_device_mapping_from_network(
             initiator_list, target_list)
-        self.assertDictMatch(_device_map_to_verify, device_map)
+        self.assertDictMatch(device_map, _device_map_to_verify)
 
+    @mock.patch.object(brcd_lookup.BrcdFCSanLookupService, '_get_switch_data')
+    def test_get_nameserver_info(self, get_switch_data_mock):
+        ns_info_list = []
 
-class FakeClient(object):
-    def is_supported_firmware(self):
-        return True
+        get_switch_data_mock.return_value = (switch_data)
+        # get_switch_data will be called twice with the results appended
+        ns_info_list_expected = (parsed_switch_port_wwns +
+                                 parsed_switch_port_wwns)
 
-    def get_nameserver_info(self):
-        ns_info_list_expected = (parsed_switch_port_wwns)
-        return ns_info_list_expected
+        ns_info_list = self.get_nameserver_info(None)
+        self.assertEqual(ns_info_list_expected, ns_info_list)
 
-    def close_connection(self):
-        pass
+    @mock.patch.object(putils, 'ssh_execute', return_value=(switch_data, ''))
+    @mock.patch.object(ssh_utils.SSHPool, 'item')
+    def test__get_switch_data(self, ssh_pool_mock, ssh_execute_mock):
+        actual_switch_data = self._get_switch_data(ssh_pool_mock,
+                                                   fc_zone_constants.NS_SHOW)
+        self.assertEqual(actual_switch_data, switch_data)
+        ssh_execute_mock.side_effect = putils.ProcessExecutionError()
+        self.assertRaises(exception.FCSanLookupServiceException,
+                          self._get_switch_data, ssh_pool_mock,
+                          fc_zone_constants.NS_SHOW)
 
-    def cleanup(self):
-        pass
+    def test__parse_ns_output(self):
+        invalid_switch_data = ' N 011a00;20:1a:00:05:1e:e8:e3:29'
+        return_wwn_list = []
+        return_wwn_list = self._parse_ns_output(switch_data)
+        self.assertEqual(parsed_switch_port_wwns, return_wwn_list)
+        self.assertRaises(exception.InvalidParameterValue,
+                          self._parse_ns_output, invalid_switch_data)
 
-
-class FakeBrcdFCZoneClientCLI(FakeClient):
-    def __init__(self, ipaddress, username,
-                 password, port, key, vfid, protocol):
-        self.firmware_supported = True
-
-
-class FakeBrcdHttpFCZoneClient(FakeClient):
-
-    def __init__(self, ipaddress, username,
-                 password, port, key, vfid, protocol):
-        self.firmware_supported = True
+    def test_get_formatted_wwn(self):
+        wwn_list = ['10008c7cff523b01']
+        return_wwn_list = []
+        expected_wwn_list = ['10:00:8c:7c:ff:52:3b:01']
+        return_wwn_list.append(self.get_formatted_wwn(wwn_list[0]))
+        self.assertEqual(expected_wwn_list, return_wwn_list)

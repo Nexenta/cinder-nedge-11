@@ -44,19 +44,18 @@ import math
 
 from oslo_config import cfg
 
-from cinder.scheduler import weights
-from cinder import utils
+from cinder.openstack.common.scheduler import weights
 
 
 capacity_weight_opts = [
     cfg.FloatOpt('capacity_weight_multiplier',
                  default=1.0,
-                 help='Multiplier used for weighing free capacity. '
+                 help='Multiplier used for weighing volume capacity. '
                       'Negative numbers mean to stack vs spread.'),
     cfg.FloatOpt('allocated_capacity_weight_multiplier',
                  default=-1.0,
-                 help='Multiplier used for weighing allocated capacity. '
-                      'Positive numbers mean to stack vs spread.'),
+                 help='Multiplier used for weighing volume capacity. '
+                      'Negative numbers mean to stack vs spread.'),
 ]
 
 CONF = cfg.CONF
@@ -102,6 +101,7 @@ class CapacityWeigher(weights.BaseHostWeigher):
 
     def _weigh_object(self, host_state, weight_properties):
         """Higher weights win.  We want spreading to be the default."""
+        reserved = float(host_state.reserved_percentage) / 100
         free_space = host_state.free_capacity_gb
         total_space = host_state.total_capacity_gb
         if (free_space == 'infinite' or free_space == 'unknown' or
@@ -114,14 +114,16 @@ class CapacityWeigher(weights.BaseHostWeigher):
             # capacity anymore.
             free = -1 if CONF.capacity_weight_multiplier > 0 else float('inf')
         else:
-            free = utils.calculate_virtual_free_capacity(
-                total_space,
-                free_space,
-                host_state.provisioned_capacity_gb,
-                host_state.thin_provisioning_support,
-                host_state.max_over_subscription_ratio,
-                host_state.reserved_percentage)
-
+            total = float(total_space)
+            if host_state.thin_provisioning_support:
+                # Calculate virtual free capacity for thin provisioning.
+                free = (total * host_state.max_over_subscription_ratio
+                        - host_state.provisioned_capacity_gb -
+                        math.floor(total * reserved))
+            else:
+                # Calculate how much free space is left after taking into
+                # account the reserved space.
+                free = free_space - math.floor(total * reserved)
         return free
 
 

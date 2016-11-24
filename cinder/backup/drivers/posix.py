@@ -108,7 +108,7 @@ class PosixBackupDriver(chunkeddriver.ChunkedBackupDriver):
 
     def get_object_writer(self, container, object_name, extra_metadata=None):
         path = os.path.join(self.backup_path, container, object_name)
-        f = open(path, 'wb')
+        f = open(path, 'w')
         permissions = (
             stat.S_IRUSR |
             stat.S_IWUSR |
@@ -119,7 +119,7 @@ class PosixBackupDriver(chunkeddriver.ChunkedBackupDriver):
 
     def get_object_reader(self, container, object_name, extra_metadata=None):
         path = os.path.join(self.backup_path, container, object_name)
-        return open(path, 'rb')
+        return open(path, 'r')
 
     def delete_object(self, container, object_name):
         # TODO(tbarron):  clean up the container path if it is empty

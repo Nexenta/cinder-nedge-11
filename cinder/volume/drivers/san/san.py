@@ -55,9 +55,10 @@ san_opts = [
     cfg.StrOpt('san_clustername',
                default='',
                help='Cluster name to use for creating volumes'),
-    cfg.PortOpt('san_ssh_port',
-                default=22,
-                help='SSH port to use with SAN'),
+    cfg.IntOpt('san_ssh_port',
+               default=22,
+               min=1, max=65535,
+               help='SSH port to use with SAN'),
     cfg.BoolOpt('san_is_local',
                 default=False,
                 help='Execute commands locally instead of over SSH; '

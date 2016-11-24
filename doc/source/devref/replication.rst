@@ -12,75 +12,72 @@ of all the different backend devices.
 Most of the configuration is done via the cinder.conf file
 under the driver section and through the use of volume types.
 
-NOTE:
-This implementation is intended to solve a specific use case.
-It's critical that you read the Use Cases section of the spec
-here:
-https://specs.openstack.org/openstack/cinder-specs/specs/mitaka/cheesecake.html
-
 Config file examples
 --------------------
 
-The cinder.conf file is used to specify replication config info
-for a specific driver. There is no concept of managed vs unmanaged,
-ALL replication configurations are expected to work by using the same
-driver.  In other words, rather than trying to perform any magic
-by changing host entries in the DB for a Volume etc, all replication
-targets are considered "unmanged" BUT if a failover is issued, it's
-the drivers responsiblity to access replication volumes on the replicated
-backend device.
+The cinder.conf file is used to specify replication target
+devices for a specific driver.  There are two types of target
+devices that can be configured:
 
-This results in no changes for the end-user.  For example, He/She can
-still issue an attach call to a replicated volume that has been failed
-over, and the driver will still receive the call BUT the driver will
-need to figure out if it needs to redirect the call to the a different
-backend than the default or not.
+   1. Cinder Managed (represented by the volume-backend name)
+   2. External devices (require vendor specific data to configure)
 
-Information regarding if the backend is in a failed over state should
-be stored in the driver, and in the case of a restart, the service
-entry in the DB will have the replication status info and pass it
-in during init to allow the driver to be set in the correct state.
+NOTE that it is expected to be an error to have both managed and unmanaged replication
+config variables set for a single driver.
 
-In the case of a failover event, and a volume was NOT of type
-replicated, that volume will now be UNAVAILABLE and any calls
-to access that volume should return a VolumeNotFound exception.
+Cinder managed target device
+-----------------------------
 
-**replication_device**
+In the case of a Cinder managed target device, we simply
+use another Cinder configured backend as the replication
+target.
 
-Is a multi-dict opt, that should be specified
-for each replication target device the admin would
-like to configure.
-
-*NOTE:*
-
-There is one standaredized and REQUIRED key in the config
-entry, all others are vendor-unique:
-
-* backend_id:<vendor-identifier-for-rep-target>
-
-An example driver config for a device with multiple replication targets
-is show below::
+For example if we have two backend devices foo and biz that
+can replicate to each other, we can set up backend biz as
+a replication target for device foo using the following
+config entries::
 
     .....
     [driver-biz]
     volume_driver=xxxx
     volume_backend_name=biz
 
-    [driver-baz]
-    volume_driver=xxxx
-    volume_backend_name=baz
-
     [driver-foo]
     volume_driver=xxxx
     volume_backend_name=foo
-    replication_device = backend_id:vendor-id-1,unique_key:val....
-    replication_device = backend_id:vendor-id-2,unique_key:val....
+    managed_replication_target=True
+    replication_devices=volume_backend_name-1,volume_backend_name-2....
 
-In this example the result is self.configuration.get('replication_device) with the list::
+Notice that the only change from the usual driver configuration
+section here is the addition of the replication_devices option.
 
-    [{backend_id: vendor-id-1, unique_key: val1},
-     {backend_id: vendor-id-2, unique_key: val1}]
 
+Unmanaged target device
+------------------------
+
+In some cases the replication target device may not be a
+configured Cinder backend.  In this case it's the configured
+drivers responsibility to route commands to the active device
+and to update provider info to ensure the proper iSCSI targets
+are being used.
+
+This type of config changes only slightly, and instead of using
+a backend_name, it takes the vendor unique config options::
+
+    .....
+    [driver-foo]
+    volume_driver=xxxx
+    volume_backend_name=foo
+    managed_replication_target=False
+    replication_devices={'key1'='val1' 'key2'='val2' ...},
+                        {'key7'='val7'....},...
+
+Note the key/value entries can be whatever the device requires, we treat the actual
+variable in the config parser as a comma delimited list, the {} and = notations are
+convenient/common parser delimeters, and the K/V entries are space seperated.
+
+We provide a literal evaluator to convert these entries into a proper dict, thus
+format is extremely important here.
 
 
 Volume Types / Extra Specs
@@ -97,18 +94,17 @@ backend that supports replication, the extra-specs entry would be::
 
     {replication: enabled}
 
+If you needed to provide a specific backend device (multiple backends supporting replication)::
+    {replication: enabled, volume_backend_name: foo}
+
 Additionally you could provide additional details using scoped keys::
     {replication: enabled, volume_backend_name: foo,
-     replication: replication_type: async}
+     replication:replication_type: async}
 
-It's up to the driver to parse the volume type info on create and set things up
+Again, it's up to the driver to parse the volume type info on create and set things up
 as requested.  While the scoping key can be anything, it's strongly recommended that all
 backends utilize the same key (replication) for consistency and to make things easier for
 the Cloud Administrator.
-
-Additionally it's expected that if a backend is configured with 3 replciation
-targets, that if a volume of type replication=enabled is issued against that
-backend then it will replicate to ALL THREE of the configured targets.
 
 Capabilities reporting
 ----------------------
@@ -116,50 +112,55 @@ The following entries are expected to be added to the stats/capabilities update 
 replication configured devices::
 
     stats["replication_enabled"] = True|False
-    stats["replication_targets"] = [<backend-id_1, <backend-id_2>...]
-
-NOTICE, we report configured replication targets via volume stats_update
-This information is added to the get_capabilities admin call.
+    stats["replication_type"] = ['async', 'sync'...]
+    stats["replication_count"] = len(self.cluster_pairs)
 
 Required methods
 -----------------
-The number of API methods associated with replication is intentionally very limited,
-
+The number of API methods associated with replication are intentionally very limited, and are
 Admin only methods.
 
 They include::
-    replication_failover(self, context, volumes)
+    replication_enable(self, context, volume)
+    replication_disable(self, context, volume)
+    replication_failover(self, context, volume)
+    list_replication_targets(self, context)
 
-Additionally we have freeze/thaw methods that will act on the scheduler
-but may or may not require something from the driver::
-    freeze_backend(self, context)
-    thaw_backend(self, context)
+**replication_enable**
+
+Used to notify the driver that we would like to enable replication on a replication capable volume.
+NOTE this is NOT used as the initial create replication command, that's handled by the volume-type at
+create time.  This is provided as a method for an Admin that may have needed to disable replication
+on a volume for maintenance or whatever reason to signify that they'd like to "resume" replication on
+the given volume.
+
+**replication_disable**
+
+Used to notify the driver that we would like to disable replication on a replication capable volume.
+This again would be used by a Cloud Administrator for things like maintenance etc.
 
 **replication_failover**
 
-Used to instruct the backend to fail over to the secondary/target device.
-If not secondary is specified (via backend_id argument) it's up to the driver
-to choose which device to failover to.  In the case of only a single
-replication target this argument should be ignored.
+Used to instruct the backend to fail over to the secondary/target device on a replication capable volume.
+This may be used for triggering a fail-over manually or for testing purposes.
 
 Note that ideally drivers will know how to update the volume reference properly so that Cinder is now
 pointing to the secondary.  Also, while it's not required, at this time; ideally the command would
-act as a toggle, allowing to switch back and forth between primary and secondary and back to primary.
+act as a toggle, allowing to switch back and forth betweeen primary and secondary and back to primary.
 
-Keep in mind the use case is that the backend has died a horrible death and is
-no longer valid.  Any volumes that were on the primary and NOT of replication
-type should now be unavailable.
+**list_replication_targets**
 
-NOTE:  We do not expect things like create requests to go to the driver and
-magically create volumes on the replication target.  The concept is that the
-backend is lost, and we're just providing a DR mechanism to preserve user data
-for volumes that were speicfied as such via type settings.
+Used by the admin to query a volume for a list of configured replication targets
+The expected return for this call is expeceted to mimic the form used in the config file.
 
-**freeze_backend**
-Puts a backend host/service into a R/O state for the control plane.  For
-example if a failover is issued, it is likely desireable that while data access
-to existing volumes is maintained, it likely would not be wise to continue
-doing things like creates, deletes, extends etc.
+For a volume replicating to managed replication targets::
 
-**thaw_backend**
-Clear frozen control plane on a backend.
+    {'volume_id': volume['id'], 'targets':[{'type': 'managed',
+                                            'backend_name': 'backend_name'}...]
+
+For a volume replicating to external/unmanaged targets::
+
+    {'volume_id': volume['id'], 'targets':[{'type': 'unmanaged',
+                                            'san_ip': '127.0.0.1',
+                                            'san_login': 'admin'...}...]
+

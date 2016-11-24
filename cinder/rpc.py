@@ -27,20 +27,14 @@ __all__ = [
 ]
 
 from oslo_config import cfg
-from oslo_log import log as logging
 import oslo_messaging as messaging
 from oslo_serialization import jsonutils
-from oslo_utils import importutils
-profiler = importutils.try_import('osprofiler.profiler')
+from osprofiler import profiler
 
 import cinder.context
 import cinder.exception
-from cinder.i18n import _LI
-from cinder import objects
-from cinder.objects import base
 
 CONF = cfg.CONF
-LOG = logging.getLogger(__name__)
 TRANSPORT = None
 NOTIFIER = None
 
@@ -124,24 +118,26 @@ class RequestContextSerializer(messaging.Serializer):
 
     def serialize_context(self, context):
         _context = context.to_dict()
-        if profiler is not None:
-            prof = profiler.get()
-            if prof:
-                trace_info = {
-                    "hmac_key": prof.hmac_key,
-                    "base_id": prof.get_base_id(),
-                    "parent_id": prof.get_id()
-                }
-                _context.update({"trace_info": trace_info})
+        prof = profiler.get()
+        if prof:
+            trace_info = {
+                "hmac_key": prof.hmac_key,
+                "base_id": prof.get_base_id(),
+                "parent_id": prof.get_id()
+            }
+            _context.update({"trace_info": trace_info})
         return _context
 
     def deserialize_context(self, context):
         trace_info = context.pop("trace_info", None)
         if trace_info:
-            if profiler is not None:
-                profiler.init(**trace_info)
+            profiler.init(**trace_info)
 
         return cinder.context.RequestContext.from_dict(context)
+
+
+def get_transport_url(url_str=None):
+    return messaging.TransportURL.parse(CONF, url_str, TRANSPORT_ALIASES)
 
 
 def get_client(target, version_cap=None, serializer=None):
@@ -168,78 +164,3 @@ def get_notifier(service=None, host=None, publisher_id=None):
     if not publisher_id:
         publisher_id = "%s.%s" % (service, host or CONF.host)
     return NOTIFIER.prepare(publisher_id=publisher_id)
-
-
-LAST_RPC_VERSIONS = {}
-LAST_OBJ_VERSIONS = {}
-
-
-class RPCAPI(object):
-    """Mixin class aggregating methods related to RPC API compatibility."""
-
-    RPC_API_VERSION = '1.0'
-    TOPIC = ''
-    BINARY = ''
-
-    def __init__(self):
-        target = messaging.Target(topic=self.TOPIC,
-                                  version=self.RPC_API_VERSION)
-        obj_version_cap = self._determine_obj_version_cap()
-        serializer = base.CinderObjectSerializer(obj_version_cap)
-
-        rpc_version_cap = self._determine_rpc_version_cap()
-        self.client = get_client(target, version_cap=rpc_version_cap,
-                                 serializer=serializer)
-
-    def _determine_rpc_version_cap(self):
-        global LAST_RPC_VERSIONS
-        if self.BINARY in LAST_RPC_VERSIONS:
-            return LAST_RPC_VERSIONS[self.BINARY]
-
-        version_cap = objects.Service.get_minimum_rpc_version(
-            cinder.context.get_admin_context(), self.BINARY)
-        if version_cap == 'liberty':
-            # NOTE(dulek): This means that one of the services is Liberty,
-            # we should cap to it's RPC version.
-            version_cap = LIBERTY_RPC_VERSIONS[self.BINARY]
-        elif not version_cap:
-            # If there is no service we assume they will come up later and will
-            # have the same version as we do.
-            version_cap = self.RPC_API_VERSION
-        LOG.info(_LI('Automatically selected %(binary)s RPC version '
-                     '%(version)s as minimum service version.'),
-                 {'binary': self.BINARY, 'version': version_cap})
-        LAST_RPC_VERSIONS[self.BINARY] = version_cap
-        return version_cap
-
-    def _determine_obj_version_cap(self):
-        global LAST_OBJ_VERSIONS
-        if self.BINARY in LAST_OBJ_VERSIONS:
-            return LAST_OBJ_VERSIONS[self.BINARY]
-
-        version_cap = objects.Service.get_minimum_obj_version(
-            cinder.context.get_admin_context(), self.BINARY)
-        # If there is no service we assume they will come up later and will
-        # have the same version as we do.
-        if not version_cap:
-            version_cap = base.OBJ_VERSIONS.get_current()
-        LOG.info(_LI('Automatically selected %(binary)s objects version '
-                     '%(version)s as minimum service version.'),
-                 {'binary': self.BINARY, 'version': version_cap})
-        LAST_OBJ_VERSIONS[self.BINARY] = version_cap
-        return version_cap
-
-
-# FIXME(dulek): Liberty haven't reported its RPC versions, so we need to have
-# them hardcoded. This dict may go away as soon as we drop compatibility with
-# L, which should be in early N.
-#
-# This is the only time we need to have such dictionary. We don't need to add
-# similar ones for any release following Liberty.
-LIBERTY_RPC_VERSIONS = {
-    'cinder-volume': '1.30',
-    'cinder-scheduler': '1.8',
-    # NOTE(dulek) backup.manager had specified version '1.2', but backup.rpcapi
-    # was really only sending messages up to '1.1'.
-    'cinder-backup': '1.1',
-}

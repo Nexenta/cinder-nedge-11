@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_versionedobjects import fields
 
@@ -19,6 +20,7 @@ from cinder import db
 from cinder import objects
 from cinder.objects import base
 
+CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
@@ -55,6 +57,11 @@ class VolumeAttachment(base.CinderPersistentObject, base.CinderObject,
         attachment.obj_reset_changes()
         return attachment
 
+    @base.remotable_classmethod
+    def get_by_id(cls, context, id):
+        db_attach = db.volume_attachment_get(context, id)
+        return cls._from_db_object(context, cls(context), db_attach)
+
     @base.remotable
     def save(self):
         updates = self.cinder_obj_get_changes()
@@ -69,6 +76,10 @@ class VolumeAttachmentList(base.ObjectListBase, base.CinderObject):
 
     fields = {
         'objects': fields.ListOfObjectsField('VolumeAttachment'),
+    }
+
+    child_versions = {
+        '1.0': '1.0',
     }
 
     @base.remotable_classmethod

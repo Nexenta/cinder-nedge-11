@@ -82,15 +82,14 @@ def create(backing_device, name, userid, password, iser_enabled,
 
     # If no ips are given we'll bind to all IPv4 and v6
     if not portals_ips:
-        portals_ips = ('0.0.0.0', '[::0]')
+        portals_ips = ('0.0.0.0', '::0')
         # TODO(emh): Binding to IPv6 fails sometimes -- let pass for now.
-        ips_allow_fail = ('[::0]',)
+        ips_allow_fail = ('::0',)
 
     for ip in portals_ips:
         try:
-            # rtslib expects IPv6 addresses to be surrounded by brackets
-            portal = rtslib_fb.NetworkPortal(tpg_new, _canonicalize_ip(ip),
-                                             portals_port, mode='any')
+            portal = rtslib_fb.NetworkPortal(tpg_new, ip, portals_port,
+                                             mode='any')
         except rtslib_fb.utils.RTSLibError:
             raise_exc = ip not in ips_allow_fail
             msg_type = 'Error' if raise_exc else 'Warning'
@@ -147,9 +146,8 @@ def delete_initiator(target_iqn, initiator_iqn):
         if acl.node_wwn.lower() == initiator_iqn.lower():
             acl.delete()
             return
-
-    print(_('delete_initiator: %s ACL not found. Continuing.') % initiator_iqn)
-    # Return successfully.
+    raise RtstoolError(_('Could not find ACL %(acl)s in target %(target)s')
+                       % {'target': target_iqn, 'acl': initiator_iqn})
 
 
 def get_targets():
@@ -216,13 +214,13 @@ def save_to_file(destination_file):
 
     except OSError as exc:
         raise RtstoolError(_('targetcli not installed and could not create '
-                             'default directory (%(default_path)s): %(exc)s') %
+                             'default directory (%(default_path)s): %(exc)s'),
                            {'default_path': path_to_file, 'exc': exc})
     try:
         rtsroot.save_to_file(destination_file)
     except (OSError, IOError) as exc:
         raise RtstoolError(_('Could not save configuration to %(file_path)s: '
-                             '%(exc)s') %
+                             '%(exc)s'),
                            {'file_path': destination_file, 'exc': exc})
 
 
@@ -257,12 +255,6 @@ def parse_optional_create(argv):
         else:
             optional_args['initiator_iqns'] = arg
     return optional_args
-
-
-def _canonicalize_ip(ip):
-    if ip.startswith('[') or "." in ip:
-        return ip
-    return "[" + ip + "]"
 
 
 def main(argv=None):

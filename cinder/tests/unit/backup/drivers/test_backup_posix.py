@@ -17,6 +17,7 @@ Tests for Posix backup driver.
 
 """
 
+import exceptions
 import os
 
 import mock
@@ -25,7 +26,6 @@ from six.moves import builtins
 from cinder.backup.drivers import posix
 from cinder import context
 from cinder import test
-from cinder.tests.unit import fake_constants as fake
 
 
 FAKE_FILE_SIZE = 52428800
@@ -33,10 +33,11 @@ FAKE_SHA_BLOCK_SIZE_BYTES = 1024
 FAKE_BACKUP_ENABLE_PROGRESS_TIMER = True
 
 FAKE_CONTAINER = 'fake/container'
-FAKE_BACKUP_ID = fake.backup_id
-FAKE_BACKUP_ID_PART1 = fake.backup_id[:2]
-FAKE_BACKUP_ID_PART2 = fake.backup_id[2:4]
-FAKE_BACKUP_ID_REST = fake.backup_id[4:]
+FAKE_BACKUP_ID_PART1 = 'de'
+FAKE_BACKUP_ID_PART2 = 'ad'
+FAKE_BACKUP_ID_REST = 'beef-whatever'
+FAKE_BACKUP_ID = (FAKE_BACKUP_ID_PART1 + FAKE_BACKUP_ID_PART2 +
+                  FAKE_BACKUP_ID_REST)
 FAKE_BACKUP = {'id': FAKE_BACKUP_ID, 'container': None}
 
 UPDATED_CONTAINER_NAME = os.path.join(FAKE_BACKUP_ID_PART1,
@@ -117,14 +118,14 @@ class PosixBackupDriverTestCase(test.TestCase):
     def test_put_container_exception(self):
         self.mock_object(os.path, 'exists', mock.Mock(return_value=False))
         self.mock_object(os, 'makedirs', mock.Mock(
-            side_effect=OSError))
+            side_effect=exceptions.OSError))
         self.mock_object(os, 'chmod')
         path = os.path.join(self.driver.backup_path, FAKE_CONTAINER)
 
-        self.assertRaises(OSError, self.driver.put_container,
+        self.assertRaises(exceptions.OSError, self.driver.put_container,
                           FAKE_CONTAINER)
         os.path.exists.assert_called_once_with(path)
-        os.makedirs.assert_called_once_with(path)
+        os.makedirs.called_once_with(path)
         self.assertEqual(0, os.chmod.call_count)
 
     def test_get_container_entries(self):
@@ -159,14 +160,14 @@ class PosixBackupDriverTestCase(test.TestCase):
         self.driver.get_object_writer(FAKE_CONTAINER, FAKE_OBJECT_NAME)
 
         os.chmod.assert_called_once_with(FAKE_OBJECT_PATH, 0o660)
-        builtins.open.assert_called_once_with(FAKE_OBJECT_PATH, 'wb')
+        builtins.open.assert_called_once_with(FAKE_OBJECT_PATH, 'w')
 
     def test_get_object_reader(self):
         self.mock_object(builtins, 'open', mock.mock_open())
 
         self.driver.get_object_reader(FAKE_CONTAINER, FAKE_OBJECT_NAME)
 
-        builtins.open.assert_called_once_with(FAKE_OBJECT_PATH, 'rb')
+        builtins.open.assert_called_once_with(FAKE_OBJECT_PATH, 'r')
 
     def test_delete_object(self):
         self.mock_object(os, 'remove')
@@ -175,8 +176,8 @@ class PosixBackupDriverTestCase(test.TestCase):
 
     def test_delete_nonexistent_object(self):
         self.mock_object(os, 'remove', mock.Mock(
-            side_effect=OSError))
+            side_effect=exceptions.OSError))
 
-        self.assertRaises(OSError,
+        self.assertRaises(exceptions.OSError,
                           self.driver.delete_object, FAKE_CONTAINER,
                           FAKE_OBJECT_NAME)

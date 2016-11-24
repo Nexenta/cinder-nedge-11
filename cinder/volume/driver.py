@@ -20,7 +20,6 @@ import time
 
 from oslo_concurrency import processutils
 from oslo_config import cfg
-from oslo_config import types
 from oslo_log import log as logging
 from oslo_utils import excutils
 import six
@@ -32,6 +31,7 @@ from cinder import objects
 from cinder import utils
 from cinder.volume import rpcapi as volume_rpcapi
 from cinder.volume import throttling
+from cinder.volume import utils as volume_utils
 
 LOG = logging.getLogger(__name__)
 
@@ -57,14 +57,16 @@ volume_opts = [
     cfg.ListOpt('iscsi_secondary_ip_addresses',
                 default=[],
                 help='The list of secondary IP addresses of the iSCSI daemon'),
-    cfg.PortOpt('iscsi_port',
-                default=3260,
-                help='The port that the iSCSI daemon is listening on'),
+    cfg.IntOpt('iscsi_port',
+               default=3260,
+               min=1, max=65535,
+               help='The port that the iSCSI daemon is listening on'),
     cfg.IntOpt('num_volume_device_scan_tries',
                default=3,
                help='The maximum number of times to rescan targets'
                     ' to find volume'),
     cfg.StrOpt('volume_backend_name',
+               default=None,
                help='The backend name for a given driver implementation'),
     cfg.BoolOpt('use_multipath_for_image_xfer',
                 default=False,
@@ -83,6 +85,7 @@ volume_opts = [
                default=0,
                help='Size in MiB to wipe at start of old volumes. 0 => all'),
     cfg.StrOpt('volume_clear_ionice',
+               default=None,
                help='The flag to pass to ionice to alter the i/o priority '
                     'of the process used to zero a volume after deletion, '
                     'for example "-c3" for idle only priority.'),
@@ -146,9 +149,11 @@ volume_opts = [
                     'with the value "iser". The supported iSCSI protocol '
                     'values are "iscsi" and "iser".'),
     cfg.StrOpt('driver_client_cert_key',
+               default=None,
                help='The path to the client certificate key for verification, '
                     'if the driver supports it.'),
     cfg.StrOpt('driver_client_cert',
+               default=None,
                help='The path to the client certificate for verification, '
                     'if the driver supports it.'),
     cfg.BoolOpt('driver_use_ssl',
@@ -164,8 +169,10 @@ volume_opts = [
                       'means provisioned capacity can be 10.5 times of the '
                       'total physical capacity. A ratio of 1.0 means '
                       'provisioned capacity cannot exceed the total physical '
-                      'capacity. The ratio has to be a minimum of 1.0.'),
+                      'capacity. A ratio lower than 1.0 will be ignored and '
+                      'the default value will be used instead.'),
     cfg.StrOpt('scst_target_iqn_name',
+               default=None,
                help='Certain ISCSI targets have predefined target names, '
                     'SCST target driver uses this name.'),
     cfg.StrOpt('scst_target_driver',
@@ -187,13 +194,16 @@ volume_opts = [
                deprecated_opts=deprecated_chap_password_opts,
                secret=True),
     cfg.StrOpt('driver_data_namespace',
+               default=None,
                help='Namespace for driver private data values to be '
                     'saved in.'),
     cfg.StrOpt('filter_function',
+               default=None,
                help='String representation for an equation that will be '
                     'used to filter hosts. Only used when the driver '
                     'filter is set to be used by the Cinder scheduler.'),
     cfg.StrOpt('goodness_function',
+               default=None,
                help='String representation for an equation that will be '
                     'used to determine the goodness of a host. Only used '
                     'when using the goodness weigher is set to be used by '
@@ -202,24 +212,25 @@ volume_opts = [
                 default=False,
                 help='If set to True the http client will validate the SSL '
                      'certificate of the backend endpoint.'),
-    cfg.StrOpt('driver_ssl_cert_path',
-               help='Can be used to specify a non default path to a '
-               'CA_BUNDLE file or directory with certificates of '
-               'trusted CAs, which will be used to validate the backend'),
     cfg.ListOpt('trace_flags',
+                default=None,
                 help='List of options that control which trace info '
                      'is written to the DEBUG log level to assist '
                      'developers. Valid values are method and api.'),
-    cfg.MultiOpt('replication_device',
-                 item_type=types.Dict(),
-                 secret=True,
-                 help="Multi opt of dictionaries to represent a replication "
-                      "target device.  This option may be specified multiple "
-                      "times in a single config section to specify multiple "
-                      "replication target devices.  Each entry takes the "
-                      "standard dict config form: replication_device = "
-                      "target_device_id:<required>,"
-                      "key1:value1,key2:value2..."),
+    cfg.BoolOpt('managed_replication_target',
+                default=True,
+                help='There are two types of target configurations '
+                     'managed (replicate to another configured backend) '
+                     'or unmanaged (replicate to a device not managed '
+                     'by Cinder).'),
+    cfg.ListOpt('replication_devices',
+                default=None,
+                help="List of k/v pairs representing a replication target "
+                     "for this backend device.  For unmanaged the format "
+                     "is: {'key-1'='val1' 'key-2'='val2'...},{...} "
+                     "and for managed devices its simply a list of valid "
+                     "configured backend_names that the driver supports "
+                     "replicating to: backend-a,bakcend-b..."),
     cfg.BoolOpt('image_upload_use_cinder_backend',
                 default=False,
                 help='If set to True, upload-to-image in raw format will '
@@ -245,12 +256,6 @@ volume_opts = [
                default=0,
                help='Max number of entries allowed in the image volume cache. '
                     '0 => unlimited.'),
-    cfg.BoolOpt('report_discard_supported',
-                default=False,
-                help='Report to clients of Cinder that the backend supports '
-                     'discard (aka. trim/unmap). This will not actually '
-                     'change the behavior of the backend or the client '
-                     'directly, it will only notify that it can be used.'),
 ]
 
 # for backward compatibility
@@ -265,9 +270,10 @@ iser_opts = [
     cfg.StrOpt('iser_ip_address',
                default='$my_ip',
                help='The IP address that the iSER daemon is listening on'),
-    cfg.PortOpt('iser_port',
-                default=3260,
-                help='The port that the iSER daemon is listening on'),
+    cfg.IntOpt('iser_port',
+               default=3260,
+               min=1, max=65535,
+               help='The port that the iSER daemon is listening on'),
     cfg.StrOpt('iser_helper',
                default='tgtadm',
                help='The name of the iSER target user-land tool to use'),
@@ -277,7 +283,6 @@ iser_opts = [
 CONF = cfg.CONF
 CONF.register_opts(volume_opts)
 CONF.register_opts(iser_opts)
-CONF.import_opt('backup_use_same_host', 'cinder.backup.api')
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -320,7 +325,6 @@ class BaseVD(object):
 
         self._execute = execute
         self._stats = {}
-        self._throttle = None
 
         self.pools = []
         self.capabilities = {}
@@ -422,8 +426,8 @@ class BaseVD(object):
         # flag in the interface is for anticipation that it will be enabled
         # in the future.
         if remote:
-            LOG.error(_LE("Detaching snapshot from a remote node "
-                          "is not supported."))
+            LOG.exception(_LE("Detaching snapshot from a remote node "
+                              "is not supported."))
             raise exception.NotSupportedOperation(
                 operation=_("detach snapshot from remote node"))
         else:
@@ -531,7 +535,7 @@ class BaseVD(object):
     def get_prefixed_property(self, property):
         """Return prefixed property name
 
-        :returns: a prefixed property name string or None
+        :return a prefixed property name string or None
         """
 
         if property and self.capabilities.get('vendor_prefix'):
@@ -736,6 +740,77 @@ class BaseVD(object):
             data["pools"].append(single_pool)
         self._stats = data
 
+    def copy_volume_data(self, context, src_vol, dest_vol, remote=None):
+        """Copy data from src_vol to dest_vol."""
+        LOG.debug('copy_data_between_volumes %(src)s -> %(dest)s.', {
+            'src': src_vol['name'], 'dest': dest_vol['name']})
+
+        use_multipath = self.configuration.use_multipath_for_image_xfer
+        enforce_multipath = self.configuration.enforce_multipath_for_image_xfer
+        properties = utils.brick_get_connector_properties(use_multipath,
+                                                          enforce_multipath)
+        dest_remote = True if remote in ['dest', 'both'] else False
+        dest_orig_status = dest_vol['status']
+        try:
+            dest_attach_info, dest_vol = self._attach_volume(
+                context,
+                dest_vol,
+                properties,
+                remote=dest_remote)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.error(_LE("Failed to attach volume %(vol)s"),
+                          {'vol': dest_vol['id']})
+                self.db.volume_update(context, dest_vol['id'],
+                                      {'status': dest_orig_status})
+
+        src_remote = True if remote in ['src', 'both'] else False
+        src_orig_status = src_vol['status']
+        try:
+            src_attach_info, src_vol = self._attach_volume(context,
+                                                           src_vol,
+                                                           properties,
+                                                           remote=src_remote)
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.error(_LE("Failed to attach volume %(vol)s"),
+                          {'vol': src_vol['id']})
+                self.db.volume_update(context, src_vol['id'],
+                                      {'status': src_orig_status})
+                self._detach_volume(context, dest_attach_info, dest_vol,
+                                    properties, force=True, remote=dest_remote)
+
+        # Check the backend capabilities of migration destination host.
+        rpcapi = volume_rpcapi.VolumeAPI()
+        capabilities = rpcapi.get_capabilities(context, dest_vol['host'],
+                                               False)
+        sparse_copy_volume = bool(capabilities and
+                                  capabilities.get('sparse_copy_volume',
+                                                   False))
+
+        copy_error = True
+        try:
+            size_in_mb = int(src_vol['size']) * 1024    # vol size is in GB
+            volume_utils.copy_volume(
+                src_attach_info['device']['path'],
+                dest_attach_info['device']['path'],
+                size_in_mb,
+                self.configuration.volume_dd_blocksize,
+                throttle=self._throttle,
+                sparse=sparse_copy_volume)
+            copy_error = False
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                LOG.error(_LE("Failed to copy volume %(src)s to %(dest)s."),
+                          {'src': src_vol['id'], 'dest': dest_vol['id']})
+        finally:
+            self._detach_volume(context, dest_attach_info, dest_vol,
+                                properties, force=copy_error,
+                                remote=dest_remote)
+            self._detach_volume(context, src_attach_info, src_vol,
+                                properties, force=copy_error,
+                                remote=src_remote)
+
     def copy_image_to_volume(self, context, volume, image_service, image_id):
         """Fetch the image from image_service and write it to the volume."""
         LOG.debug('copy_image_to_volume %s.', volume['name'])
@@ -774,22 +849,6 @@ class BaseVD(object):
         finally:
             self._detach_volume(context, attach_info, volume, properties)
 
-    def before_volume_copy(self, context, src_vol, dest_vol, remote=None):
-        """Driver-specific actions before copyvolume data.
-
-        This method will be called before _copy_volume_data during volume
-        migration
-        """
-        pass
-
-    def after_volume_copy(self, context, src_vol, dest_vol, remote=None):
-        """Driver-specific actions after copyvolume data.
-
-        This method will be called after _copy_volume_data during volume
-        migration
-        """
-        pass
-
     def get_filter_function(self):
         """Get filter_function string.
 
@@ -798,7 +857,7 @@ class BaseVD(object):
         find the default filter_function. When None is returned the scheduler
         will always pass the driver instance.
 
-        :returns: a filter_function string or None
+        :return a filter_function string or None
         """
         ret_function = self.configuration.filter_function
         if not ret_function:
@@ -815,7 +874,7 @@ class BaseVD(object):
         find the default goodness_function. When None is returned the scheduler
         will give the lowest score to the driver instance.
 
-        :returns: a goodness_function string or None
+        :return a goodness_function string or None
         """
         ret_function = self.configuration.goodness_function
         if not ret_function:
@@ -830,7 +889,7 @@ class BaseVD(object):
         Each driver could overwrite the method to return a well-known
         default string if it is available.
 
-        :returns: None
+        :return: None
         """
         return None
 
@@ -840,7 +899,7 @@ class BaseVD(object):
         Each driver could overwrite the method to return a well-known
         default string if it is available.
 
-        :returns: None
+        :return: None
         """
         return None
 
@@ -935,8 +994,8 @@ class BaseVD(object):
         # flag in the interface is for anticipation that it will be enabled
         # in the future.
         if remote:
-            LOG.error(_LE("Attaching snapshot from a remote node "
-                          "is not supported."))
+            LOG.exception(_LE("Attaching snapshot from a remote node "
+                              "is not supported."))
             raise exception.NotSupportedOperation(
                 operation=_("attach snapshot from remote node"))
         else:
@@ -981,7 +1040,7 @@ class BaseVD(object):
                     LOG.error(err_msg)
                     raise exception.VolumeBackendAPIException(data=ex_msg)
                 raise exception.VolumeBackendAPIException(data=err_msg)
-        return self._connect_device(conn)
+        return (self._connect_device(conn), snapshot)
 
     def _connect_device(self, conn):
         # Use Brick's code to do attach/detach
@@ -1025,123 +1084,8 @@ class BaseVD(object):
     def backup_use_temp_snapshot(self):
         return False
 
-    def snapshot_remote_attachable(self):
-        # TODO(lixiaoy1): the method will be deleted later when remote
-        # attach snapshot is implemented.
-        return False
-
-    def get_backup_device(self, context, backup):
-        """Get a backup device from an existing volume.
-
-        The function returns a volume or snapshot to backup service,
-        and then backup service attaches the device and does backup.
-        """
-        backup_device = None
-        is_snapshot = False
-        if self.backup_use_temp_snapshot() and CONF.backup_use_same_host:
-            (backup_device, is_snapshot) = (
-                self._get_backup_volume_temp_snapshot(context, backup))
-        else:
-            backup_device = self._get_backup_volume_temp_volume(
-                context, backup)
-            is_snapshot = False
-        return (backup_device, is_snapshot)
-
-    def _get_backup_volume_temp_volume(self, context, backup):
-        """Return a volume to do backup.
-
-        To backup a snapshot, create a temp volume from the snapshot and
-        back it up.
-
-        Otherwise to backup an in-use volume, create a temp volume and
-        back it up.
-        """
-        volume = objects.Volume.get_by_id(context, backup.volume_id)
-        snapshot = None
-        if backup.snapshot_id:
-            snapshot = objects.Snapshot.get_by_id(context, backup.snapshot_id)
-
-        LOG.debug('Creating a new backup for volume %s.', volume['name'])
-
-        temp_vol_ref = None
-        device_to_backup = volume
-
-        # NOTE(xyang): If it is to backup from snapshot, create a temp
-        # volume from the source snapshot, backup the temp volume, and
-        # then clean up the temp volume.
-        if snapshot:
-            temp_vol_ref = self._create_temp_volume_from_snapshot(
-                context, volume, snapshot)
-            backup.temp_volume_id = temp_vol_ref['id']
-            backup.save()
-            device_to_backup = temp_vol_ref
-
-        else:
-            # NOTE(xyang): Check volume status if it is not to backup from
-            # snapshot; if 'in-use', create a temp volume from the source
-            # volume, backup the temp volume, and then clean up the temp
-            # volume; if 'available', just backup the volume.
-            previous_status = volume.get('previous_status')
-            if previous_status == "in-use":
-                temp_vol_ref = self._create_temp_cloned_volume(
-                    context, volume)
-                backup.temp_volume_id = temp_vol_ref['id']
-                backup.save()
-                device_to_backup = temp_vol_ref
-
-        return device_to_backup
-
-    def _get_backup_volume_temp_snapshot(self, context, backup):
-        """Return a device to backup.
-
-        If it is to backup from snapshot, back it up directly.
-
-        Otherwise for in-use volume, create a temp snapshot and back it up.
-        """
-        volume = self.db.volume_get(context, backup.volume_id)
-        snapshot = None
-        if backup.snapshot_id:
-            snapshot = objects.Snapshot.get_by_id(context, backup.snapshot_id)
-
-        LOG.debug('Creating a new backup for volume %s.', volume['name'])
-
-        device_to_backup = volume
-        is_snapshot = False
-        temp_snapshot = None
-
-        # NOTE(xyang): If it is to backup from snapshot, back it up
-        # directly. No need to clean it up.
-        if snapshot:
-            device_to_backup = snapshot
-            is_snapshot = True
-
-        else:
-            # NOTE(xyang): If it is not to backup from snapshot, check volume
-            # status. If the volume status is 'in-use', create a temp snapshot
-            # from the source volume, backup the temp snapshot, and then clean
-            # up the temp snapshot; if the volume status is 'available', just
-            # backup the volume.
-            previous_status = volume.get('previous_status')
-            if previous_status == "in-use":
-                temp_snapshot = self._create_temp_snapshot(context, volume)
-                backup.temp_snapshot_id = temp_snapshot.id
-                backup.save()
-                device_to_backup = temp_snapshot
-                is_snapshot = True
-
-        return (device_to_backup, is_snapshot)
-
     def backup_volume(self, context, backup, backup_service):
         """Create a new backup from an existing volume."""
-        # NOTE(xyang): _backup_volume_temp_snapshot and
-        # _backup_volume_temp_volume are splitted into two
-        # functions because there were concerns during code
-        # reviews that it is confusing to put all the logic
-        # into one function. There's a trade-off between
-        # reducing code duplication and increasing code
-        # readability here. Added a note here to explain why
-        # we've decided to have two separate functions as
-        # there will always be arguments from both sides.
         if self.backup_use_temp_snapshot():
             self._backup_volume_temp_snapshot(context, backup,
                                               backup_service)
@@ -1150,46 +1094,27 @@ class BaseVD(object):
                                             backup_service)
 
     def _backup_volume_temp_volume(self, context, backup, backup_service):
-        """Create a new backup from an existing volume or snapshot.
+        """Create a new backup from an existing volume.
 
-        To backup a snapshot, create a temp volume from the snapshot and
-        back it up.
-
-        Otherwise to backup an in-use volume, create a temp volume and
-        back it up.
+        For in-use volume, create a temp volume and back it up.
         """
         volume = self.db.volume_get(context, backup.volume_id)
-        snapshot = None
-        if backup.snapshot_id:
-            snapshot = objects.Snapshot.get_by_id(context, backup.snapshot_id)
 
         LOG.debug('Creating a new backup for volume %s.', volume['name'])
 
-        temp_vol_ref = None
+        # NOTE(xyang): Check volume status; if 'in-use', create a temp
+        # volume from the source volume, backup the temp volume, and
+        # then clean up the temp volume; if 'available', just backup the
+        # volume.
+        previous_status = volume.get('previous_status', None)
         device_to_backup = volume
-
-        # NOTE(xyang): If it is to backup from snapshot, create a temp
-        # volume from the source snapshot, backup the temp volume, and
-        # then clean up the temp volume.
-        if snapshot:
-            temp_vol_ref = self._create_temp_volume_from_snapshot(
-                context, volume, snapshot)
+        temp_vol_ref = None
+        if previous_status == "in-use":
+            temp_vol_ref = self._create_temp_cloned_volume(
+                context, volume)
             backup.temp_volume_id = temp_vol_ref['id']
             backup.save()
             device_to_backup = temp_vol_ref
-
-        else:
-            # NOTE(xyang): Check volume status if it is not to backup from
-            # snapshot; if 'in-use', create a temp volume from the source
-            # volume, backup the temp volume, and then clean up the temp
-            # volume; if 'available', just backup the volume.
-            previous_status = volume.get('previous_status')
-            if previous_status == "in-use":
-                temp_vol_ref = self._create_temp_cloned_volume(
-                    context, volume)
-                backup.temp_volume_id = temp_vol_ref['id']
-                backup.save()
-                device_to_backup = temp_vol_ref
 
         self._backup_device(context, backup, backup_service, device_to_backup)
 
@@ -1199,42 +1124,28 @@ class BaseVD(object):
             backup.save()
 
     def _backup_volume_temp_snapshot(self, context, backup, backup_service):
-        """Create a new backup from an existing volume or snapshot.
+        """Create a new backup from an existing volume.
 
-        If it is to backup from snapshot, back it up directly.
-
-        Otherwise for in-use volume, create a temp snapshot and back it up.
+        For in-use volume, create a temp snapshot and back it up.
         """
         volume = self.db.volume_get(context, backup.volume_id)
-        snapshot = None
-        if backup.snapshot_id:
-            snapshot = objects.Snapshot.get_by_id(context, backup.snapshot_id)
 
         LOG.debug('Creating a new backup for volume %s.', volume['name'])
 
+        # NOTE(xyang): Check volume status; if 'in-use', create a temp
+        # snapshot from the source volume, backup the temp snapshot, and
+        # then clean up the temp snapshot; if 'available', just backup the
+        # volume.
+        previous_status = volume.get('previous_status', None)
         device_to_backup = volume
         is_snapshot = False
         temp_snapshot = None
-
-        # NOTE(xyang): If it is to backup from snapshot, back it up
-        # directly. No need to clean it up.
-        if snapshot:
-            device_to_backup = snapshot
+        if previous_status == "in-use":
+            temp_snapshot = self._create_temp_snapshot(context, volume)
+            backup.temp_snapshot_id = temp_snapshot.id
+            backup.save()
+            device_to_backup = temp_snapshot
             is_snapshot = True
-
-        else:
-            # NOTE(xyang): If it is not to backup from snapshot, check volume
-            # status. If the volume status is 'in-use', create a temp snapshot
-            # from the source volume, backup the temp snapshot, and then clean
-            # up the temp snapshot; if the volume status is 'available', just
-            # backup the volume.
-            previous_status = volume.get('previous_status')
-            if previous_status == "in-use":
-                temp_snapshot = self._create_temp_snapshot(context, volume)
-                backup.temp_snapshot_id = temp_snapshot.id
-                backup.save()
-                device_to_backup = temp_snapshot
-                is_snapshot = True
 
         self._backup_device(context, backup, backup_service, device_to_backup,
                             is_snapshot)
@@ -1253,9 +1164,6 @@ class BaseVD(object):
         enforce_multipath = self.configuration.enforce_multipath_for_image_xfer
         properties = utils.brick_get_connector_properties(use_multipath,
                                                           enforce_multipath)
-        # TODO(xyang): Lots of code including this function is no longer used
-        # by the backup code path since Mitaka. We will need to do a code
-        # cleanup to avoid confusion. (Bug #1599629)
         if is_snapshot:
             attach_info, device = self._attach_snapshot(context, device,
                                                         properties)
@@ -1327,9 +1235,7 @@ class BaseVD(object):
         temp_snap_ref = objects.Snapshot(context=context, **kwargs)
         temp_snap_ref.create()
         try:
-            model_update = self.create_snapshot(temp_snap_ref)
-            if model_update:
-                temp_snap_ref.update(model_update)
+            self.create_snapshot(temp_snap_ref)
         except Exception:
             with excutils.save_and_reraise_exception():
                 with temp_snap_ref.obj_as_admin():
@@ -1349,50 +1255,17 @@ class BaseVD(object):
             'user_id': context.user_id,
             'project_id': context.project_id,
             'status': 'creating',
-            'attach_status': 'detached',
-            'availability_zone': volume.availability_zone,
-            'volume_type_id': volume.volume_type_id,
         }
         temp_vol_ref = self.db.volume_create(context, temp_volume)
         try:
-            # Some drivers return None, because they do not need to update the
-            # model for the volume. For those cases we set the model_update to
-            # an empty dictionary.
-            model_update = self.create_cloned_volume(temp_vol_ref,
-                                                     volume) or {}
+            self.create_cloned_volume(temp_vol_ref, volume)
         except Exception:
             with excutils.save_and_reraise_exception():
-                self.db.volume_destroy(context.elevated(),
-                                       temp_vol_ref['id'])
+                self.db.volume_destroy(context, temp_vol_ref['id'])
 
-        model_update['status'] = 'available'
-        self.db.volume_update(context, temp_vol_ref['id'], model_update)
-        return self.db.volume_get(context, temp_vol_ref['id'])
-
-    def _create_temp_volume_from_snapshot(self, context, volume, snapshot):
-        temp_volume = {
-            'size': volume['size'],
-            'display_name': 'backup-vol-%s' % volume['id'],
-            'host': volume['host'],
-            'user_id': context.user_id,
-            'project_id': context.project_id,
-            'status': 'creating',
-            'attach_status': 'detached',
-            'availability_zone': volume.availability_zone,
-            'volume_type_id': volume.volume_type_id,
-        }
-        temp_vol_ref = self.db.volume_create(context, temp_volume)
-        try:
-            model_update = self.create_volume_from_snapshot(temp_vol_ref,
-                                                            snapshot) or {}
-        except Exception:
-            with excutils.save_and_reraise_exception():
-                self.db.volume_destroy(context.elevated(),
-                                       temp_vol_ref['id'])
-
-        model_update['status'] = 'available'
-        self.db.volume_update(context, temp_vol_ref['id'], model_update)
-        return self.db.volume_get(context, temp_vol_ref['id'])
+        self.db.volume_update(context, temp_vol_ref['id'],
+                              {'status': 'available'})
+        return temp_vol_ref
 
     def _delete_temp_snapshot(self, context, snapshot):
         self.delete_snapshot(snapshot)
@@ -1441,7 +1314,7 @@ class BaseVD(object):
         :param new_volume: The migration volume object that was created on
                            this backend as part of the migration process
         :param original_volume_status: The status of the original volume
-        :returns: model_update to update DB with any needed changes
+        :return model_update to update DB with any needed changes
         """
         msg = _("The method update_migrated_volume is not implemented.")
         raise NotImplementedError(msg)
@@ -1452,16 +1325,6 @@ class BaseVD(object):
 
     def retype(self, context, volume, new_type, diff, host):
         return False, None
-
-    def create_cloned_volume(self, volume, src_vref):
-        """Creates a clone of the specified volume.
-
-        If volume_type extra specs includes 'replication: <is> True' the
-        driver needs to create a volume replica (secondary)
-        and setup replication between the newly created volume
-        and the secondary volume.
-        """
-        raise NotImplementedError()
 
     # #######  Interface methods for DataPath (Connector) ########
     @abc.abstractmethod
@@ -1546,7 +1409,7 @@ class BaseVD(object):
         """Return pool name where volume reside on.
 
         :param volume: The volume hosted by the the driver.
-        :returns: name of the pool where given volume is in.
+        :return: name of the pool where given volume is in.
         """
         return None
 
@@ -1555,7 +1418,7 @@ class BaseVD(object):
 
         :param volumes: List of Cinder volumes to check for updates
         :param snapshots: List of Cinder snapshots to check for updates
-        :returns: tuple (volume_updates, snapshot_updates)
+        :return: tuple (volume_updates, snapshot_updates)
 
         where volume updates {'id': uuid, provider_id: <provider-id>}
         and snapshot updates {'id': uuid, provider_id: <provider-id>}
@@ -1569,91 +1432,6 @@ class BaseVD(object):
         of this operation.
         """
         return (False, None)
-
-    def manage_existing(self, volume, existing_ref):
-        """Manage exiting stub.
-
-        This is for drivers that don't implement manage_existing().
-        """
-        msg = _("Manage existing volume not implemented.")
-        raise NotImplementedError(msg)
-
-    def unmanage(self, volume):
-        """Unmanage stub.
-
-        This is for drivers that don't implement unmanage().
-        """
-        msg = _("Unmanage volume not implemented.")
-        raise NotImplementedError(msg)
-
-    def freeze_backend(self, context):
-        """Notify the backend that it's frozen.
-
-        We use set to prohibit the creation of any new resources
-        on the backend, or any modifications to existing items on
-        a backend.  We set/enforce this by not allowing scheduling
-        of new volumes to the specified backend, and checking at the
-        api for modifications to resources and failing.
-
-        In most cases the driver may not need to do anything, but
-        this provides a handle if they need it.
-
-        :param context: security context
-        :response: True|False
-        """
-        return True
-
-    def thaw_backend(self, context):
-        """Notify the backend that it's unfrozen/thawed.
-
-        Returns the backend to a normal state after a freeze
-        operation.
-
-        In most cases the driver may not need to do anything, but
-        this provides a handle if they need it.
-
-        :param context: security context
-        :response: True|False
-        """
-        return True
-
-    def failover_host(self, context, volumes, secondary_id=None):
-        """Failover a backend to a secondary replication target.
-
-        Instructs a replication capable/configured backend to failover
-        to one of it's secondary replication targets. host=None is
-        an acceptable input, and leaves it to the driver to failover
-        to the only configured target, or to choose a target on it's
-        own. All of the hosts volumes will be passed on to the driver
-        in order for it to determine the replicated volumes on the host,
-        if needed.
-
-        Response is a tuple, including the new target backend_id
-        AND a lit of dictionaries with volume_id and updates.
-        *Key things to consider (attaching failed-over volumes):
-          provider_location
-          provider_auth
-          provider_id
-          replication_status
-
-        :param context: security context
-        :param volumes: list of volume objects, in case the driver needs
-                        to take action on them in some way
-        :param secondary_id: Specifies rep target backend to fail over to
-        :returns : ID of the backend that was failed-over to
-                   and model update for volumes
-        """
-
-        # Example volume_updates data structure:
-        # [{'volume_id': <cinder-uuid>,
-        #   'updates': {'provider_id': 8,
-        #               'replication_status': 'failed-over',
-        #               'replication_extended_status': 'whatever',...}},]
-        raise NotImplementedError()
-
-    def get_replication_updates(self, context):
-        """Old replication update method, deprecate."""
-        raise NotImplementedError()
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -1690,12 +1468,12 @@ class SnapshotVD(object):
 @six.add_metaclass(abc.ABCMeta)
 class ConsistencyGroupVD(object):
     @abc.abstractmethod
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def create_cgsnapshot(self, context, cgsnapshot):
         """Creates a cgsnapshot."""
         return
 
     @abc.abstractmethod
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def delete_cgsnapshot(self, context, cgsnapshot):
         """Deletes a cgsnapshot."""
         return
 
@@ -1705,8 +1483,23 @@ class ConsistencyGroupVD(object):
         return
 
     @abc.abstractmethod
-    def delete_consistencygroup(self, context, group, volumes):
+    def delete_consistencygroup(self, context, group):
         """Deletes a consistency group."""
+        return
+
+
+@six.add_metaclass(abc.ABCMeta)
+class CloneableVD(object):
+    @abc.abstractmethod
+    def create_cloned_volume(self, volume, src_vref):
+        """Creates a clone of the specified volume.
+
+        If volume_type extra specs includes 'replication: <is> True' the
+        driver needs to create a volume replica (secondary)
+        and setup replication between the newly created volume
+        and the secondary volume.
+        """
+
         return
 
 
@@ -1838,6 +1631,187 @@ class ManageableVD(object):
 
 
 @six.add_metaclass(abc.ABCMeta)
+class ReplicaV2VD(object):
+    """Cinder replication functionality.
+
+    The Cinder replication functionality is set up primarily through
+    the use of volume-types in conjunction with the filter scheduler.
+    This requires:
+    1. The driver reports "replication = True" in it's capabilities
+    2. The cinder.conf file includes the valid_replication_devices section
+
+    The driver configuration is expected to take one of the following two
+    forms, see devref replication docs for details.
+
+    Note we provide cinder.volume.utils.convert_config_string_to_dict
+    to parse this out into a usable proper dictionary.
+
+    """
+
+    @abc.abstractmethod
+    def replication_enable(self, context, volume):
+        """Enable replication on a replication capable volume.
+
+        If the volume was created on a replication_enabled host this method
+        is used to re-enable replication for the volume.
+
+        Primarily we only want this for testing/admin purposes.  The idea
+        being that the bulk of the replication details are handled by the
+        type definition and the driver; however disable/enable(re-enable) is
+        provided for admins to test or do maintenance which is a
+        requirement by some cloud-providers.
+
+        NOTE: This is intended as an ADMIN only call and is not
+        intended to be used by end-user to enable replication.  We're
+        leaving that to volume-type info, this is for things like
+        maintenance or testing.
+
+
+        :param context: security context
+        :param volume: volume object returned by DB
+        :response: {replication_driver_data: vendor-data} DB update
+
+        The replication_driver_data response is vendor unique,
+        data returned/used by the driver.  It is expected that
+        the reponse from the driver is in the appropriate db update
+        format, in the form of a dict, where the vendor data is
+        stored under the key 'replication_driver_data'
+
+        """
+
+        # TODO(jdg): Put a check in at API layer to verify the host is
+        # replication capable before even issuing this call (can just
+        # check against the volume-type for said volume as well)
+
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def replication_disable(self, context, volume):
+        """Disable replication on the specified volume.
+
+        If the specified volume is currently replication enabled,
+        this method can be used to disable the replciation process
+        on the backend.
+
+        Note that we still send this call to a driver whos volume
+        may report replication-disabled already.  We do this as a
+        safety mechanism to allow a driver to cleanup any mismatch
+        in state between Cinder and itself.
+
+        This is intended as an ADMIN only call to allow for
+        maintenance and testing.  If a driver receives this call
+        and the process fails for some reason the driver should
+        return a status update to "replication_status=disable_failed"
+
+        :param context: security context
+        :param volume: volume object returned by DB
+        :response: {replication_driver_data: vendor-data} DB update
+
+        The replication_driver_data response is vendor unique,
+        data returned/used by the driver.  It is expected that
+        the reponse from the driver is in the appropriate db update
+        format, in the form of a dict, where the vendor data is
+        stored under the key 'replication_driver_data'
+
+        """
+
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def replication_failover(self, context, volume, secondary):
+        """Force failover to a secondary replication target.
+
+        Forces the failover action of a replicated volume to one of its
+        secondary/target devices.  By default the choice of target devices
+        is left up to the driver.  In particular we expect one way
+        replication here, but are providing a mechanism for 'n' way
+        if supported/configured.
+
+        Currently we leave it up to the driver to figure out how/what
+        to do here.  Rather than doing things like ID swaps, we instead
+        just let the driver figure out how/where to route things.
+
+        In cases where we might want to drop a volume-service node and
+        the replication target is a configured cinder backend, we'll
+        just update the host column for the volume.
+
+        Very important point here is that in the case of a succesful
+        failover, we want to update the replication_status of the
+        volume to "failed-over".  This way there's an indication that
+        things worked as expected, and that it's evident that the volume
+        may no longer be replicating to another backend (primary burst
+        in to flames).  This status will be set by the manager.
+
+        :param context: security context
+        :param volume: volume object returned by DB
+        :param secondary: Specifies rep target to fail over to
+        :response: dict of udpates
+
+        So the response would take the form:
+            {host: <properly formatted host string for db update>,
+             model_update: {standard_model_update_KVs},
+             replication_driver_data: xxxxxxx}
+
+        It is expected that the format of these responses are in a consumable
+        format to be used in a db.update call directly.
+
+        Additionally we utilize exception catching to report back to the
+        manager when things went wrong and to inform the caller on how
+        to proceed.
+
+        """
+
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def list_replication_targets(self, context, vref):
+        """Provide a means to obtain replication targets for a volume.
+
+        This method is used to query a backend to get the current
+        replication config info for the specified volume.
+
+        In the case of a volume that isn't being replicated,
+        the driver should return an empty list.
+
+
+        Example response for replicating to a managed backend:
+        {'volume_id': volume['id'],
+         'targets':[{'type': 'managed',
+                     'backend_name': 'backend_name'}...]
+
+        Example response for replicating to an unmanaged backend:
+        {'volume_id': volume['id'],
+         'targets':[{'type': 'managed',
+                     'vendor-key-1': 'value-1'}...]
+
+        NOTE: It's the responsibility of the driver to mask out any
+        passwords or sensitive information.  Also the format of the
+        response allows mixed (managed/unmanaged) targets, even though
+        the first iteration does not support configuring the driver in
+        such a manner.
+
+        """
+
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def get_replication_updates(self, context):
+        """Provide a means to obtain status updates from backend.
+
+        Provides a concise update for backends to report any errors
+        or problems with replicating volumes.  The intent is we only
+        return something here if there's an error or a problem, and to
+        notify where the backend thinks the volume is.
+
+        param: context: context of caller (probably don't need)
+        returns: [{volid: n, status: ok|error,...}]
+        """
+        # NOTE(jdg): flush this out with implementations so we all
+        # have something usable here
+        raise NotImplementedError()
+
+
+@six.add_metaclass(abc.ABCMeta)
 class ManageableSnapshotsVD(object):
     # NOTE: Can't use abstractmethod before all drivers implement it
     def manage_existing_snapshot(self, snapshot, existing_ref):
@@ -1887,7 +1861,6 @@ class ManageableSnapshotsVD(object):
         pass
 
 
-# TODO(jdg): Remove this after the V2.1 code merges
 @six.add_metaclass(abc.ABCMeta)
 class ReplicaVD(object):
     @abc.abstractmethod
@@ -1975,7 +1948,7 @@ class ReplicaVD(object):
 
 
 class VolumeDriver(ConsistencyGroupVD, TransferVD, ManageableVD, ExtendVD,
-                   CloneableImageVD, ManageableSnapshotsVD,
+                   CloneableVD, CloneableImageVD, ManageableSnapshotsVD,
                    SnapshotVD, ReplicaVD, LocalVD, MigrateVD, BaseVD):
     """This class will be deprecated soon.
 
@@ -1988,6 +1961,9 @@ class VolumeDriver(ConsistencyGroupVD, TransferVD, ManageableVD, ExtendVD,
         raise NotImplementedError()
 
     def create_volume_from_snapshot(self, volume, snapshot):
+        raise NotImplementedError()
+
+    def create_cloned_volume(self, volume, src_vref):
         raise NotImplementedError()
 
     def create_replica_test_volume(self, volume, src_vref):
@@ -2061,7 +2037,7 @@ class VolumeDriver(ConsistencyGroupVD, TransferVD, ManageableVD, ExtendVD,
     def remove_export_snapshot(self, context, snapshot):
         raise NotImplementedError()
 
-    def initialize_connection(self, volume, connector, **kwargs):
+    def initialize_connection(self, volume, connector):
         raise NotImplementedError()
 
     def initialize_connection_snapshot(self, snapshot, connector, **kwargs):
@@ -2074,24 +2050,7 @@ class VolumeDriver(ConsistencyGroupVD, TransferVD, ManageableVD, ExtendVD,
         """Disallow connection from connector for a snapshot."""
 
     def create_consistencygroup(self, context, group):
-        """Creates a consistencygroup.
-
-        :param context: the context of the caller.
-        :param group: the dictionary of the consistency group to be created.
-        :returns: model_update
-
-        model_update will be in this format: {'status': xxx, ......}.
-
-        If the status in model_update is 'error', the manager will throw
-        an exception and it will be caught in the try-except block in the
-        manager. If the driver throws an exception, the manager will also
-        catch it in the try-except block. The group status in the db will
-        be changed to 'error'.
-
-        For a successful operation, the driver can either build the
-        model_update and return it or return None. The group status will
-        be set to 'available'.
-        """
+        """Creates a consistencygroup."""
         raise NotImplementedError()
 
     def create_consistencygroup_from_src(self, context, group, volumes,
@@ -2106,7 +2065,7 @@ class VolumeDriver(ConsistencyGroupVD, TransferVD, ManageableVD, ExtendVD,
         :param snapshots: a list of snapshot dictionaries in the cgsnapshot.
         :param source_cg: the dictionary of a consistency group as source.
         :param source_vols: a list of volume dictionaries in the source_cg.
-        :returns: model_update, volumes_model_update
+        :return model_update, volumes_model_update
 
         The source can be cgsnapshot or a source cg.
 
@@ -2114,8 +2073,8 @@ class VolumeDriver(ConsistencyGroupVD, TransferVD, ManageableVD, ExtendVD,
         cinder.db.sqlalchemy.models.Volume to be precise. It cannot be
         assigned to volumes_model_update. volumes_model_update is a list of
         dictionaries. It has to be built by the driver. An entry will be
-        in this format: {'id': xxx, 'status': xxx, ......}. model_update
-        will be in this format: {'status': xxx, ......}.
+        in this format: ['id': xxx, 'status': xxx, ......]. model_update
+        will be in this format: ['status': xxx, ......].
 
         To be consistent with other volume operations, the manager will
         assume the operation is successful if no exception is thrown by
@@ -2125,48 +2084,8 @@ class VolumeDriver(ConsistencyGroupVD, TransferVD, ManageableVD, ExtendVD,
         """
         raise NotImplementedError()
 
-    def delete_consistencygroup(self, context, group, volumes):
-        """Deletes a consistency group.
-
-        :param context: the context of the caller.
-        :param group: the dictionary of the consistency group to be deleted.
-        :param volumes: a list of volume dictionaries in the group.
-        :returns: model_update, volumes_model_update
-
-        param volumes is retrieved directly from the db. It is a list of
-        cinder.db.sqlalchemy.models.Volume to be precise. It cannot be
-        assigned to volumes_model_update. volumes_model_update is a list of
-        dictionaries. It has to be built by the driver. An entry will be
-        in this format: {'id': xxx, 'status': xxx, ......}. model_update
-        will be in this format: {'status': xxx, ......}.
-
-        The driver should populate volumes_model_update and model_update
-        and return them.
-
-        The manager will check volumes_model_update and update db accordingly
-        for each volume. If the driver successfully deleted some volumes
-        but failed to delete others, it should set statuses of the volumes
-        accordingly so that the manager can update db correctly.
-
-        If the status in any entry of volumes_model_update is 'error_deleting'
-        or 'error', the status in model_update will be set to the same if it
-        is not already 'error_deleting' or 'error'.
-
-        If the status in model_update is 'error_deleting' or 'error', the
-        manager will raise an exception and the status of the group will be
-        set to 'error' in the db. If volumes_model_update is not returned by
-        the driver, the manager will set the status of every volume in the
-        group to 'error' in the except block.
-
-        If the driver raises an exception during the operation, it will be
-        caught by the try-except block in the manager. The statuses of the
-        group and all volumes in it will be set to 'error'.
-
-        For a successful operation, the driver can either build the
-        model_update and volumes_model_update and return them or
-        return None, None. The statuses of the group and all volumes
-        will be set to 'deleted' after the manager deletes them from db.
-        """
+    def delete_consistencygroup(self, context, group):
+        """Deletes a consistency group."""
         raise NotImplementedError()
 
     def update_consistencygroup(self, context, group,
@@ -2177,7 +2096,7 @@ class VolumeDriver(ConsistencyGroupVD, TransferVD, ManageableVD, ExtendVD,
         :param group: the dictionary of the consistency group to be updated.
         :param add_volumes: a list of volume dictionaries to be added.
         :param remove_volumes: a list of volume dictionaries to be removed.
-        :returns: model_update, add_volumes_update, remove_volumes_update
+        :return model_update, add_volumes_update, remove_volumes_update
 
         model_update is a dictionary that the driver wants the manager
         to update upon a successful return. If None is returned, the manager
@@ -2197,92 +2116,12 @@ class VolumeDriver(ConsistencyGroupVD, TransferVD, ManageableVD, ExtendVD,
         """
         raise NotImplementedError()
 
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Creates a cgsnapshot.
-
-        :param context: the context of the caller.
-        :param cgsnapshot: the dictionary of the cgsnapshot to be created.
-        :param snapshots: a list of snapshot dictionaries in the cgsnapshot.
-        :returns: model_update, snapshots_model_update
-
-        param snapshots is retrieved directly from the db. It is a list of
-        cinder.db.sqlalchemy.models.Snapshot to be precise. It cannot be
-        assigned to snapshots_model_update. snapshots_model_update is a list
-        of dictionaries. It has to be built by the driver. An entry will be
-        in this format: {'id': xxx, 'status': xxx, ......}. model_update
-        will be in this format: {'status': xxx, ......}.
-
-        The driver should populate snapshots_model_update and model_update
-        and return them.
-
-        The manager will check snapshots_model_update and update db accordingly
-        for each snapshot. If the driver successfully deleted some snapshots
-        but failed to delete others, it should set statuses of the snapshots
-        accordingly so that the manager can update db correctly.
-
-        If the status in any entry of snapshots_model_update is 'error', the
-        status in model_update will be set to the same if it is not already
-        'error'.
-
-        If the status in model_update is 'error', the manager will raise an
-        exception and the status of cgsnapshot will be set to 'error' in the
-        db. If snapshots_model_update is not returned by the driver, the
-        manager will set the status of every snapshot to 'error' in the except
-        block.
-
-        If the driver raises an exception during the operation, it will be
-        caught by the try-except block in the manager and the statuses of
-        cgsnapshot and all snapshots will be set to 'error'.
-
-        For a successful operation, the driver can either build the
-        model_update and snapshots_model_update and return them or
-        return None, None. The statuses of cgsnapshot and all snapshots
-        will be set to 'available' at the end of the manager function.
-        """
+    def create_cgsnapshot(self, context, cgsnapshot):
+        """Creates a cgsnapshot."""
         raise NotImplementedError()
 
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
-        """Deletes a cgsnapshot.
-
-        :param context: the context of the caller.
-        :param cgsnapshot: the dictionary of the cgsnapshot to be deleted.
-        :param snapshots: a list of snapshot dictionaries in the cgsnapshot.
-        :returns: model_update, snapshots_model_update
-
-        param snapshots is retrieved directly from the db. It is a list of
-        cinder.db.sqlalchemy.models.Snapshot to be precise. It cannot be
-        assigned to snapshots_model_update. snapshots_model_update is a list
-        of dictionaries. It has to be built by the driver. An entry will be
-        in this format: {'id': xxx, 'status': xxx, ......}. model_update
-        will be in this format: {'status': xxx, ......}.
-
-        The driver should populate snapshots_model_update and model_update
-        and return them.
-
-        The manager will check snapshots_model_update and update db accordingly
-        for each snapshot. If the driver successfully deleted some snapshots
-        but failed to delete others, it should set statuses of the snapshots
-        accordingly so that the manager can update db correctly.
-
-        If the status in any entry of snapshots_model_update is
-        'error_deleting' or 'error', the status in model_update will be set to
-        the same if it is not already 'error_deleting' or 'error'.
-
-        If the status in model_update is 'error_deleting' or 'error', the
-        manager will raise an exception and the status of cgsnapshot will be
-        set to 'error' in the db. If snapshots_model_update is not returned by
-        the driver, the manager will set the status of every snapshot to
-        'error' in the except block.
-
-        If the driver raises an exception during the operation, it will be
-        caught by the try-except block in the manager and the statuses of
-        cgsnapshot and all snapshots will be set to 'error'.
-
-        For a successful operation, the driver can either build the
-        model_update and snapshots_model_update and return them or
-        return None, None. The statuses of cgsnapshot and all snapshots
-        will be set to 'deleted' after the manager deletes them from db.
-        """
+    def delete_cgsnapshot(self, context, cgsnapshot):
+        """Deletes a cgsnapshot."""
         raise NotImplementedError()
 
     def clone_image(self, volume, image_location, image_id, image_meta,
@@ -2293,7 +2132,7 @@ class VolumeDriver(ConsistencyGroupVD, TransferVD, ManageableVD, ExtendVD,
         """Return pool name where volume reside on.
 
         :param volume: The volume hosted by the the driver.
-        :returns: name of the pool where given volume is in.
+        :return: name of the pool where given volume is in.
         """
         return None
 
@@ -2386,6 +2225,9 @@ class ISCSIDriver(VolumeDriver):
             present meaning no authentication, or auth_method == `CHAP`
             meaning use CHAP with the specified credentials.
 
+        :access_mode:    the volume access mode allow client used
+                         ('rw' or 'ro' currently supported)
+
         :discard:    boolean indicating if discard is supported
 
         In some of drivers that support multiple connections (for multipath
@@ -2425,8 +2267,10 @@ class ISCSIDriver(VolumeDriver):
         try:
             lun = int(results[2])
         except (IndexError, ValueError):
-            if (self.configuration.volume_driver ==
-                    'cinder.volume.drivers.lvm.ThinLVMVolumeDriver' and
+            if (self.configuration.volume_driver in
+                    ['cinder.volume.drivers.lvm.LVMISCSIDriver',
+                     'cinder.volume.drivers.lvm.LVMISERDriver',
+                     'cinder.volume.drivers.lvm.ThinLVMVolumeDriver'] and
                     self.configuration.iscsi_helper in ('tgtadm', 'iseradm')):
                 lun = 1
             else:
@@ -2502,6 +2346,7 @@ class ISCSIDriver(VolumeDriver):
                     'target_iqn': 'iqn.2010-10.org.openstack:volume-00000001',
                     'target_portal': '127.0.0.0.1:3260',
                     'volume_id': 1,
+                    'access_mode': 'rw',
                     'discard': False,
                 }
             }
@@ -2522,6 +2367,7 @@ class ISCSIDriver(VolumeDriver):
                     'target_lun': 1,
                     'target_luns': [1, 1],
                     'volume_id': 1,
+                    'access_mode': 'rw',
                     'discard': False,
                 }
             }
@@ -2584,8 +2430,8 @@ class FakeISCSIDriver(ISCSIDriver):
         fake_pool = {}
         fake_pool.update(dict(
             pool_name=data["volume_backend_name"],
-            total_capacity_gb='infinite',
-            free_capacity_gb='infinite',
+            total_capacity_gb=0,
+            free_capacity_gb=0,
             provisioned_capacity_gb=0,
             reserved_percentage=100,
             QoS_support=False,
@@ -2605,12 +2451,14 @@ class FakeISCSIDriver(ISCSIDriver):
     def initialize_connection(self, volume, connector):
         return {
             'driver_volume_type': 'iscsi',
+            'data': {'access_mode': 'rw'},
             'discard': False,
         }
 
     def initialize_connection_snapshot(self, snapshot, connector):
         return {
             'driver_volume_type': 'iscsi',
+            'data': {'access_mode': 'rw'}
         }
 
     def terminate_connection(self, volume, connector, **kwargs):
@@ -2781,6 +2629,7 @@ class FibreChannelDriver(VolumeDriver):
                     'target_discovered': True,
                     'target_lun': 1,
                     'target_wwn': '1234567890123',
+                    'access_mode': 'rw',
                     'discard': False,
                 }
             }
@@ -2793,6 +2642,7 @@ class FibreChannelDriver(VolumeDriver):
                     'target_discovered': True,
                     'target_lun': 1,
                     'target_wwn': ['1234567890123', '0987654321321'],
+                    'access_mode': 'rw',
                     'discard': False,
                 }
             }

@@ -50,26 +50,9 @@ class EMCVMAXISCSIDriver(driver.ISCSIDriver):
         2.2.2 - Update Consistency Group
         2.2.3 - Pool aware scheduler(multi-pool) support
         2.2.4 - Create CG from CG snapshot
-        2.3.0 - Name change for MV and SG for FAST (bug #1515181)
-              - Fix for randomly choosing port group. (bug #1501919)
-              - get_short_host_name needs to be called in find_device_number
-                (bug #1520635)
-              - Proper error handling for invalid SLOs (bug #1512795)
-              - Extend Volume for VMAX3, SE8.1.0.3
-              https://blueprints.launchpad.net/cinder/+spec/vmax3-extend-volume
-              - Incorrect SG selected on an attach (#1515176)
-              - Cleanup Zoning (bug #1501938)  NOTE: FC only
-              - Last volume in SG fix
-              - _remove_last_vol_and_delete_sg is not being called
-                for VMAX3 (bug #1520549)
-              - necessary updates for CG changes (#1534616)
-              - Changing PercentSynced to CopyState (bug #1517103)
-              - Getting iscsi ip from port in existing masking view
-              - Replacement of EMCGetTargetEndpoints api (bug #1512791)
-              - VMAX3 snapvx improvements (bug #1522821)
     """
 
-    VERSION = "2.3.0"
+    VERSION = "2.2.4"
 
     def __init__(self, *args, **kwargs):
 
@@ -348,18 +331,19 @@ class EMCVMAXISCSIDriver(driver.ISCSIDriver):
         """Creates a consistencygroup."""
         self.common.create_consistencygroup(context, group)
 
-    def delete_consistencygroup(self, context, group, volumes):
+    def delete_consistencygroup(self, context, group):
         """Deletes a consistency group."""
+        volumes = self.db.volume_get_all_by_group(context, group['id'])
         return self.common.delete_consistencygroup(
             context, group, volumes)
 
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def create_cgsnapshot(self, context, cgsnapshot):
         """Creates a cgsnapshot."""
-        return self.common.create_cgsnapshot(context, cgsnapshot, snapshots)
+        return self.common.create_cgsnapshot(context, cgsnapshot, self.db)
 
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def delete_cgsnapshot(self, context, cgsnapshot):
         """Deletes a cgsnapshot."""
-        return self.common.delete_cgsnapshot(context, cgsnapshot, snapshots)
+        return self.common.delete_cgsnapshot(context, cgsnapshot, self.db)
 
     def _check_for_iscsi_ip_address(self):
         """Check to see if iscsi_ip_address is set in cinder.conf
@@ -416,5 +400,4 @@ class EMCVMAXISCSIDriver(driver.ISCSIDriver):
         :param source_vols: a list of volume dictionaries in the source_cg.
         """
         return self.common.create_consistencygroup_from_src(
-            context, group, volumes, cgsnapshot, snapshots, source_cg,
-            source_vols)
+            context, group, volumes, cgsnapshot, snapshots, self.db)

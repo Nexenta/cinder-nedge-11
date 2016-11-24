@@ -17,7 +17,7 @@
 Manage hosts in the current zone.
 """
 
-import collections
+import UserDict
 
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -25,11 +25,11 @@ from oslo_utils import timeutils
 
 from cinder import context as cinder_context
 from cinder import exception
-from cinder import objects
-from cinder import utils
 from cinder.i18n import _LI, _LW
-from cinder.scheduler import filters
-from cinder.scheduler import weights
+from cinder import objects
+from cinder.openstack.common.scheduler import filters
+from cinder.openstack.common.scheduler import weights
+from cinder import utils
 from cinder.volume import utils as vol_utils
 
 
@@ -57,25 +57,36 @@ CONF.import_opt('max_over_subscription_ratio', 'cinder.volume.driver')
 LOG = logging.getLogger(__name__)
 
 
-class ReadOnlyDict(collections.Mapping):
+class ReadOnlyDict(UserDict.IterableUserDict):
     """A read-only dict."""
     def __init__(self, source=None):
-        if source is not None:
-            self.data = dict(source)
+        self.data = {}
+        self.update(source)
+
+    def __setitem__(self, key, item):
+        raise TypeError
+
+    def __delitem__(self, key):
+        raise TypeError
+
+    def clear(self):
+        raise TypeError
+
+    def pop(self, key, *args):
+        raise TypeError
+
+    def popitem(self):
+        raise TypeError
+
+    def update(self, source=None):
+        if source is None:
+            return
+        elif isinstance(source, UserDict.UserDict):
+            self.data = source.data
+        elif isinstance(source, type({})):
+            self.data = source
         else:
-            self.data = {}
-
-    def __getitem__(self, key):
-        return self.data[key]
-
-    def __iter__(self):
-        return iter(self.data)
-
-    def __len__(self):
-        return len(self.data)
-
-    def __repr__(self):
-        return '%s(%r)' % (self.__class__.__name__, self.data)
+            raise TypeError
 
 
 class HostState(object):
@@ -221,7 +232,7 @@ class HostState(object):
                 self._append_backend_info(capability)
                 self.pools[pool_name] = single_pool
             else:
-                # this is an update from legacy driver
+                # this is a update from legacy driver
                 try:
                     single_pool = self.pools[pool_name]
                 except KeyError:
@@ -265,7 +276,7 @@ class HostState(object):
         self.updated = capability['timestamp']
 
     def consume_from_volume(self, volume):
-        """Incrementally update host state from a volume."""
+        """Incrementally update host state from an volume."""
         volume_gb = volume['size']
         self.allocated_capacity_gb += volume_gb
         self.provisioned_capacity_gb += volume_gb

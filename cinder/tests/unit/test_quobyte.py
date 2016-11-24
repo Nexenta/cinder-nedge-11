@@ -23,12 +23,12 @@ import traceback
 import mock
 from oslo_concurrency import processutils as putils
 from oslo_config import cfg
-from oslo_utils import imageutils
 from oslo_utils import units
 
 from cinder import context
 from cinder import exception
 from cinder.image import image_utils
+from cinder.openstack.common import imageutils
 from cinder import test
 from cinder.volume import configuration as conf
 from cinder.volume.drivers import quobyte
@@ -86,8 +86,6 @@ class QuobyteDriverTestCase(test.TestCase):
         self._configuration.quobyte_qcow2_volumes = False
         self._configuration.quobyte_mount_point_base = \
             self.TEST_MNT_POINT_BASE
-        self._configuration.nas_secure_file_operations = "auto"
-        self._configuration.nas_secure_file_permissions = "auto"
 
         self._driver =\
             quobyte.QuobyteDriver(configuration=self._configuration,
@@ -104,9 +102,9 @@ class QuobyteDriverTestCase(test.TestCase):
             callableObj(*args, **kwargs)
         except Exception as exc:
             caught = True
-            self.assertIsInstance(exc, excClass,
-                                  'Wrong exception caught: %s Stacktrace: %s' %
-                                  (exc, traceback.format_exc()))
+            self.assertEqual(excClass, type(exc),
+                             'Wrong exception caught: %s Stacktrace: %s' %
+                             (exc, traceback.format_exc()))
             self.assertIn(msg, six.text_type(exc))
 
         if not caught:
@@ -344,14 +342,10 @@ class QuobyteDriverTestCase(test.TestCase):
             self.assertEqual(1, len(drv.shares))
             self.assertEqual(0, len(drv._mounted_shares))
 
-    @mock.patch.object(quobyte.QuobyteDriver, "set_nas_security_options")
-    def test_do_setup(self, qb_snso_mock):
+    def test_do_setup(self):
         """do_setup runs successfully."""
         drv = self._driver
-
         drv.do_setup(mock.create_autospec(context.RequestContext))
-
-        qb_snso_mock.assert_called_once_with(is_new_cinder_install=mock.ANY)
 
     def test_check_for_setup_error_throws_quobyte_volume_url_not_set(self):
         """check_for_setup_error throws if 'quobyte_volume_url' is not set."""
@@ -937,37 +931,3 @@ class QuobyteDriverTestCase(test.TestCase):
             mock_upload_volume.assert_called_once_with(
                 mock.ANY, mock.ANY, mock.ANY, upload_path)
             self.assertTrue(mock_create_temporary_file.called)
-
-    def test_set_nas_security_options_default(self):
-        drv = self._driver
-        self.assertTrue(drv.configuration.nas_secure_file_operations ==
-                        "true")
-        self.assertTrue(drv.configuration.nas_secure_file_permissions ==
-                        "true")
-        self.assertFalse(drv._execute_as_root)
-
-    def test_set_nas_security_options_insecure(self):
-        drv = self._driver
-        drv.configuration.nas_secure_file_operations = "false"
-        drv.configuration.nas_secure_file_permissions = "false"
-
-        drv.set_nas_security_options(is_new_cinder_install=True)
-
-        self.assertTrue(drv.configuration.nas_secure_file_operations ==
-                        "false")
-        self.assertTrue(drv.configuration.nas_secure_file_permissions ==
-                        "false")
-        self.assertTrue(drv._execute_as_root)
-
-    def test_set_nas_security_options_explicitly_secure(self):
-        drv = self._driver
-        drv.configuration.nas_secure_file_operations = "true"
-        drv.configuration.nas_secure_file_permissions = "true"
-
-        drv.set_nas_security_options(is_new_cinder_install=True)
-
-        self.assertTrue(drv.configuration.nas_secure_file_operations ==
-                        "true")
-        self.assertTrue(drv.configuration.nas_secure_file_permissions ==
-                        "true")
-        self.assertFalse(drv._execute_as_root)

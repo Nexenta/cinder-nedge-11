@@ -41,8 +41,6 @@ from oslo_db import concurrency as db_concurrency
 from oslo_db import options as db_options
 
 from cinder.api import common
-from cinder.common import constants
-from cinder.i18n import _
 
 db_opts = [
     cfg.BoolOpt('enable_new_services',
@@ -70,7 +68,7 @@ _BACKEND_MAPPING = {'sqlalchemy': 'cinder.db.sqlalchemy.api'}
 IMPL = db_concurrency.TpoolDbapiWrapper(CONF, _BACKEND_MAPPING)
 
 # The maximum value a signed INT type may have
-MAX_INT = constants.DB_MAX_INT
+MAX_INT = 0x7FFFFFFF
 
 
 ###################
@@ -107,9 +105,9 @@ def service_get_by_host_and_topic(context, host, topic):
     return IMPL.service_get_by_host_and_topic(context, host, topic)
 
 
-def service_get_all(context, filters=None):
+def service_get_all(context, disabled=None):
     """Get all services."""
-    return IMPL.service_get_all(context, filters)
+    return IMPL.service_get_all(context, disabled)
 
 
 def service_get_all_by_topic(context, topic, disabled=None):
@@ -117,13 +115,8 @@ def service_get_all_by_topic(context, topic, disabled=None):
     return IMPL.service_get_all_by_topic(context, topic, disabled=disabled)
 
 
-def service_get_all_by_binary(context, binary, disabled=None):
-    """Get all services for a given binary."""
-    return IMPL.service_get_all_by_binary(context, binary, disabled)
-
-
 def service_get_by_args(context, host, binary):
-    """Get the state of a service by node name and binary."""
+    """Get the state of an service by node name and binary."""
     return IMPL.service_get_by_args(context, host, binary)
 
 
@@ -139,6 +132,25 @@ def service_update(context, service_id, values):
 
     """
     return IMPL.service_update(context, service_id, values)
+
+
+###################
+
+
+def iscsi_target_count_by_host(context, host):
+    """Return count of export devices."""
+    return IMPL.iscsi_target_count_by_host(context, host)
+
+
+def iscsi_target_create_safe(context, values):
+    """Create an iscsi_target from the values dictionary.
+
+    The device is not returned. If the create violates the unique
+    constraints because the iscsi_target and host already exist,
+    no exception is raised.
+
+    """
+    return IMPL.iscsi_target_create_safe(context, values)
 
 
 ###############
@@ -171,6 +183,11 @@ def volume_data_get_for_host(context, host, count_only=False):
 def volume_data_get_for_project(context, project_id):
     """Get (volume_count, gigabytes) for project."""
     return IMPL.volume_data_get_for_project(context, project_id)
+
+
+def finish_volume_migration(context, src_vol_id, dest_vol_id):
+    """Perform database updates upon completion of volume migration."""
+    return IMPL.finish_volume_migration(context, src_vol_id, dest_vol_id)
 
 
 def volume_destroy(context, volume_id):
@@ -217,8 +234,13 @@ def volume_get_all_by_project(context, project_id, marker, limit,
                                           offset=offset)
 
 
+def volume_get_iscsi_target_num(context, volume_id):
+    """Get the target num (tid) allocated to the volume."""
+    return IMPL.volume_get_iscsi_target_num(context, volume_id)
+
+
 def volume_update(context, volume_id, values):
-    """Set the given properties on a volume and update it.
+    """Set the given properties on an volume and update it.
 
     Raises NotFound if volume does not exist.
 
@@ -250,18 +272,6 @@ def volume_attachment_get_by_instance_uuid(context, volume_id, instance_uuid):
 def volume_update_status_based_on_attachment(context, volume_id):
     """Update volume status according to attached instance id"""
     return IMPL.volume_update_status_based_on_attachment(context, volume_id)
-
-
-def volume_has_snapshots_filter():
-    return IMPL.volume_has_snapshots_filter()
-
-
-def volume_has_undeletable_snapshots_filter():
-    return IMPL.volume_has_undeletable_snapshots_filter()
-
-
-def volume_has_attachments_filter():
-    return IMPL.volume_has_attachments_filter()
 
 
 ####################
@@ -395,11 +405,10 @@ def volume_admin_metadata_delete(context, volume_id, key):
     return IMPL.volume_admin_metadata_delete(context, volume_id, key)
 
 
-def volume_admin_metadata_update(context, volume_id, metadata, delete,
-                                 add=True, update=True):
+def volume_admin_metadata_update(context, volume_id, metadata, delete):
     """Update metadata if it exists, otherwise create it."""
     return IMPL.volume_admin_metadata_update(context, volume_id, metadata,
-                                             delete, add, update)
+                                             delete)
 
 
 ##################
@@ -414,23 +423,12 @@ def volume_type_update(context, volume_type_id, values):
     return IMPL.volume_type_update(context, volume_type_id, values)
 
 
-def volume_type_get_all(context, inactive=False, filters=None, marker=None,
-                        limit=None, sort_keys=None, sort_dirs=None,
-                        offset=None, list_result=False):
+def volume_type_get_all(context, inactive=False, filters=None):
     """Get all volume types.
 
     :param context: context to query under
     :param inactive: Include inactive volume types to the result set
     :param filters: Filters for the query in the form of key/value.
-    :param marker: the last item of the previous page, used to determine the
-                   next page of results to return
-    :param limit: maximum number of items to return
-    :param sort_keys: list of attributes by which results should be sorted,
-                      paired with corresponding item in sort_dirs
-    :param sort_dirs: list of directions in which results should be sorted,
-                      paired with corresponding item in sort_keys
-    :param list_result: For compatibility, if list_result = True, return a list
-                        instead of dict.
 
         :is_public: Filter volume types based on visibility:
 
@@ -438,13 +436,10 @@ def volume_type_get_all(context, inactive=False, filters=None, marker=None,
             * **False**: List private volume types only
             * **None**: List both public and private volume types
 
-    :returns: list/dict of matching volume types
+    :returns: list of matching volume types
     """
 
-    return IMPL.volume_type_get_all(context, inactive, filters, marker=marker,
-                                    limit=limit, sort_keys=sort_keys,
-                                    sort_dirs=sort_dirs, offset=offset,
-                                    list_result=list_result)
+    return IMPL.volume_type_get_all(context, inactive, filters)
 
 
 def volume_type_get(context, id, inactive=False, expected_fields=None):
@@ -595,12 +590,9 @@ def qos_specs_get(context, qos_specs_id):
     return IMPL.qos_specs_get(context, qos_specs_id)
 
 
-def qos_specs_get_all(context, filters=None, marker=None, limit=None,
-                      offset=None, sort_keys=None, sort_dirs=None):
+def qos_specs_get_all(context, inactive=False, filters=None):
     """Get all qos_specs."""
-    return IMPL.qos_specs_get_all(context, filters=filters, marker=marker,
-                                  limit=limit, offset=offset,
-                                  sort_keys=sort_keys, sort_dirs=sort_dirs)
+    return IMPL.qos_specs_get_all(context, inactive, filters)
 
 
 def qos_specs_get_by_name(context, name):
@@ -771,11 +763,6 @@ def quota_update(context, project_id, resource, limit):
     return IMPL.quota_update(context, project_id, resource, limit)
 
 
-def quota_update_resource(context, old_res, new_res):
-    """Update resource of quotas."""
-    return IMPL.quota_update_resource(context, old_res, new_res)
-
-
 def quota_destroy(context, project_id, resource):
     """Destroy the quota or raise if it does not exist."""
     return IMPL.quota_destroy(context, project_id, resource)
@@ -809,11 +796,6 @@ def quota_class_update(context, class_name, resource, limit):
     return IMPL.quota_class_update(context, class_name, resource, limit)
 
 
-def quota_class_update_resource(context, resource, new_resource):
-    """Update resource name in quota_class."""
-    return IMPL.quota_class_update_resource(context, resource, new_resource)
-
-
 def quota_class_destroy(context, class_name, resource):
     """Destroy the quota class or raise if it does not exist."""
     return IMPL.quota_class_destroy(context, class_name, resource)
@@ -841,12 +823,10 @@ def quota_usage_get_all_by_project(context, project_id):
 
 
 def quota_reserve(context, resources, quotas, deltas, expire,
-                  until_refresh, max_age, project_id=None,
-                  is_allocated_reserve=False):
+                  until_refresh, max_age, project_id=None):
     """Check quotas and create appropriate reservations."""
     return IMPL.quota_reserve(context, resources, quotas, deltas, expire,
-                              until_refresh, max_age, project_id=project_id,
-                              is_allocated_reserve=is_allocated_reserve)
+                              until_refresh, max_age, project_id=project_id)
 
 
 def reservation_commit(context, reservations, project_id=None):
@@ -869,11 +849,6 @@ def quota_destroy_by_project(context, project_id):
 def reservation_expire(context):
     """Roll back any expired reservations."""
     return IMPL.reservation_expire(context)
-
-
-def quota_usage_update_resource(context, old_res, new_res):
-    """Update resource field in quota_usages."""
-    return IMPL.quota_usage_update_resource(context, old_res, new_res)
 
 
 ###################
@@ -973,13 +948,9 @@ def consistencygroup_get(context, consistencygroup_id):
     return IMPL.consistencygroup_get(context, consistencygroup_id)
 
 
-def consistencygroup_get_all(context, filters=None, marker=None, limit=None,
-                             offset=None, sort_keys=None, sort_dirs=None):
+def consistencygroup_get_all(context):
     """Get all consistencygroups."""
-    return IMPL.consistencygroup_get_all(context, filters=filters,
-                                         marker=marker, limit=limit,
-                                         offset=offset, sort_keys=sort_keys,
-                                         sort_dirs=sort_dirs)
+    return IMPL.consistencygroup_get_all(context)
 
 
 def consistencygroup_create(context, values):
@@ -987,16 +958,9 @@ def consistencygroup_create(context, values):
     return IMPL.consistencygroup_create(context, values)
 
 
-def consistencygroup_get_all_by_project(context, project_id, filters=None,
-                                        marker=None, limit=None, offset=None,
-                                        sort_keys=None, sort_dirs=None):
+def consistencygroup_get_all_by_project(context, project_id):
     """Get all consistencygroups belonging to a project."""
-    return IMPL.consistencygroup_get_all_by_project(context, project_id,
-                                                    filters=filters,
-                                                    marker=marker, limit=limit,
-                                                    offset=offset,
-                                                    sort_keys=sort_keys,
-                                                    sort_dirs=sort_dirs)
+    return IMPL.consistencygroup_get_all_by_project(context, project_id)
 
 
 def consistencygroup_update(context, consistencygroup_id, values):
@@ -1114,124 +1078,3 @@ def image_volume_cache_get_by_volume_id(context, volume_id):
 def image_volume_cache_get_all_for_host(context, host):
     """Query for all image volume cache entry for a host."""
     return IMPL.image_volume_cache_get_all_for_host(context, host)
-
-
-###################
-
-
-def get_model_for_versioned_object(versioned_object):
-    return IMPL.get_model_for_versioned_object(versioned_object)
-
-
-def get_by_id(context, model, id, *args, **kwargs):
-    return IMPL.get_by_id(context, model, id, *args, **kwargs)
-
-
-class Condition(object):
-    """Class for normal condition values for conditional_update."""
-    def __init__(self, value, field=None):
-        self.value = value
-        # Field is optional and can be passed when getting the filter
-        self.field = field
-
-    def get_filter(self, model, field=None):
-        return IMPL.condition_db_filter(model, self._get_field(field),
-                                        self.value)
-
-    def _get_field(self, field=None):
-        # We must have a defined field on initialization or when called
-        field = field or self.field
-        if not field:
-            raise ValueError(_('Condition has no field.'))
-        return field
-
-
-class Not(Condition):
-    """Class for negated condition values for conditional_update.
-
-    By default NULL values will be treated like Python treats None instead of
-    how SQL treats it.
-
-    So for example when values are (1, 2) it will evaluate to True when we have
-    value 3 or NULL, instead of only with 3 like SQL does.
-    """
-    def __init__(self, value, field=None, auto_none=True):
-        super(Not, self).__init__(value, field)
-        self.auto_none = auto_none
-
-    def get_filter(self, model, field=None):
-        # If implementation has a specific method use it
-        if hasattr(IMPL, 'condition_not_db_filter'):
-            return IMPL.condition_not_db_filter(model, self._get_field(field),
-                                                self.value, self.auto_none)
-
-        # Otherwise non negated object must adming ~ operator for not
-        return ~super(Not, self).get_filter(model, field)
-
-
-class Case(object):
-    """Class for conditional value selection for conditional_update."""
-    def __init__(self, whens, value=None, else_=None):
-        self.whens = whens
-        self.value = value
-        self.else_ = else_
-
-
-def is_orm_value(obj):
-    """Check if object is an ORM field."""
-    return IMPL.is_orm_value(obj)
-
-
-def conditional_update(context, model, values, expected_values, filters=(),
-                       include_deleted='no', project_only=False):
-    """Compare-and-swap conditional update.
-
-       Update will only occur in the DB if conditions are met.
-
-       We have 4 different condition types we can use in expected_values:
-        - Equality:  {'status': 'available'}
-        - Inequality: {'status': vol_obj.Not('deleting')}
-        - In range: {'status': ['available', 'error']
-        - Not in range: {'status': vol_obj.Not(['in-use', 'attaching'])
-
-       Method accepts additional filters, which are basically anything that
-       can be passed to a sqlalchemy query's filter method, for example:
-       [~sql.exists().where(models.Volume.id == models.Snapshot.volume_id)]
-
-       We can select values based on conditions using Case objects in the
-       'values' argument. For example:
-       has_snapshot_filter = sql.exists().where(
-           models.Snapshot.volume_id == models.Volume.id)
-       case_values = db.Case([(has_snapshot_filter, 'has-snapshot')],
-                             else_='no-snapshot')
-       db.conditional_update(context, models.Volume, {'status': case_values},
-                             {'status': 'available'})
-
-       And we can use DB fields for example to store previous status in the
-       corresponding field even though we don't know which value is in the db
-       from those we allowed:
-       db.conditional_update(context, models.Volume,
-                             {'status': 'deleting',
-                              'previous_status': models.Volume.status},
-                             {'status': ('available', 'error')})
-
-       WARNING: SQLAlchemy does not allow selecting order of SET clauses, so
-       for now we cannot do things like
-           {'previous_status': model.status, 'status': 'retyping'}
-       because it will result in both previous_status and status being set to
-       'retyping'.  Issue has been reported [1] and a patch to fix it [2] has
-       been submitted.
-       [1]: https://bitbucket.org/zzzeek/sqlalchemy/issues/3541/
-       [2]: https://github.com/zzzeek/sqlalchemy/pull/200
-
-       :param values: Dictionary of key-values to update in the DB.
-       :param expected_values: Dictionary of conditions that must be met
-                               for the update to be executed.
-       :param filters: Iterable with additional filters
-       :param include_deleted: Should the update include deleted items, this
-                               is equivalent to read_deleted
-       :param project_only: Should the query be limited to context's project.
-       :returns number of db rows that were updated
-    """
-    return IMPL.conditional_update(context, model, values, expected_values,
-                                   filters, include_deleted, project_only)

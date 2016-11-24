@@ -263,7 +263,6 @@ class BackupsController(wsgi.Controller):
         description = backup.get('description', None)
         incremental = backup.get('incremental', False)
         force = backup.get('force', False)
-        snapshot_id = backup.get('snapshot_id', None)
         LOG.info(_LI("Creating backup of volume %(volume_id)s in container"
                      " %(container)s"),
                  {'volume_id': volume_id, 'container': container},
@@ -272,13 +271,10 @@ class BackupsController(wsgi.Controller):
         try:
             new_backup = self.backup_api.create(context, name, description,
                                                 volume_id, container,
-                                                incremental, None, force,
-                                                snapshot_id)
-        except (exception.InvalidVolume,
-                exception.InvalidSnapshot) as error:
+                                                incremental, None, force)
+        except exception.InvalidVolume as error:
             raise exc.HTTPBadRequest(explanation=error.msg)
-        except (exception.VolumeNotFound,
-                exception.SnapshotNotFound) as error:
+        except exception.VolumeNotFound as error:
             raise exc.HTTPNotFound(explanation=error.msg)
         except exception.ServiceNotFound as error:
             raise exc.HTTPInternalServerError(explanation=error.msg)
@@ -321,10 +317,10 @@ class BackupsController(wsgi.Controller):
             raise exc.HTTPNotFound(explanation=error.msg)
         except exception.VolumeSizeExceedsAvailableQuota as error:
             raise exc.HTTPRequestEntityTooLarge(
-                explanation=error.msg, headers={'Retry-After': '0'})
+                explanation=error.msg, headers={'Retry-After': 0})
         except exception.VolumeLimitExceeded as error:
             raise exc.HTTPRequestEntityTooLarge(
-                explanation=error.msg, headers={'Retry-After': '0'})
+                explanation=error.msg, headers={'Retry-After': 0})
 
         retval = self._view_builder.restore_summary(
             req, dict(new_restore))

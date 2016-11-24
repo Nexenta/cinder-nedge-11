@@ -25,10 +25,7 @@ import webob
 
 from cinder.api.openstack import wsgi
 from cinder.api import xmlutil
-from cinder.common import constants
-from cinder import exception
 from cinder.i18n import _
-import cinder.policy
 from cinder import utils
 
 
@@ -38,19 +35,10 @@ api_common_opts = [
                help='The maximum number of items that a collection '
                     'resource returns in a single response'),
     cfg.StrOpt('osapi_volume_base_URL',
+               default=None,
                help='Base URL that will be presented to users in links '
                     'to the OpenStack Volume API',
                deprecated_name='osapi_compute_link_prefix'),
-    cfg.ListOpt('query_volume_filters',
-                default=['name', 'status', 'metadata',
-                         'availability_zone',
-                         'bootable'],
-                help="Volume filter options which "
-                     "non-admin user could use to "
-                     "query volumes. Default values "
-                     "are: ['name', 'status', "
-                     "'metadata', 'availability_zone' ,"
-                     "'bootable']")
 ]
 
 CONF = cfg.CONF
@@ -79,14 +67,6 @@ def validate_key_names(key_names_list):
         if not VALID_KEY_NAME_REGEX.match(key_name):
             return False
     return True
-
-
-def validate_policy(context, action):
-    try:
-        cinder.policy.enforce_action(context, action)
-        return True
-    except exception.PolicyNotAuthorized:
-        return False
 
 
 def get_pagination_params(params, max_limit=None):
@@ -138,8 +118,17 @@ def _get_marker_param(params):
 
 def _get_offset_param(params):
     """Extract offset id from request's dictionary (defaults to 0) or fail."""
-    offset = params.pop('offset', 0)
-    return utils.validate_integer(offset, 'offset', 0, constants.DB_MAX_INT)
+    try:
+        offset = int(params.pop('offset', 0))
+    except ValueError:
+        msg = _('offset param must be an integer')
+        raise webob.exc.HTTPBadRequest(explanation=msg)
+
+    if offset < 0:
+        msg = _('offset param must be positive')
+        raise webob.exc.HTTPBadRequest(explanation=msg)
+
+    return offset
 
 
 def limited(items, request, max_limit=None):
@@ -336,7 +325,7 @@ class ViewBuilder(object):
                            items
         :param id_key: Attribute key used to retrieve the unique ID, used
                        to generate the next link marker for a pagination query
-        :returns: links
+        :returns links
         """
         item_count = item_count or len(items)
         limit = _get_limit_param(request.GET.copy())

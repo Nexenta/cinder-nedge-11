@@ -26,6 +26,7 @@ from cinder.i18n import _, _LE
 from cinder.image import image_utils
 from cinder import utils as cinder_utils
 from cinder.volume import driver
+from cinder.volume.drivers.nexenta import NexentaException
 from cinder.volume.drivers.nexenta.nexentaedge import jsonrpc
 from cinder.volume.drivers.nexenta import options
 from cinder.volume import utils as volutils
@@ -87,10 +88,10 @@ class NexentaEdgeNBDDriver(driver.VolumeDriver):
         try:
             if not self.symlinks_dir:
                 msg = _("nexenta_nbd_symlinks_dir option is not specified")
-                raise exception.NexentaException(message=msg)
+                raise NexentaException(message=msg)
             if not os.path.exists(self.symlinks_dir):
                 msg = _("NexentaEdge NBD symlinks directory doesn't exist")
-                raise exception.NexentaException(message=msg)
+                raise NexentaException(message=msg)
             self.restapi.get(self.bucket_url + '/objects/')
         except exception.VolumeBackendAPIException:
             with excutils.save_and_reraise_exception():
@@ -286,7 +287,7 @@ class NexentaEdgeNBDDriver(driver.VolumeDriver):
     def ensure_export(self, context, volume):
         pass
 
-    def create_export(self, context, volume, connector, vg=None):
+    def create_export(self, context, volume, connector=None):
         pass
 
     def remove_export(self, context, volume):

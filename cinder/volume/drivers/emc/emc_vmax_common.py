@@ -13,7 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import ast
+import inspect
 import os.path
 
 from oslo_config import cfg
@@ -23,7 +23,6 @@ import six
 
 from cinder import exception
 from cinder.i18n import _, _LE, _LI, _LW
-from cinder.objects import fields
 from cinder.volume.drivers.emc import emc_vmax_fast
 from cinder.volume.drivers.emc import emc_vmax_https
 from cinder.volume.drivers.emc import emc_vmax_masking
@@ -68,10 +67,6 @@ RETRIES = 'storagetype:retries'
 ISV3 = 'isV3'
 TRUNCATE_5 = 5
 TRUNCATE_8 = 8
-SNAPVX = 7
-DISSOLVE_SNAPVX = 9
-CREATE_NEW_TARGET = 2
-SNAPVX_REPLICATION_TYPE = 6
 
 emc_opts = [
     cfg.StrOpt('cinder_emc_config_file',
@@ -326,7 +321,8 @@ class EMCVMAXCommon(object):
                  {'volume': volumename})
 
         device_info = self.find_device_number(volume, connector['host'])
-        if 'hostlunid' not in device_info:
+        device_number = device_info['hostlunid']
+        if device_number is None:
             LOG.info(_LI("Volume %s is not mapped. No volume to unmap."),
                      volumename)
             return
@@ -372,15 +368,13 @@ class EMCVMAXCommon(object):
         :returns: dict -- deviceInfoDict - device information dict
         :raises: VolumeBackendAPIException
         """
-        portGroupName = None
         extraSpecs = self._initial_setup(volume)
 
         volumeName = volume['name']
         LOG.info(_LI("Initialize connection: %(volume)s."),
                  {'volume': volumeName})
         self.conn = self._get_ecom_connection()
-        deviceInfoDict = self._wrap_find_device_number(
-            volume, connector['host'])
+        deviceInfoDict = self.find_device_number(volume, connector['host'])
         maskingViewDict = self._populate_masking_dict(
             volume, connector, extraSpecs)
 
@@ -396,28 +390,22 @@ class EMCVMAXCommon(object):
                              "The device number is  %(deviceNumber)s."),
                          {'volume': volumeName,
                           'deviceNumber': deviceNumber})
-                # Special case, we still need to get the iscsi ip address.
-                portGroupName = (
-                    self._get_correct_port_group(
-                        deviceInfoDict, maskingViewDict['storageSystemName']))
-
             else:
-                deviceInfoDict, portGroupName = self._attach_volume(
+                deviceInfoDict = self._attach_volume(
                     volume, connector, extraSpecs, maskingViewDict, True)
         else:
-            deviceInfoDict, portGroupName = (
-                self._attach_volume(
-                    volume, connector, extraSpecs, maskingViewDict))
+            deviceInfoDict = self._attach_volume(
+                volume, connector, extraSpecs, maskingViewDict)
 
         if self.protocol.lower() == 'iscsi':
             return self._find_ip_protocol_endpoints(
                 self.conn, deviceInfoDict['storagesystem'],
-                portGroupName)
+                maskingViewDict['pgGroupName'])
         else:
             return deviceInfoDict
 
     def _attach_volume(self, volume, connector, extraSpecs,
-                       maskingViewDict, isLiveMigration=False):
+                       maskingViewDict, isLiveMigration=None):
         """Attach a volume to a host.
 
         If live migration is being undertaken then the volume
@@ -429,7 +417,6 @@ class EMCVMAXCommon(object):
         :param maskingViewDict: masking view information
         :param isLiveMigration: boolean, can be None
         :returns: dict -- deviceInfoDict
-                  String -- port group name
         :raises: VolumeBackendAPIException
         """
         volumeName = volume['name']
@@ -460,7 +447,7 @@ class EMCVMAXCommon(object):
             raise exception.VolumeBackendAPIException(
                 data=exception_message)
 
-        return deviceInfoDict, rollbackDict['pgGroupName']
+        return deviceInfoDict
 
     def _is_same_host(self, connector, deviceInfoDict):
         """Check if the host is the same.
@@ -480,57 +467,6 @@ class EMCVMAXCommon(object):
                 if currentHost in deviceInfoDict['maskingview']:
                     return True
         return False
-
-    def _get_correct_port_group(self, deviceInfoDict, storageSystemName):
-        """Get the portgroup name from the existing masking view.
-
-        :params deviceInfoDict: the device info dictionary
-        :params storageSystemName: storage system name
-        :returns: String port group name
-        """
-        if ('controller' in deviceInfoDict and
-                deviceInfoDict['controller'] is not None):
-            maskingViewInstanceName = deviceInfoDict['controller']
-            try:
-                maskingViewInstance = (
-                    self.conn.GetInstance(maskingViewInstanceName))
-            except Exception:
-                exception_message = (_("Unable to get the name of "
-                                       "the masking view."))
-                raise exception.VolumeBackendAPIException(
-                    data=exception_message)
-
-            # Get the portgroup from masking view
-            portGroupInstanceName = (
-                self.masking._get_port_group_from_masking_view(
-                    self.conn,
-                    maskingViewInstance['ElementName'],
-                    storageSystemName))
-            try:
-                portGroupInstance = (
-                    self.conn.GetInstance(portGroupInstanceName))
-                portGroupName = (
-                    portGroupInstance['ElementName'])
-            except Exception:
-                exception_message = (_("Unable to get the name of "
-                                       "the portgroup."))
-                raise exception.VolumeBackendAPIException(
-                    data=exception_message)
-        else:
-            exception_message = (_("Cannot get the portgroup from "
-                                   "the masking view."))
-            raise exception.VolumeBackendAPIException(
-                data=exception_message)
-        return portGroupName
-
-    def check_ig_instance_name(self, initiatorGroupInstanceName):
-        """Check if an initiator group instance is on the array.
-
-        :param initiatorGroupInstanceName: initiator group instance name
-        :returns: initiator group name, or None if deleted
-        """
-        return self.utils.check_ig_instance_name(
-            self.conn, initiatorGroupInstanceName)
 
     def terminate_connection(self, volume, connector):
         """Disallow connection from connector.
@@ -583,14 +519,10 @@ class EMCVMAXCommon(object):
         additionalVolumeSize = self.utils.convert_gb_to_bits(
             additionalVolumeSize)
 
-        if extraSpecs[ISV3]:
-            rc, modifiedVolumeDict = self._extend_v3_volume(
-                volumeInstance, volumeName, newSize, extraSpecs)
-        else:
-            # This is V2.
-            rc, modifiedVolumeDict = self._extend_composite_volume(
-                volumeInstance, volumeName, newSize, additionalVolumeSize,
-                extraSpecs)
+        # This is V2
+        rc, modifiedVolumeDict = self._extend_composite_volume(
+            volumeInstance, volumeName, newSize, additionalVolumeSize,
+            extraSpecs)
 
         # Check the occupied space of the new extended volume.
         extendedVolumeInstance = self.utils.find_volume_instance(
@@ -1291,25 +1223,36 @@ class EMCVMAXCommon(object):
         :returns: pywbem.WBEMConnection -- conn, the ecom connection
         :raises: VolumeBackendAPIException
         """
-        ecomx509 = None
+
         if self.ecomUseSSL:
-            if (self.configuration.safe_get('driver_client_cert_key') and
-                    self.configuration.safe_get('driver_client_cert')):
-                ecomx509 = {"key_file":
-                            self.configuration.safe_get(
-                                'driver_client_cert_key'),
-                            "cert_file":
-                                self.configuration.safe_get(
-                                    'driver_client_cert')}
+            argspec = inspect.getargspec(pywbem.WBEMConnection.__init__)
+            if any("ca_certs" in s for s in argspec.args):
+                updatedPywbem = True
+            else:
+                updatedPywbem = False
             pywbem.cim_http.wbem_request = emc_vmax_https.wbem_request
-            conn = pywbem.WBEMConnection(
-                self.url,
-                (self.user, self.passwd),
-                default_namespace='root/emc',
-                x509=ecomx509,
-                ca_certs=self.configuration.safe_get('driver_ssl_cert_path'),
-                no_verification=not self.configuration.safe_get(
-                    'driver_ssl_cert_verify'))
+            if updatedPywbem:
+                conn = pywbem.WBEMConnection(
+                    self.url,
+                    (self.user, self.passwd),
+                    default_namespace='root/emc',
+                    x509={"key_file":
+                          self.configuration.safe_get(
+                              'driver_client_cert_key'),
+                          "cert_file":
+                          self.configuration.safe_get('driver_client_cert')},
+                    ca_certs=self.ecomCACert,
+                    no_verification=self.ecomNoVerification)
+            else:
+                conn = pywbem.WBEMConnection(
+                    self.url,
+                    (self.user, self.passwd),
+                    default_namespace='root/emc',
+                    x509={"key_file":
+                          self.configuration.safe_get(
+                              'driver_client_cert_key'),
+                          "cert_file":
+                          self.configuration.safe_get('driver_client_cert')})
 
         else:
             conn = pywbem.WBEMConnection(
@@ -1317,6 +1260,7 @@ class EMCVMAXCommon(object):
                 (self.user, self.passwd),
                 default_namespace='root/emc')
 
+        conn.debug = True
         if conn is None:
             exception_message = (_("Cannot connect to ECOM server."))
             raise exception.VolumeBackendAPIException(data=exception_message)
@@ -1380,7 +1324,7 @@ class EMCVMAXCommon(object):
             self.conn = self._get_ecom_connection()
 
         if isinstance(loc, six.string_types):
-            name = ast.literal_eval(loc)
+            name = eval(loc)
             keys = name['keybindings']
             systemName = keys['SystemName']
 
@@ -1476,9 +1420,6 @@ class EMCVMAXCommon(object):
                    'initiator': foundinitiatornames})
         return foundinitiatornames
 
-    def _wrap_find_device_number(self, volume, host):
-        return self.find_device_number(volume, host)
-
     def find_device_number(self, volume, host):
         """Given the volume dict find a device number.
 
@@ -1491,7 +1432,6 @@ class EMCVMAXCommon(object):
         """
         maskedvols = []
         data = {}
-        foundController = None
         foundNumDeviceNumber = None
         foundMaskingViewName = None
         volumeName = volume['name']
@@ -1509,9 +1449,9 @@ class EMCVMAXCommon(object):
             if index > -1:
                 unitinstance = self.conn.GetInstance(unitname,
                                                      LocalOnly=False)
-                numDeviceNumber = int(unitinstance['DeviceNumber'], 16)
+                numDeviceNumber = int(unitinstance['DeviceNumber'],
+                                      16)
                 foundNumDeviceNumber = numDeviceNumber
-                foundController = controller
                 controllerInstance = self.conn.GetInstance(controller,
                                                            LocalOnly=False)
                 propertiesList = controllerInstance.properties.items()
@@ -1522,8 +1462,7 @@ class EMCVMAXCommon(object):
 
                 devicedict = {'hostlunid': foundNumDeviceNumber,
                               'storagesystem': storageSystemName,
-                              'maskingview': foundMaskingViewName,
-                              'controller': foundController}
+                              'maskingview': foundMaskingViewName}
                 maskedvols.append(devicedict)
 
         if not maskedvols:
@@ -1533,7 +1472,6 @@ class EMCVMAXCommon(object):
                 {'volumeName': volumeName,
                  'volumeInstance': volumeInstance.path})
         else:
-            host = self.utils.get_host_short_name(host)
             hoststr = ("-%(host)s-"
                        % {'host': host})
 
@@ -1576,9 +1514,9 @@ class EMCVMAXCommon(object):
             LOG.debug("HardwareID instance is: %(hardwareIdInstance)s.",
                       {'hardwareIdInstance': hardwareIdInstance})
             try:
-                targetEndpoints = (
-                    self.utils.get_target_endpoints(
-                        self.conn, hardwareIdInstance))
+                _rc, targetEndpoints = (
+                    self.provision.get_target_endpoints(
+                        self.conn, storageHardwareService, hardwareIdInstance))
             except Exception:
                 errorMessage = (_(
                     "Unable to get target endpoints for hardwareId "
@@ -1588,10 +1526,11 @@ class EMCVMAXCommon(object):
                 raise exception.VolumeBackendAPIException(data=errorMessage)
 
             if targetEndpoints:
+                endpoints = targetEndpoints['TargetEndpoints']
 
                 LOG.debug("There are %(len)lu endpoints.",
-                          {'len': len(targetEndpoints)})
-                for targetendpoint in targetEndpoints:
+                          {'len': len(endpoints)})
+                for targetendpoint in endpoints:
                     wwn = targetendpoint['Name']
                     # Add target wwn to the list if it is not already there.
                     if not any(d == wwn for d in targetWwns):
@@ -1691,7 +1630,9 @@ class EMCVMAXCommon(object):
         port = arrayInfo['EcomServerPort']
         self.user = arrayInfo['EcomUserName']
         self.passwd = arrayInfo['EcomPassword']
-        self.ecomUseSSL = self.configuration.safe_get('driver_use_ssl')
+        self.ecomUseSSL = arrayInfo['EcomUseSSL']
+        self.ecomCACert = arrayInfo['EcomCACert']
+        self.ecomNoVerification = arrayInfo['EcomNoVerification']
         ip_port = ("%(ip)s:%(port)s"
                    % {'ip': ip,
                       'port': port})
@@ -1793,7 +1734,7 @@ class EMCVMAXCommon(object):
         """
         maskingViewDict = {}
         hostName = connector['host']
-        uniqueName = self.utils.generate_unique_trunc_pool(extraSpecs[POOL])
+        poolName = extraSpecs[POOL]
         isV3 = extraSpecs[ISV3]
         maskingViewDict['isV3'] = isV3
         protocol = self.utils.get_short_protocol_type(self.protocol)
@@ -1803,23 +1744,20 @@ class EMCVMAXCommon(object):
             workload = extraSpecs[WORKLOAD]
             maskingViewDict['slo'] = slo
             maskingViewDict['workload'] = workload
-            maskingViewDict['pool'] = uniqueName
+            maskingViewDict['pool'] = poolName
             prefix = (
                 ("OS-%(shortHostName)s-%(poolName)s-%(slo)s-%(workload)s"
                  % {'shortHostName': shortHostName,
-                    'poolName': uniqueName,
+                    'poolName': poolName,
                     'slo': slo,
                     'workload': workload}))
         else:
-            maskingViewDict['fastPolicy'] = extraSpecs[FASTPOLICY]
-            if maskingViewDict['fastPolicy']:
-                uniqueName = self.utils.generate_unique_trunc_fastpolicy(
-                    maskingViewDict['fastPolicy']) + '-FP'
             prefix = (
                 ("OS-%(shortHostName)s-%(poolName)s-%(protocol)s"
                  % {'shortHostName': shortHostName,
-                    'poolName': uniqueName,
+                    'poolName': poolName,
                     'protocol': protocol}))
+            maskingViewDict['fastPolicy'] = extraSpecs[FASTPOLICY]
 
         maskingViewDict['sgGroupName'] = ("%(prefix)s-SG"
                                           % {'prefix': prefix})
@@ -2196,9 +2134,12 @@ class EMCVMAXCommon(object):
         deviceId = volumeInstance['DeviceID']
 
         if extraSpecs[ISV3]:
+            storageGroupName = self.utils.get_v3_storage_group_name(
+                extraSpecs[POOL], extraSpecs[SLO],
+                extraSpecs[WORKLOAD])
             rc = self._delete_from_pool_v3(
                 storageConfigService, volumeInstance, volumeName,
-                deviceId, extraSpecs)
+                deviceId, storageGroupName, extraSpecs)
         else:
             rc = self._delete_from_pool(storageConfigService, volumeInstance,
                                         volumeName, deviceId,
@@ -2370,12 +2311,6 @@ class EMCVMAXCommon(object):
 
         if not extraSpecs[ISV3]:
             snapshotInstance = self._find_lun(snapshot)
-            if snapshotInstance is None:
-                LOG.error(_LE(
-                    "Snapshot %(snapshotname)s not found on the array. "
-                    "No volume to delete."),
-                    {'snapshotname': snapshotname})
-                return (-1, snapshotname)
             storageSystem = snapshotInstance['SystemName']
 
             # Wait for it to fully sync in case there is an ongoing
@@ -2423,7 +2358,7 @@ class EMCVMAXCommon(object):
         LOG.info(_LI("Create Consistency Group: %(group)s."),
                  {'group': group['id']})
 
-        modelUpdate = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
+        modelUpdate = {'status': 'available'}
         volumeTypeId = group['volume_type_id'].replace(",", "")
 
         cgName = self.utils.truncate_string(group['id'], 8)
@@ -2551,19 +2486,18 @@ class EMCVMAXCommon(object):
                 modelUpdate['status'] = 'error_deleting'
         return volumes, modelUpdate
 
-    def create_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def create_cgsnapshot(self, context, cgsnapshot, db):
         """Creates a cgsnapshot.
 
         :param context: the context
         :param cgsnapshot: the consistency group snapshot to be created
-        :param snapshots: snapshots
+        :param db: cinder database
         :returns: dict -- modelUpdate
         :returns: list -- list of snapshots
         :raises: VolumeBackendAPIException
         """
-        consistencyGroup = cgsnapshot.get('consistencygroup')
-
-        snapshots_model_update = []
+        consistencyGroup = db.consistencygroup_get(
+            context, cgsnapshot['consistencygroup_id'])
 
         LOG.info(_LI(
             "Create snapshot for Consistency Group %(cgId)s "
@@ -2573,6 +2507,8 @@ class EMCVMAXCommon(object):
 
         cgName = self.utils.truncate_string(
             cgsnapshot['consistencygroup_id'], 8)
+
+        modelUpdate = {'status': 'available'}
 
         volumeTypeId = consistencyGroup['volume_type_id'].replace(",", "")
         extraSpecs = self._initial_setup(None, volumeTypeId)
@@ -2675,39 +2611,41 @@ class EMCVMAXCommon(object):
                                                          extraSpecs)
 
         except Exception:
+            modelUpdate['status'] = 'error'
+            self.utils.populate_cgsnapshot_status(
+                context, db, cgsnapshot['id'], modelUpdate['status'])
             exceptionMessage = (_("Failed to create snapshot for cg:"
                                   " %(cgName)s.")
                                 % {'cgName': cgName})
             LOG.exception(exceptionMessage)
             raise exception.VolumeBackendAPIException(data=exceptionMessage)
 
-        for snapshot in snapshots:
-            snapshots_model_update.append(
-                {'id': snapshot['id'], 'status': 'available'})
-        modelUpdate = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
+        snapshots = self.utils.populate_cgsnapshot_status(
+            context, db, cgsnapshot['id'], modelUpdate['status'])
+        return modelUpdate, snapshots
 
-        return modelUpdate, snapshots_model_update
-
-    def delete_cgsnapshot(self, context, cgsnapshot, snapshots):
+    def delete_cgsnapshot(self, context, cgsnapshot, db):
         """Delete a cgsnapshot.
 
         :param context: the context
         :param cgsnapshot: the consistency group snapshot to be created
-        :param snapshots: snapshots
+        :param db: cinder database
         :returns: dict -- modelUpdate
         :returns: list -- list of snapshots
         :raises: VolumeBackendAPIException
         """
-        consistencyGroup = cgsnapshot.get('consistencygroup')
-        model_update = {}
-        snapshots_model_update = []
+        consistencyGroup = db.consistencygroup_get(
+            context, cgsnapshot['consistencygroup_id'])
+        snapshots = db.snapshot_get_all_for_cgsnapshot(
+            context, cgsnapshot['id'])
+
         LOG.info(_LI(
             "Delete snapshot for source CG %(cgId)s "
             "cgsnapshotID: %(cgsnapshot)s."),
             {'cgsnapshot': cgsnapshot['id'],
              'cgId': cgsnapshot['consistencygroup_id']})
 
-        model_update['status'] = cgsnapshot['status']
+        modelUpdate = {'status': 'deleted'}
         volumeTypeId = consistencyGroup['volume_type_id'].replace(",", "")
         extraSpecs = self._initial_setup(None, volumeTypeId)
         self.conn = self._get_ecom_connection()
@@ -2717,20 +2655,22 @@ class EMCVMAXCommon(object):
 
         try:
             targetCgName = self.utils.truncate_string(cgsnapshot['id'], 8)
-            model_update, snapshots = self._delete_cg_and_members(
-                storageSystem, targetCgName, model_update,
+            modelUpdate, snapshots = self._delete_cg_and_members(
+                storageSystem, targetCgName, modelUpdate,
                 snapshots, extraSpecs)
-            for snapshot in snapshots:
-                snapshots_model_update.append(
-                    {'id': snapshot['id'], 'status': 'deleted'})
         except Exception:
+            modelUpdate['status'] = 'error_deleting'
+            self.utils.populate_cgsnapshot_status(
+                context, db, cgsnapshot['id'], modelUpdate['status'])
             exceptionMessage = (_("Failed to delete snapshot for cg: "
                                   "%(cgId)s.")
                                 % {'cgId': cgsnapshot['consistencygroup_id']})
             LOG.exception(exceptionMessage)
             raise exception.VolumeBackendAPIException(data=exceptionMessage)
 
-        return model_update, snapshots_model_update
+        snapshots = self.utils.populate_cgsnapshot_status(
+            context, db, cgsnapshot['id'], modelUpdate['status'])
+        return modelUpdate, snapshots
 
     def _find_consistency_group(self, replicationService, cgName):
         """Finds a CG given its name.
@@ -2894,19 +2834,6 @@ class EMCVMAXCommon(object):
         poolInstanceName, storageSystemName = (
             self._get_pool_and_storage_system(extraSpecs))
 
-        # Check to see if SLO and Workload are configured on the array.
-        storagePoolCapability = self.provisionv3.get_storage_pool_capability(
-            self.conn, poolInstanceName)
-        if storagePoolCapability:
-            self.provisionv3.get_storage_pool_setting(
-                self.conn, storagePoolCapability, extraSpecs[SLO],
-                extraSpecs[WORKLOAD])
-        else:
-            exceptionMessage = (_(
-                "Cannot determine storage pool settings."))
-            LOG.error(exceptionMessage)
-            raise exception.VolumeBackendAPIException(data=exceptionMessage)
-
         LOG.debug("Create Volume: %(volume)s  Pool: %(pool)s "
                   "Storage System: %(storageSystem)s "
                   "Size: %(size)lu.",
@@ -2941,9 +2868,13 @@ class EMCVMAXCommon(object):
         :param extraSpecs: extra specifications
         :returns: sgInstanceName
         """
-        storageGroupName, controllerConfigService, sgInstanceName = (
-            self.utils.get_v3_default_sg_instance_name(
-                self.conn, poolName, slo, workload, storageSystemName))
+        storageGroupName = self.utils.get_v3_storage_group_name(
+            poolName, slo, workload)
+        controllerConfigService = (
+            self.utils.find_controller_configuration_service(
+                self.conn, storageSystemName))
+        sgInstanceName = self.utils.find_storage_masking_group(
+            self.conn, controllerConfigService, storageGroupName)
         if sgInstanceName is None:
             sgInstanceName = self.provisionv3.create_storage_group_v3(
                 self.conn, controllerConfigService, storageGroupName,
@@ -3429,13 +3360,15 @@ class EMCVMAXCommon(object):
         return rc
 
     def _delete_from_pool_v3(self, storageConfigService, volumeInstance,
-                             volumeName, deviceId, extraSpecs):
+                             volumeName, deviceId, storageGroupName,
+                             extraSpecs):
         """Delete from pool (v3).
 
         :param storageConfigService: the storage config service
         :param volumeInstance: the volume instance
         :param volumeName: the volume Name
         :param deviceId: the device ID of the volume
+        :param storageGroupName: the name of the default SG
         :param extraSpecs: extra specifications
         :returns: int -- return code
         :raises: VolumeBackendAPIException
@@ -3447,9 +3380,9 @@ class EMCVMAXCommon(object):
 
         # Check if it is part of a storage group and delete it
         # extra logic for case when volume is the last member.
-        self.masking.remove_and_reset_members(
+        sgFromVolInstanceName = self.masking.remove_and_reset_members(
             self.conn, controllerConfigurationService, volumeInstance,
-            volumeName, extraSpecs, None, False)
+            volumeName, extraSpecs, None, 'noReset')
 
         LOG.debug("Delete Volume: %(name)s  Method: EMCReturnToStoragePool "
                   "ConfigServic: %(service)s  TheElement: %(vol_instance)s "
@@ -3467,9 +3400,23 @@ class EMCVMAXCommon(object):
             # If we cannot successfully delete the volume, then we want to
             # return the volume to the default storage group,
             # which should be the SG it previously belonged to.
-            self.masking.return_volume_to_default_storage_group_v3(
-                self.conn, controllerConfigurationService,
-                volumeInstance, volumeName, extraSpecs)
+            storageGroupInstanceName = self.utils.find_storage_masking_group(
+                self.conn, controllerConfigurationService, storageGroupName)
+
+            if sgFromVolInstanceName is not storageGroupInstanceName:
+                LOG.debug(
+                    "Volume: %(volumeName)s was not previously part of "
+                    " %(storageGroupInstanceName)s. "
+                    "Returning to %(storageGroupName)s.",
+                    {'volumeName': volumeName,
+                     'storageGroupInstanceName': storageGroupInstanceName,
+                     'storageGroupName': storageGroupName})
+
+            if storageGroupInstanceName is not None:
+                self.masking.add_volume_to_storage_group(
+                    self.conn, controllerConfigurationService,
+                    storageGroupInstanceName, volumeInstance, volumeName,
+                    storageGroupName, extraSpecs)
 
             errorMessage = (_("Failed to delete volume %(volumeName)s.") %
                             {'volumeName': volumeName})
@@ -3721,15 +3668,6 @@ class EMCVMAXCommon(object):
         return self.masking.get_port_group_from_masking_view(
             self.conn, maskingViewInstanceName)
 
-    def get_initiator_group_from_masking_view(self, maskingViewInstanceName):
-        """Get the initiator group in a masking view.
-
-        :param maskingViewInstanceName: masking view instance name
-        :returns: initiatorGroupInstanceName
-        """
-        return self.masking.get_initiator_group_from_masking_view(
-            self.conn, maskingViewInstanceName)
-
     def get_masking_view_by_volume(self, volume, connector):
         """Given volume, retrieve the masking view instance name.
 
@@ -3754,18 +3692,6 @@ class EMCVMAXCommon(object):
         return self.masking.get_masking_views_by_port_group(
             self.conn, portGroupInstanceName)
 
-    def get_masking_views_by_initiator_group(
-            self, initiatorGroupInstanceName):
-        """Given initiator group, retrieve the masking view instance name.
-
-        :param initiatorGroupInstanceName: initiator group instance name
-        :returns: list -- maskingViewInstanceNames
-        """
-        LOG.debug("Finding Masking Views for initiator group %(ig)s.",
-                  {'ig': initiatorGroupInstanceName})
-        return self.masking.get_masking_views_by_initiator_group(
-            self.conn, initiatorGroupInstanceName)
-
     def _create_replica_v3(
             self, repServiceInstanceName, cloneVolume,
             sourceVolume, sourceInstance, isSnapshot, extraSpecs):
@@ -3784,43 +3710,68 @@ class EMCVMAXCommon(object):
         :returns: dict -- cloneDict
         """
         cloneName = cloneVolume['name']
-        # SyncType 7: snap, VG3R default snapshot is snapVx.
-        syncType = self.utils.get_num(SNAPVX, '16')
-        # Operation 9: Dissolve for snapVx.
-        operation = self.utils.get_num(DISSOLVE_SNAPVX, '16')
-        rsdInstance = None
-        targetInstance = None
+        # Default syncType 8: clone.
+        syncType = self.utils.get_num(8, '16')
+        # Default operation 8: Detach for clone.
+        operation = self.utils.get_num(8, '16')
+
+        numOfBlocks = sourceInstance['NumberOfBlocks']
+        blockSize = sourceInstance['BlockSize']
+        volumeSizeInbits = numOfBlocks * blockSize
+
+        volume = {'size':
+                  int(self.utils.convert_bits_to_gbs(volumeSizeInbits))}
+        _rc, volumeDict, _storageSystemName = (
+            self._create_v3_volume(
+                volume, cloneName, volumeSizeInbits, extraSpecs))
+        targetInstance = self.utils.find_volume_instance(
+            self.conn, volumeDict, cloneName)
+        LOG.debug("Create replica target volume "
+                  "source volume: %(sourceVol)s, "
+                  "target volume: %(targetVol)s.",
+                  {'sourceVol': sourceInstance.path,
+                   'targetVol': targetInstance.path})
         if isSnapshot:
-            rsdInstance = self.utils.set_target_element_supplier_in_rsd(
-                self.conn, repServiceInstanceName, SNAPVX_REPLICATION_TYPE,
-                CREATE_NEW_TARGET, extraSpecs)
-        else:
-            targetInstance = self._create_duplicate_volume(
-                sourceInstance, cloneName, extraSpecs)
+            # SyncType 7: snap, VG3R default snapshot is snapVx.
+            syncType = self.utils.get_num(7, '16')
+            # Operation 9: Dissolve for snapVx.
+            operation = self.utils.get_num(9, '16')
 
         try:
             _rc, job = (
                 self.provisionv3.create_element_replica(
                     self.conn, repServiceInstanceName, cloneName, syncType,
-                    sourceInstance, extraSpecs, targetInstance, rsdInstance))
+                    sourceInstance, extraSpecs, targetInstance))
         except Exception:
             LOG.warning(_LW(
                 "Clone failed on V3. Cleaning up the target volume. "
                 "Clone name: %(cloneName)s "),
                 {'cloneName': cloneName})
             # Check if the copy session exists.
-            if targetInstance:
-                self._cleanup_target(
-                    repServiceInstanceName, targetInstance, extraSpecs)
-                # Re-throw the exception.
-                raise
+            storageSystem = targetInstance['SystemName']
+            syncInstanceName = self.utils.find_sync_sv_by_target(
+                self.conn, storageSystem, targetInstance, False)
+            if syncInstanceName is not None:
+                # Break the clone relationship.
+                rc, job = self.provisionv3.break_replication_relationship(
+                    self.conn, repServiceInstanceName, syncInstanceName,
+                    operation, extraSpecs, True)
+            storageConfigService = (
+                self.utils.find_storage_configuration_service(
+                    self.conn, storageSystem))
+            deviceId = targetInstance['DeviceID']
+            volumeName = targetInstance['Name']
+            storageGroupName = self.utils.get_v3_storage_group_name(
+                extraSpecs[POOL], extraSpecs[SLO],
+                extraSpecs[WORKLOAD])
+            rc = self._delete_from_pool_v3(
+                storageConfigService, targetInstance, volumeName,
+                deviceId, storageGroupName, extraSpecs)
+            # Re-throw the exception.
+            raise
 
         cloneDict = self.provisionv3.get_volume_dict_from_job(
             self.conn, job['Job'])
-        targetVolumeInstance = (
-            self.provisionv3.get_volume_from_job(self.conn, job['Job']))
-        LOG.info(_LI("The target instance device id is: %(deviceid)s."),
-                 {'deviceid': targetVolumeInstance['DeviceID']})
 
         cloneVolume['provider_location'] = six.text_type(cloneDict)
 
@@ -3828,35 +3779,20 @@ class EMCVMAXCommon(object):
             self._find_storage_sync_sv_sv(cloneVolume, sourceVolume,
                                           extraSpecs, True))
 
+        # Detach/dissolve the clone/snap relationship.
+        # 8 - Detach operation.
+        # 9 - Dissolve operation.
+        if isSnapshot:
+            # Operation 9: dissolve for snapVx.
+            operation = self.utils.get_num(9, '16')
+        else:
+            # Operation 8: detach for clone.
+            operation = self.utils.get_num(8, '16')
+
         rc, job = self.provisionv3.break_replication_relationship(
             self.conn, repServiceInstanceName, syncInstanceName,
             operation, extraSpecs)
         return rc, cloneDict
-
-    def _cleanup_target(
-            self, repServiceInstanceName, targetInstance, extraSpecs):
-        """cleanup target after exception
-
-        :param repServiceInstanceName: the replication service
-        :param targetInstance: the target instance
-        :param extraSpecs: extra specifications
-        """
-        storageSystem = targetInstance['SystemName']
-        syncInstanceName = self.utils.find_sync_sv_by_target(
-            self.conn, storageSystem, targetInstance, False)
-        if syncInstanceName is not None:
-            # Break the clone relationship.
-            self.provisionv3.break_replication_relationship(
-                self.conn, repServiceInstanceName, syncInstanceName,
-                DISSOLVE_SNAPVX, extraSpecs, True)
-        storageConfigService = (
-            self.utils.find_storage_configuration_service(
-                self.conn, storageSystem))
-        deviceId = targetInstance['DeviceID']
-        volumeName = targetInstance['Name']
-        self._delete_from_pool_v3(
-            storageConfigService, targetInstance, volumeName,
-            deviceId, extraSpecs)
 
     def _delete_cg_and_members(
             self, storageSystem, cgName, modelUpdate, volumes, extraSpecs):
@@ -3915,7 +3851,7 @@ class EMCVMAXCommon(object):
                         self.conn, storageConfigservice,
                         memberInstanceNames, None, extraSpecs)
                     for volumeRef in volumes:
-                        volumeRef['status'] = 'deleted'
+                            volumeRef['status'] = 'deleted'
             except Exception:
                 for volumeRef in volumes:
                     volumeRef['status'] = 'error_deleting'
@@ -3994,7 +3930,7 @@ class EMCVMAXCommon(object):
         version = None
         try:
             if isinstance(loc, six.string_types):
-                name = ast.literal_eval(loc)
+                name = eval(loc)
                 version = name['version']
         except KeyError:
             pass
@@ -4175,7 +4111,7 @@ class EMCVMAXCommon(object):
                      "This adds and/or removes volumes from a CG."),
                  {'group': group['id']})
 
-        modelUpdate = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
+        modelUpdate = {'status': 'available'}
         volumeTypeId = group['volume_type_id'].replace(",", "")
 
         cg_name = self.utils.truncate_string(group['id'], 8)
@@ -4239,8 +4175,7 @@ class EMCVMAXCommon(object):
         return volumeInstanceNames
 
     def create_consistencygroup_from_src(self, context, group, volumes,
-                                         cgsnapshot, snapshots, source_cg,
-                                         source_vols):
+                                         cgsnapshot, snapshots, db):
         """Creates the consistency group from source.
 
         Currently the source can only be a cgsnapshot.
@@ -4250,8 +4185,7 @@ class EMCVMAXCommon(object):
         :param volumes: volumes in the consistency group
         :param cgsnapshot: the source consistency group snapshot
         :param snapshots: snapshots of the source volumes
-        :param source_cg: the source consistency group
-        :param source_vols: the source vols
+        :param db: database
         :returns: model_update, volumes_model_update
                   model_update is a dictionary of cg status
                   volumes_model_update is a list of dictionaries of volume
@@ -4275,7 +4209,7 @@ class EMCVMAXCommon(object):
             raise exception.VolumeBackendAPIException(
                 data=exceptionMessage)
 
-        modelUpdate = {'status': fields.ConsistencyGroupStatus.AVAILABLE}
+        modelUpdate = {'status': 'available'}
 
         _poolInstanceName, storageSystem = (
             self._get_pool_and_storage_system(extraSpecs))
@@ -4360,29 +4294,32 @@ class EMCVMAXCommon(object):
                     self.provision.delete_clone_relationship(
                         self.conn, replicationService,
                         rgSyncInstanceName, extraSpecs)
-        except Exception:
+        except Exception as ex:
+            modelUpdate['status'] = 'error'
             cgSnapshotId = cgsnapshot['consistencygroup_id']
+            volumes_model_update = self.utils.get_volume_model_updates(
+                context, db, group['id'], modelUpdate['status'])
+            LOG.error(_LE("Exception: %(ex)s."), {'ex': ex})
             exceptionMessage = (_("Failed to create CG %(cgName)s "
                                   "from snapshot %(cgSnapshot)s.")
                                 % {'cgName': targetCgName,
                                    'cgSnapshot': cgSnapshotId})
-            LOG.exception(exceptionMessage)
-            raise exception.VolumeBackendAPIException(data=exceptionMessage)
+            LOG.error(exceptionMessage)
+            return modelUpdate, volumes_model_update
+
         volumes_model_update = self.utils.get_volume_model_updates(
-            context, volumes, group['id'], modelUpdate['status'])
+            context, db, group['id'], modelUpdate['status'])
 
         return modelUpdate, volumes_model_update
 
     def _find_ip_protocol_endpoints(self, conn, storageSystemName,
                                     portgroupname):
-        """Find the IP protocol endpoint for ISCSI.
+        """Find the IP protocol endpoint for ISCSI
 
         :param storageSystemName: the system name
         :param portgroupname: the portgroup name
         :returns: foundIpAddresses
         """
-        LOG.debug("The portgroup name for iscsiadm is %(pg)s",
-                  {'pg': portgroupname})
         foundipaddresses = []
         configservice = (
             self.utils.find_controller_configuration_service(
@@ -4407,50 +4344,3 @@ class EMCVMAXCommon(object):
                             conn, ipendpointinstancename))
                     foundipaddresses.append(ipaddress)
         return foundipaddresses
-
-    def _extend_v3_volume(self, volumeInstance, volumeName, newSize,
-                          extraSpecs):
-        """Extends a VMAX3 volume.
-
-        :param volumeInstance: volume instance
-        :param volumeName: volume name
-        :param newSize: new size the volume will be increased to
-        :param extraSpecs: extra specifications
-        :returns: int -- return code
-        :returns: volumeDict
-        """
-        new_size_in_bits = int(self.utils.convert_gb_to_bits(newSize))
-        storageConfigService = self.utils.find_storage_configuration_service(
-            self.conn, volumeInstance['SystemName'])
-        volumeDict, rc = self.provisionv3.extend_volume_in_SG(
-            self.conn, storageConfigService, volumeInstance.path,
-            volumeName, new_size_in_bits, extraSpecs)
-
-        return rc, volumeDict
-
-    def _create_duplicate_volume(
-            self, sourceInstance, cloneName, extraSpecs):
-        """Create a volume in the same dimensions of the source volume.
-
-        :param sourceInstance: the source volume instance
-        :param cloneName: the user supplied snap name
-        :param extraSpecs: additional info
-        :returns: targetInstance
-        """
-        numOfBlocks = sourceInstance['NumberOfBlocks']
-        blockSize = sourceInstance['BlockSize']
-        volumeSizeInbits = numOfBlocks * blockSize
-
-        volume = {'size':
-                  int(self.utils.convert_bits_to_gbs(volumeSizeInbits))}
-        _rc, volumeDict, _storageSystemName = (
-            self._create_v3_volume(
-                volume, cloneName, volumeSizeInbits, extraSpecs))
-        targetInstance = self.utils.find_volume_instance(
-            self.conn, volumeDict, cloneName)
-        LOG.debug("Create replica target volume "
-                  "Source Volume: %(sourceVol)s, "
-                  "Target Volume: %(targetVol)s.",
-                  {'sourceVol': sourceInstance.path,
-                   'targetVol': targetInstance.path})
-        return targetInstance

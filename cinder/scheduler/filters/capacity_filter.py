@@ -22,7 +22,7 @@ import math
 from oslo_log import log as logging
 
 from cinder.i18n import _LE, _LW
-from cinder.scheduler import filters
+from cinder.openstack.common.scheduler import filters
 
 
 LOG = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ class CapacityFilter(filters.BaseHostFilter):
         # provisioned capacity over total capacity has exceeded over
         # subscription ratio.
         if (host_state.thin_provisioning_support and
-                host_state.max_over_subscription_ratio >= 1):
+                host_state.max_over_subscription_ratio > 1):
             provisioned_ratio = ((host_state.provisioned_capacity_gb +
                                   volume_size) / total)
             if provisioned_ratio > host_state.max_over_subscription_ratio:
@@ -110,15 +110,6 @@ class CapacityFilter(filters.BaseHostFilter):
                 adjusted_free_virtual = (
                     free * host_state.max_over_subscription_ratio)
                 return adjusted_free_virtual >= volume_size
-        elif host_state.thin_provisioning_support:
-            LOG.warning(_LW("Filtering out host %(host)s with an invalid "
-                            "maximum over subscription ratio of "
-                            "%(oversub_ratio).2f. The ratio should be a "
-                            "minimum of 1.0."),
-                        {"oversub_ratio":
-                            host_state.max_over_subscription_ratio,
-                         "host": host_state.host})
-            return False
 
         if free < volume_size:
             LOG.warning(_LW("Insufficient free space for volume creation "

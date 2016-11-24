@@ -25,7 +25,6 @@ import os
 from oslo_config import cfg
 from oslo_log import log as logging
 from oslo_utils import excutils
-import six
 
 from cinder.db import base
 from cinder import exception
@@ -99,15 +98,9 @@ class API(base.Base):
 
     def _get_crypt_hash(self, salt, auth_key):
         """Generate a random hash based on the salt and the auth key."""
-        if not isinstance(salt, (six.binary_type, six.text_type)):
-            salt = str(salt)
-        if isinstance(salt, six.text_type):
-            salt = salt.encode('utf-8')
-        if not isinstance(auth_key, (six.binary_type, six.text_type)):
-            auth_key = str(auth_key)
-        if isinstance(auth_key, six.text_type):
-            auth_key = auth_key.encode('utf-8')
-        return hmac.new(salt, auth_key, hashlib.sha1).hexdigest()
+        return hmac.new(str(salt),
+                        str(auth_key),
+                        hashlib.sha1).hexdigest()
 
     def create(self, context, volume_id, display_name):
         """Creates an entry in the transfers table."""
@@ -161,12 +154,6 @@ class API(base.Base):
 
         volume_id = transfer['volume_id']
         vol_ref = self.db.volume_get(context.elevated(), volume_id)
-        if vol_ref['consistencygroup_id']:
-            msg = _("Volume %s must not be part of a consistency "
-                    "group.") % vol_ref['id']
-            LOG.error(msg)
-            raise exception.InvalidVolume(reason=msg)
-
         volume_utils.notify_about_volume_usage(context, vol_ref,
                                                "transfer.accept.start")
 
@@ -184,28 +171,25 @@ class API(base.Base):
             def _consumed(name):
                 return (usages[name]['reserved'] + usages[name]['in_use'])
 
-            for over in overs:
-                if 'gigabytes' in over:
-                    msg = _LW("Quota exceeded for %(s_pid)s, tried to create "
-                              "%(s_size)sG volume (%(d_consumed)dG of "
-                              "%(d_quota)dG already consumed)")
-                    LOG.warning(msg, {'s_pid': context.project_id,
-                                      's_size': vol_ref['size'],
-                                      'd_consumed': _consumed(over),
-                                      'd_quota': quotas[over]})
-                    raise exception.VolumeSizeExceedsAvailableQuota(
-                        requested=vol_ref['size'],
-                        consumed=_consumed(over),
-                        quota=quotas[over])
-                elif 'volumes' in over:
-                    msg = _LW("Quota exceeded for %(s_pid)s, tried to create "
-                              "volume (%(d_consumed)d volumes "
-                              "already consumed)")
-                    LOG.warning(msg, {'s_pid': context.project_id,
-                                      'd_consumed': _consumed(over)})
-                    raise exception.VolumeLimitExceeded(allowed=quotas[over],
-                                                        name=over)
-
+            if 'gigabytes' in overs:
+                msg = _LW("Quota exceeded for %(s_pid)s, tried to create "
+                          "%(s_size)sG volume (%(d_consumed)dG of "
+                          "%(d_quota)dG already consumed)")
+                LOG.warning(msg, {'s_pid': context.project_id,
+                                  's_size': vol_ref['size'],
+                                  'd_consumed': _consumed('gigabytes'),
+                                  'd_quota': quotas['gigabytes']})
+                raise exception.VolumeSizeExceedsAvailableQuota(
+                    requested=vol_ref['size'],
+                    consumed=_consumed('gigabytes'),
+                    quota=quotas['gigabytes'])
+            elif 'volumes' in overs:
+                msg = _LW("Quota exceeded for %(s_pid)s, tried to create "
+                          "volume (%(d_consumed)d volumes "
+                          "already consumed)")
+                LOG.warning(msg, {'s_pid': context.project_id,
+                                  'd_consumed': _consumed('volumes')})
+                raise exception.VolumeLimitExceeded(allowed=quotas['volumes'])
         try:
             donor_id = vol_ref['project_id']
             reserve_opts = {'volumes': -1, 'gigabytes': -vol_ref.size}

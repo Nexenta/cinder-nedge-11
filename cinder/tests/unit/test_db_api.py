@@ -17,7 +17,7 @@
 import datetime
 
 import enum
-import mock
+from oslo_config import cfg
 from oslo_utils import uuidutils
 import six
 
@@ -26,10 +26,10 @@ from cinder import context
 from cinder import db
 from cinder.db.sqlalchemy import api as sqlalchemy_api
 from cinder import exception
-from cinder import objects
 from cinder import quota
 from cinder import test
-from cinder.tests.unit import fake_constants
+
+CONF = cfg.CONF
 
 THREE = 3
 THREE_HUNDREDS = 300
@@ -180,26 +180,18 @@ class DBAPIServiceTestCase(BaseTest):
 
     def test_service_get_all(self):
         values = [
-            {'host': 'host1', 'binary': 'b1'},
-            {'host': 'host1@ceph', 'binary': 'b2'},
-            {'host': 'host2', 'binary': 'b2'},
+            {'host': 'host1', 'topic': 'topic1'},
+            {'host': 'host2', 'topic': 'topic2'},
             {'disabled': True}
         ]
         services = [self._create_service(vals) for vals in values]
-
         disabled_services = [services[-1]]
         non_disabled_services = services[:-1]
-        expected = services[:2]
-        expected_bin = services[1:3]
+
         compares = [
-            (services, db.service_get_all(self.ctxt, {})),
             (services, db.service_get_all(self.ctxt)),
-            (expected, db.service_get_all(self.ctxt, {'host': 'host1'})),
-            (expected_bin, db.service_get_all(self.ctxt, {'binary': 'b2'})),
-            (disabled_services, db.service_get_all(self.ctxt,
-                                                   {'disabled': True})),
-            (non_disabled_services, db.service_get_all(self.ctxt,
-                                                       {'disabled': False})),
+            (disabled_services, db.service_get_all(self.ctxt, True)),
+            (non_disabled_services, db.service_get_all(self.ctxt, False))
         ]
         for comp in compares:
             self._assertEqualListsOfObjects(*comp)
@@ -216,18 +208,6 @@ class DBAPIServiceTestCase(BaseTest):
         real = db.service_get_all_by_topic(self.ctxt, 't1')
         self._assertEqualListsOfObjects(expected, real)
 
-    def test_service_get_all_by_binary(self):
-        values = [
-            {'host': 'host1', 'binary': 'b1'},
-            {'host': 'host2', 'binary': 'b1'},
-            {'host': 'host4', 'disabled': True, 'binary': 'b1'},
-            {'host': 'host3', 'binary': 'b2'}
-        ]
-        services = [self._create_service(vals) for vals in values]
-        expected = services[:3]
-        real = db.service_get_all_by_binary(self.ctxt, 'b1')
-        self._assertEqualListsOfObjects(expected, real)
-
     def test_service_get_by_args(self):
         values = [
             {'host': 'host1', 'binary': 'a'},
@@ -242,51 +222,9 @@ class DBAPIServiceTestCase(BaseTest):
         self._assertEqualObjects(services[1], service2)
 
     def test_service_get_by_args_not_found_exception(self):
-        self.assertRaises(exception.ServiceNotFound,
+        self.assertRaises(exception.HostBinaryNotFound,
                           db.service_get_by_args,
                           self.ctxt, 'non-exists-host', 'a')
-
-    @mock.patch('cinder.db.sqlalchemy.api.model_query')
-    def test_service_get_by_args_with_case_insensitive(self, model_query):
-        class case_insensitive_filter(object):
-            def __init__(self, records):
-                self.records = records
-
-            def filter_by(self, **kwargs):
-                ret = mock.Mock()
-                ret.all = mock.Mock()
-
-                results = []
-                for record in self.records:
-                    for key, value in kwargs.items():
-                        if record[key].lower() != value.lower():
-                            break
-                    else:
-                        results.append(record)
-
-                ret.filter_by = case_insensitive_filter(results).filter_by
-                ret.all.return_value = results
-                return ret
-
-        values = [
-            {'host': 'host', 'binary': 'a'},
-            {'host': 'HOST', 'binary': 'a'}
-        ]
-        services = [self._create_service(vals) for vals in values]
-
-        query = mock.Mock()
-        query.filter_by = case_insensitive_filter(services).filter_by
-        model_query.return_value = query
-
-        service1 = db.service_get_by_args(self.ctxt, 'host', 'a')
-        self._assertEqualObjects(services[0], service1)
-
-        service2 = db.service_get_by_args(self.ctxt, 'HOST', 'a')
-        self._assertEqualObjects(services[1], service2)
-
-        self.assertRaises(exception.ServiceNotFound,
-                          db.service_get_by_args,
-                          self.ctxt, 'Host', 'a')
 
 
 class DBAPIVolumeTestCase(BaseTest):
@@ -940,6 +878,15 @@ class DBAPIVolumeTestCase(BaseTest):
             self.assertRaises(exception.InvalidInput, db.volume_get_all,
                               self.ctxt, None, None, sort_keys=keys)
 
+    def test_volume_get_iscsi_target_num(self):
+        db.iscsi_target_create_safe(self.ctxt, {'volume_id': 42,
+                                                'target_num': 43})
+        self.assertEqual(43, db.volume_get_iscsi_target_num(self.ctxt, 42))
+
+    def test_volume_get_iscsi_target_num_nonexistent(self):
+        self.assertRaises(exception.ISCSITargetNotFoundForVolume,
+                          db.volume_get_iscsi_target_num, self.ctxt, 42)
+
     def test_volume_update(self):
         volume = db.volume_create(self.ctxt, {'host': 'h1'})
         ref_a = db.volume_update(self.ctxt, volume['id'],
@@ -947,12 +894,7 @@ class DBAPIVolumeTestCase(BaseTest):
                                   'metadata': {'m1': 'v1'}})
         volume = db.volume_get(self.ctxt, volume['id'])
         self.assertEqual('h2', volume['host'])
-        expected = dict(ref_a)
-        expected['volume_metadata'] = list(map(dict,
-                                               expected['volume_metadata']))
-        result = dict(volume)
-        result['volume_metadata'] = list(map(dict, result['volume_metadata']))
-        self.assertEqual(expected, result)
+        self.assertEqual(dict(ref_a), dict(volume))
 
     def test_volume_update_nonexistent(self):
         self.assertRaises(exception.VolumeNotFound, db.volume_update,
@@ -973,66 +915,6 @@ class DBAPIVolumeTestCase(BaseTest):
         db_meta = db.volume_metadata_update(self.ctxt, 1, metadata2, False)
 
         self.assertEqual(should_be, db_meta)
-
-    @mock.patch.object(db.sqlalchemy.api,
-                       '_volume_glance_metadata_key_to_id',
-                       return_value = '1')
-    def test_volume_glance_metadata_key_to_id_called(self,
-                                                     metadata_key_to_id_mock):
-        image_metadata = {'abc': '123'}
-
-        # create volume with metadata.
-        db.volume_create(self.ctxt, {'id': 1,
-                                     'metadata': image_metadata})
-
-        # delete metadata associated with the volume.
-        db.volume_metadata_delete(self.ctxt,
-                                  1,
-                                  'abc',
-                                  meta_type=common.METADATA_TYPES.image)
-
-        # assert _volume_glance_metadata_key_to_id() was called exactly once
-        metadata_key_to_id_mock.assert_called_once_with(self.ctxt, 1, 'abc')
-
-    def test_case_sensitive_glance_metadata_delete(self):
-        user_metadata = {'a': '1', 'c': '2'}
-        image_metadata = {'abc': '123', 'ABC': '123'}
-
-        # create volume with metadata.
-        db.volume_create(self.ctxt, {'id': 1,
-                                     'metadata': user_metadata})
-
-        # delete user metadata associated with the volume.
-        db.volume_metadata_delete(self.ctxt, 1, 'c',
-                                  meta_type=common.METADATA_TYPES.user)
-        user_metadata.pop('c')
-
-        self.assertEqual(user_metadata,
-                         db.volume_metadata_get(self.ctxt, 1))
-
-        # create image metadata associated with the volume.
-        db.volume_metadata_update(
-            self.ctxt,
-            1,
-            image_metadata,
-            False,
-            meta_type=common.METADATA_TYPES.image)
-
-        # delete image metadata associated with the volume.
-        db.volume_metadata_delete(
-            self.ctxt,
-            1,
-            'abc',
-            meta_type=common.METADATA_TYPES.image)
-
-        image_metadata.pop('abc')
-
-        # parse the result to build the dict.
-        rows = db.volume_glance_metadata_get(self.ctxt, 1)
-        result = {}
-        for row in rows:
-            result[row['key']] = row['value']
-        self.assertEqual(image_metadata, result)
 
     def test_volume_metadata_update_with_metatype(self):
         user_metadata1 = {'a': '1', 'c': '2'}
@@ -1297,9 +1179,6 @@ class DBAPISnapshotTestCase(BaseTest):
                                             self.ctxt,
                                             'host2', {'fake_key': 'fake'}),
                                         ignored_keys='volume')
-        # If host is None or empty string, empty list should be returned.
-        self.assertEqual([], db.snapshot_get_by_host(self.ctxt, None))
-        self.assertEqual([], db.snapshot_get_by_host(self.ctxt, ''))
 
     def test_snapshot_get_by_host_with_pools(self):
         db.volume_create(self.ctxt, {'id': 1, 'host': 'host1#pool1'})
@@ -1789,15 +1668,6 @@ class DBAPIQuotaClassTestCase(BaseTest):
         updated = db.quota_class_get(self.ctxt, 'test_qc', 'test_resource')
         self.assertEqual(43, updated['hard_limit'])
 
-    def test_quota_class_update_resource(self):
-        old = db.quota_class_get(self.ctxt, 'test_qc', 'test_resource')
-        db.quota_class_update_resource(self.ctxt,
-                                       'test_resource',
-                                       'test_resource1')
-        new = db.quota_class_get(self.ctxt, 'test_qc', 'test_resource1')
-        self.assertEqual(old.id, new.id)
-        self.assertEqual('test_resource1', new.resource)
-
     def test_quota_class_destroy_all_by_name(self):
         db.quota_class_create(self.ctxt, 'test2', 'res1', 43)
         db.quota_class_create(self.ctxt, 'test2', 'res2', 44)
@@ -1839,13 +1709,6 @@ class DBAPIQuotaTestCase(BaseTest):
         self.assertEqual(42, quota.hard_limit)
         self.assertEqual('resource1', quota.resource)
         self.assertEqual('project1', quota.project_id)
-
-    def test_quota_update_resource(self):
-        old = db.quota_create(self.ctxt, 'project1', 'resource1', 41)
-        db.quota_update_resource(self.ctxt, 'resource1', 'resource2')
-        new = db.quota_get(self.ctxt, 'project1', 'resource2')
-        self.assertEqual(old.id, new.id)
-        self.assertEqual('resource2', new.resource)
 
     def test_quota_update_nonexistent(self):
         self.assertRaises(exception.ProjectQuotaNotFound,
@@ -1954,12 +1817,40 @@ class DBAPIQuotaTestCase(BaseTest):
                          self.ctxt, 'p1'))
 
 
+class DBAPIIscsiTargetTestCase(BaseTest):
+
+    """Unit tests for cinder.db.api.iscsi_target_*."""
+
+    def _get_base_values(self):
+        return {'target_num': 10, 'host': 'fake_host'}
+
+    def test_iscsi_target_create_safe(self):
+        target = db.iscsi_target_create_safe(self.ctxt,
+                                             self._get_base_values())
+        self.assertTrue(target['id'])
+        self.assertEqual('fake_host', target['host'])
+        self.assertEqual(10, target['target_num'])
+
+    def test_iscsi_target_count_by_host(self):
+        for i in range(3):
+            values = self._get_base_values()
+            values['target_num'] += i
+            db.iscsi_target_create_safe(self.ctxt, values)
+        self.assertEqual(3,
+                         db.iscsi_target_count_by_host(self.ctxt, 'fake_host'))
+
+    def test_integrity_error(self):
+        values = self._get_base_values()
+        values['id'] = 1
+        db.iscsi_target_create_safe(self.ctxt, values)
+        self.assertFalse(db.iscsi_target_create_safe(self.ctxt, values))
+
+
 class DBAPIBackupTestCase(BaseTest):
 
     """Tests for db.api.backup_* methods."""
 
-    _ignored_keys = ['id', 'deleted', 'deleted_at', 'created_at',
-                     'updated_at', 'data_timestamp']
+    _ignored_keys = ['id', 'deleted', 'deleted_at', 'created_at', 'updated_at']
 
     def setUp(self):
         super(DBAPIBackupTestCase, self).setUp()
@@ -1985,9 +1876,7 @@ class DBAPIBackupTestCase(BaseTest):
             'object_count': 100,
             'temp_volume_id': 'temp_volume_id',
             'temp_snapshot_id': 'temp_snapshot_id',
-            'num_dependent_backups': 0,
-            'snapshot_id': 'snapshot_id',
-            'restore_volume_id': 'restore_volume_id'}
+            'num_dependent_backups': 0, }
         if one:
             return base_values
 
@@ -2011,18 +1900,6 @@ class DBAPIBackupTestCase(BaseTest):
         for backup in self.created:
             backup_get = db.backup_get(self.ctxt, backup['id'])
             self._assertEqualObjects(backup, backup_get)
-
-    def test_backup_get_deleted(self):
-        backup_dic = {'user_id': 'user',
-                      'project_id': 'project',
-                      'volume_id': fake_constants.volume_id,
-                      'size': 1,
-                      'object_count': 1}
-        backup = objects.Backup(self.ctxt, **backup_dic)
-        backup.create()
-        backup.destroy()
-        backup_get = db.backup_get(self.ctxt, backup.id, read_deleted='yes')
-        self.assertEqual(backup.id, backup_get.id)
 
     def tests_backup_get_all(self):
         all_backups = db.backup_get_all(self.ctxt)

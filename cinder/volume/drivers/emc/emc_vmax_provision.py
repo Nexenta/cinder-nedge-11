@@ -30,9 +30,6 @@ POSTGROUPTYPE = 3
 EMC_ROOT = 'root/emc'
 THINPROVISIONINGCOMPOSITE = 32768
 THINPROVISIONING = 5
-SYNC_CLONE_LOCAL = 10
-COPY_ON_WRITE = 6
-TF_CLONE = 8
 
 
 class EMCVMAXProvision(object):
@@ -231,7 +228,7 @@ class EMCVMAXProvision(object):
 
     def _find_new_storage_group(
             self, conn, maskingGroupDict, storageGroupName):
-        """After creating a new storage group find it and return it.
+        """After creating an new storage group find it and return it.
 
         :param conn: connection the ecom server
         :param maskingGroupDict: the maskingGroupDict dict
@@ -696,18 +693,52 @@ class EMCVMAXProvision(object):
         """
         if copyOnWrite:
             startTime = time.time()
+            repServiceCapabilityInstanceNames = conn.AssociatorNames(
+                repServiceInstanceName,
+                ResultClass='CIM_ReplicationServiceCapabilities',
+                AssocClass='CIM_ElementCapabilities')
+            repServiceCapabilityInstanceName = (
+                repServiceCapabilityInstanceNames[0])
+
             # ReplicationType 10 - Synchronous Clone Local.
+            rc, rsd = conn.InvokeMethod(
+                'GetDefaultReplicationSettingData',
+                repServiceCapabilityInstanceName,
+                ReplicationType=self.utils.get_num(10, '16'))
+
+            if rc != 0:
+                rc, errordesc = self.utils.wait_for_job_complete(conn, rsd,
+                                                                 extraSpecs)
+                if rc != 0:
+                    exceptionMessage = (_(
+                        "Error creating cloned volume using "
+                        "Volume: %(cloneName)s, Source Volume: "
+                        "%(sourceName)s. Return code: %(rc)lu. "
+                        "Error: %(error)s.")
+                        % {'cloneName': cloneName,
+                           'sourceName': sourceName,
+                           'rc': rc,
+                           'error': errordesc})
+                    LOG.error(exceptionMessage)
+                    raise exception.VolumeBackendAPIException(
+                        data=exceptionMessage)
+
+            LOG.debug("InvokeMethod GetDefaultReplicationSettingData "
+                      "took: %(delta)s H:MM:SS.",
+                      {'delta': self.utils.get_time_delta(startTime,
+                                                          time.time())})
+
             # Set DesiredCopyMethodology to Copy-On-Write (6).
-            rsdInstance = self.utils.set_copy_methodology_in_rsd(
-                conn, repServiceInstanceName, SYNC_CLONE_LOCAL,
-                COPY_ON_WRITE, extraSpecs)
+            rsdInstance = rsd['DefaultInstance']
+            rsdInstance['DesiredCopyMethodology'] = self.utils.get_num(6, '16')
+
+            startTime = time.time()
 
             # SyncType 8 - Clone.
             # ReplicationSettingData.DesiredCopyMethodology Copy-On-Write (6).
             rc, job = conn.InvokeMethod(
                 'CreateElementReplica', repServiceInstanceName,
-                ElementName=cloneName,
-                SyncType=self.utils.get_num(TF_CLONE, '16'),
+                ElementName=cloneName, SyncType=self.utils.get_num(8, '16'),
                 ReplicationSettingData=rsdInstance,
                 SourceElement=sourceInstance.path)
         else:
@@ -716,13 +747,13 @@ class EMCVMAXProvision(object):
                 rc, job = conn.InvokeMethod(
                     'CreateElementReplica', repServiceInstanceName,
                     ElementName=cloneName,
-                    SyncType=self.utils.get_num(TF_CLONE, '16'),
+                    SyncType=self.utils.get_num(8, '16'),
                     SourceElement=sourceInstance.path)
             else:
                 rc, job = conn.InvokeMethod(
                     'CreateElementReplica', repServiceInstanceName,
                     ElementName=cloneName,
-                    SyncType=self.utils.get_num(TF_CLONE, '16'),
+                    SyncType=self.utils.get_num(8, '16'),
                     SourceElement=sourceInstance.path,
                     TargetElement=targetInstance.path)
 
@@ -803,6 +834,34 @@ class EMCVMAXProvision(object):
                                                       time.time())})
 
         return rc, job
+
+    def get_target_endpoints(self, conn, storageHardwareService, hardwareId):
+        """Given the hardwareId get the target endpoints.
+
+        :param conn: the connection to the ecom server
+        :param storageHardwareService: the storage HardwareId Service
+        :param hardwareId: the hardware Id
+        :returns: int -- return code
+        :returns: targetEndpoints
+        :raises: VolumeBackendAPIException
+        """
+        startTime = time.time()
+
+        rc, targetEndpoints = conn.InvokeMethod(
+            'EMCGetTargetEndpoints', storageHardwareService,
+            HardwareId=hardwareId)
+
+        if rc != 0:
+            exceptionMessage = (_("Error finding Target WWNs."))
+            LOG.error(exceptionMessage)
+            raise exception.VolumeBackendAPIException(data=exceptionMessage)
+
+        LOG.debug("InvokeMethod EMCGetTargetEndpoints "
+                  "took: %(delta)s H:MM:SS.",
+                  {'delta': self.utils.get_time_delta(startTime,
+                                                      time.time())})
+
+        return rc, targetEndpoints
 
     def create_consistency_group(
             self, conn, replicationService, consistencyGroupName, extraSpecs):

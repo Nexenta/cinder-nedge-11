@@ -29,7 +29,6 @@ import socket
 
 from oslo_config import cfg
 from oslo_log import log as logging
-from oslo_middleware import cors
 from oslo_utils import netutils
 
 from cinder.i18n import _
@@ -39,6 +38,9 @@ CONF = cfg.CONF
 logging.register_options(CONF)
 
 core_opts = [
+    cfg.StrOpt('api_paste_config',
+               default="api-paste.ini",
+               help='File name for the paste.deploy config for cinder-api'),
     cfg.StrOpt('state_path',
                default='/var/lib/cinder',
                deprecated_name='pybasedir',
@@ -63,9 +65,8 @@ global_opts = [
                help='Default glance port'),
     cfg.ListOpt('glance_api_servers',
                 default=['$glance_host:$glance_port'],
-                help='A list of the URLs of glance API servers available to '
-                     'cinder ([http[s]://][hostname|ip]:port). If protocol '
-                     'is not specified it defaults to http.'),
+                help='A list of the glance API servers available to cinder '
+                     '([hostname|ip]:port)'),
     cfg.IntOpt('glance_api_version',
                default=1,
                help='Version of the glance API to use'),
@@ -87,6 +88,7 @@ global_opts = [
                help='Location of ca certificates file to use for glance '
                     'client requests.'),
     cfg.IntOpt('glance_request_timeout',
+               default=None,
                help='http/https timeout value for glance operations. If no '
                     'value (None) is supplied here, the glanceclient default '
                     'value is used.'),
@@ -104,10 +106,7 @@ global_opts = [
                 help=_("DEPRECATED: Deploy v1 of the Cinder API.")),
     cfg.BoolOpt('enable_v2_api',
                 default=True,
-                help=_("DEPRECATED: Deploy v2 of the Cinder API.")),
-    cfg.BoolOpt('enable_v3_api',
-                default=True,
-                help=_("Deploy v3 of the Cinder API.")),
+                help=_("Deploy v2 of the Cinder API.")),
     cfg.BoolOpt('api_rate_limit',
                 default=True,
                 help='Enables or disables rate limit of the API.'),
@@ -137,6 +136,7 @@ global_opts = [
                default='nova',
                help='Availability zone of this node'),
     cfg.StrOpt('default_availability_zone',
+               default=None,
                help='Default availability zone for new volumes. If not set, '
                     'the storage_availability_zone option value is used as '
                     'the default for new volumes.'),
@@ -147,6 +147,7 @@ global_opts = [
                      'default_availability_zone, then '
                      'storage_availability_zone, instead of failing.'),
     cfg.StrOpt('default_volume_type',
+               default=None,
                help='Default volume type to use'),
     cfg.StrOpt('volume_usage_audit_period',
                default='month',
@@ -174,10 +175,11 @@ global_opts = [
                help='The full class name of the volume backup API class'),
     cfg.StrOpt('auth_strategy',
                default='keystone',
-               choices=['noauth', 'keystone'],
-               help='The strategy to use for auth. Supports noauth or '
-                    'keystone.'),
+               choices=['noauth', 'keystone', 'deprecated'],
+               help='The strategy to use for auth. Supports noauth, keystone, '
+                    'and deprecated.'),
     cfg.ListOpt('enabled_backends',
+                default=None,
                 help='A list of backend names to use. These backend names '
                      'should be backed by a unique [CONFIG] group '
                      'with its options'),
@@ -194,48 +196,23 @@ global_opts = [
                default='cinder.consistencygroup.api.API',
                help='The full class name of the consistencygroup API class'),
     cfg.StrOpt('os_privileged_user_name',
+               default=None,
                help='OpenStack privileged account username. Used for requests '
                     'to other services (such as Nova) that require an account '
                     'with special rights.'),
     cfg.StrOpt('os_privileged_user_password',
+               default=None,
                help='Password associated with the OpenStack privileged '
                     'account.',
                secret=True),
     cfg.StrOpt('os_privileged_user_tenant',
+               default=None,
                help='Tenant name associated with the OpenStack privileged '
                     'account.'),
     cfg.StrOpt('os_privileged_user_auth_url',
+               default=None,
                help='Auth URL associated with the OpenStack privileged '
                     'account.'),
 ]
 
 CONF.register_opts(global_opts)
-
-
-def set_middleware_defaults():
-    """Update default configuration options for oslo.middleware."""
-    # CORS Defaults
-    # TODO(krotscheck): Update with https://review.openstack.org/#/c/285368/
-    cfg.set_defaults(cors.CORS_OPTS,
-                     allow_headers=['X-Auth-Token',
-                                    'X-Identity-Status',
-                                    'X-Roles',
-                                    'X-Service-Catalog',
-                                    'X-User-Id',
-                                    'X-Tenant-Id',
-                                    'X-OpenStack-Request-ID',
-                                    'X-Trace-Info',
-                                    'X-Trace-HMAC',
-                                    'OpenStack-API-Version'],
-                     expose_headers=['X-Auth-Token',
-                                     'X-Subject-Token',
-                                     'X-Service-Token',
-                                     'X-OpenStack-Request-ID',
-                                     'OpenStack-API-Version'],
-                     allow_methods=['GET',
-                                    'PUT',
-                                    'POST',
-                                    'DELETE',
-                                    'PATCH',
-                                    'HEAD']
-                     )

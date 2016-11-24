@@ -13,10 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import time
-
 import mock
-import six
 
 from cinder import exception
 from cinder import test
@@ -46,7 +43,7 @@ xms_data = {'xms': {1: {'version': '4.0.0'}},
                              "index": 1,
                              },
                          },
-            'target-groups': {'Default': {"index": 1, "name": "Default"},
+            'target-groups': {'Default': {"index": 1, },
                               },
             'iscsi-portals': {'10.205.68.5/16':
                               {"port-address":
@@ -76,15 +73,6 @@ xms_data = {'xms': {1: {'version': '4.0.0'}},
             'consistency-group-volumes': {},
             }
 
-xms_filters = {
-    'eq': lambda x, y: x == y,
-    'ne': lambda x, y: x != y,
-    'gt': lambda x, y: x > y,
-    'ge': lambda x, y: x >= y,
-    'lt': lambda x, y: x < y,
-    'le': lambda x, y: x <= y,
-}
-
 
 def get_xms_obj_by_name(typ, name):
     for item in xms_data[typ].values():
@@ -112,14 +100,6 @@ def fix_data(data, object_type):
     if object_type == 'lun-maps':
         d['lun'] = 1
 
-        vol_idx = get_xms_obj_by_name('volumes', data['vol-id'])['index']
-        ig_idx = get_xms_obj_by_name('initiator-groups',
-                                     data['ig-id'])['index']
-
-        d['name'] = '_'.join([six.text_type(vol_idx),
-                              six.text_type(ig_idx),
-                              '1'])
-
     d[typ2id[object_type]] = ["a91e8c81c2d14ae4865187ce4f866f8a",
                               d.get('name'),
                               len(xms_data.get(object_type, [])) + 1]
@@ -142,7 +122,7 @@ def get_obj(typ, name, idx):
         return {"content": xms_data[typ][idx]}
 
 
-def xms_request(object_type='volumes', method='GET', data=None,
+def xms_request(object_type='volumes', request_typ='GET', data=None,
                 name=None, idx=None, ver='v1'):
     if object_type == 'snapshots':
         object_type = 'volumes'
@@ -151,26 +131,18 @@ def xms_request(object_type='volumes', method='GET', data=None,
         res = xms_data[object_type]
     except KeyError:
         raise exception.VolumeDriverException
-    if method == 'GET':
+    if request_typ == 'GET':
         if name or idx:
             return get_obj(object_type, name, idx)
         else:
             if data and data.get('full') == 1:
-                filter_term = data.get('filter')
-                if not filter_term:
-                    entities = list(res.values())
-                else:
-                    field, oper, value = filter_term.split(':', 2)
-                    comp = xms_filters[oper]
-                    entities = [o for o in res.values()
-                                if comp(o.get(field), value)]
-                return {object_type: entities}
+                return {object_type: list(res.values())}
             else:
                 return {object_type: [{"href": "/%s/%d" % (object_type,
                                                            obj['index']),
                                        "name": obj.get('name')}
                                       for obj in res.values()]}
-    elif method == 'POST':
+    elif request_typ == 'POST':
         data = fix_data(data, object_type)
         name_key = get_xms_obj_key(data)
         try:
@@ -190,7 +162,7 @@ def xms_request(object_type='volumes', method='GET', data=None,
 
         return {"links": [{"href": "/%s/%d" %
                           (object_type, data[typ2id[object_type]][2])}]}
-    elif method == 'DELETE':
+    elif request_typ == 'DELETE':
         if object_type == 'consistency-group-volumes':
             data = [cgv for cgv in
                     xms_data['consistency-group-volumes'].values()
@@ -202,34 +174,34 @@ def xms_request(object_type='volumes', method='GET', data=None,
             del xms_data[object_type][data['index']]
         else:
             raise exception.NotFound()
-    elif method == 'PUT':
+    elif request_typ == 'PUT':
         obj = get_obj(object_type, name, idx)['content']
         data = fix_data(data, object_type)
         del data['index']
         obj.update(data)
 
 
-def xms_bad_request(object_type='volumes', method='GET', data=None,
+def xms_bad_request(object_type='volumes', request_typ='GET', data=None,
                     name=None, idx=None, ver='v1'):
-    if method == 'GET':
+    if request_typ == 'GET':
         raise exception.NotFound()
-    elif method == 'POST':
+    elif request_typ == 'POST':
         raise exception.VolumeBackendAPIException('Failed to create ig')
 
 
 def xms_failed_rename_snapshot_request(object_type='volumes',
-                                       method='GET', data=None,
+                                       request_typ='GET', data=None,
                                        name=None, idx=None, ver='v1'):
-    if method == 'POST':
+    if request_typ == 'POST':
         xms_data['volumes'][27] = {}
         return {
             "links": [
                 {
                     "href": "https://host/api/json/v2/types/snapshots/27",
                     "rel": "self"}]}
-    elif method == 'PUT':
+    elif request_typ == 'PUT':
         raise exception.VolumeBackendAPIException(data='Failed to delete')
-    elif method == 'DELETE':
+    elif request_typ == 'DELETE':
         del xms_data['volumes'][27]
 
 
@@ -324,11 +296,9 @@ class EMCXIODriverISCSITestCase(test.TestCase):
         config.san_ip = ''
         config.xtremio_cluster_name = 'brick1'
         config.xtremio_provisioning_factor = 20.0
-        config.max_over_subscription_ratio = 20.0
-        config.xtremio_volumes_per_glance_cache = 100
 
         def safe_get(key):
-            return getattr(config, key)
+            getattr(config, key)
 
         config.safe_get = safe_get
         self.driver = xtremio.XtremIOISCSIDriver(configuration=config)
@@ -345,12 +315,6 @@ class EMCXIODriverISCSITestCase(test.TestCase):
                           self.driver.check_for_setup_error)
         xms_data['clusters'] = clusters
         self.driver.check_for_setup_error()
-
-    def test_client4_uses_v2(self, req):
-        def base_req(*args, **kwargs):
-            self.assertIn('v2', args)
-        req.side_effect = base_req
-        self.driver.client.req('volumes')
 
     def test_create_extend_delete_volume(self, req):
         req.side_effect = xms_request
@@ -387,48 +351,11 @@ class EMCXIODriverISCSITestCase(test.TestCase):
 
     def test_clone_volume(self, req):
         req.side_effect = xms_request
-        self.driver.db = mock.Mock()
-        (self.driver.db.
-         image_volume_cache_get_by_volume_id.return_value) = mock.MagicMock()
         self.driver.create_volume(self.data.test_volume)
-        vol = xms_data['volumes'][1]
-        vol['num-of-dest-snaps'] = 200
-        self.assertRaises(exception.CinderException,
-                          self.driver.create_cloned_volume,
-                          self.data.test_clone,
-                          self.data.test_volume)
-
-        vol['num-of-dest-snaps'] = 50
         self.driver.create_cloned_volume(self.data.test_clone,
                                          self.data.test_volume)
         self.driver.delete_volume(self.data.test_clone)
         self.driver.delete_volume(self.data.test_volume)
-
-        mock.patch.object(self.driver.client,
-                          'create_snapshot',
-                          mock.Mock(side_effect=
-                                    exception.XtremIOSnapshotsLimitExceeded()))
-        self.assertRaises(exception.CinderException,
-                          self.driver.create_cloned_volume,
-                          self.data.test_clone,
-                          self.data.test_volume)
-
-        response = mock.MagicMock()
-        response.status_code = 400
-        response.json.return_value = {
-            "message": "too_many_snapshots_per_vol",
-            "error_code": 400
-        }
-        self.assertRaises(exception.XtremIOSnapshotsLimitExceeded,
-                          self.driver.client.handle_errors,
-                          response, '', '')
-        response.json.return_value = {
-            "message": "too_many_objs",
-            "error_code": 400
-        }
-        self.assertRaises(exception.XtremIOSnapshotsLimitExceeded,
-                          self.driver.client.handle_errors,
-                          response, '', '')
 
     def test_duplicate_volume(self, req):
         req.side_effect = xms_request
@@ -449,7 +376,6 @@ class EMCXIODriverISCSITestCase(test.TestCase):
     def test_initialize_terminate_connection(self, req):
         req.side_effect = xms_request
         self.driver.create_volume(self.data.test_volume)
-        self.driver.create_volume(self.data.test_volume2)
         map_data = self.driver.initialize_connection(self.data.test_volume,
                                                      self.data.connector)
         self.assertEqual(1, map_data['data']['target_lun'])
@@ -462,34 +388,10 @@ class EMCXIODriverISCSITestCase(test.TestCase):
         self.driver.terminate_connection(self.data.test_volume,
                                          self.data.connector)
 
-    def test_terminate_connection_fail_on_bad_volume(self, req):
-        req.side_effect = xms_request
-        self.assertRaises(exception.NotFound,
-                          self.driver.terminate_connection,
-                          self.data.test_volume,
-                          self.data.connector)
-
-    def test_get_ig_indexes_from_initiators_called_once(self, req):
-        req.side_effect = xms_request
-        self.driver.create_volume(self.data.test_volume)
-        map_data = self.driver.initialize_connection(self.data.test_volume,
-                                                     self.data.connector)
-        i1 = xms_data['initiators'][1]
-        i1['ig-id'] = ['', i1['ig-id'], 1]
-        self.assertEqual(1, map_data['data']['target_lun'])
-
-        with mock.patch.object(self.driver,
-                               '_get_ig_indexes_from_initiators') as get_idx:
-            get_idx.return_value = [1]
-            self.driver.terminate_connection(self.data.test_volume,
-                                             self.data.connector)
-            get_idx.assert_called_once_with(self.data.connector)
-
     def test_initialize_chap_connection(self, req):
         req.side_effect = xms_request
         clean_xms_data()
         self.driver.create_volume(self.data.test_volume)
-        self.driver.create_volume(self.data.test_volume2)
         map_data = self.driver.initialize_connection(self.data.test_volume,
                                                      self.data.connector)
         self.assertIsNone(map_data['data'].get('access_mode'))
@@ -505,19 +407,10 @@ class EMCXIODriverISCSITestCase(test.TestCase):
         self.assertEqual('chap_password1', map_data['data']['auth_password'])
         self.assertEqual('chap_password2',
                          map_data['data']['discovery_auth_password'])
-
-        self.driver.terminate_connection(self.data.test_volume2,
-                                         self.data.connector)
         i1['chap-authentication-initiator-password'] = None
         i1['chap-discovery-initiator-password'] = None
         map_data = self.driver.initialize_connection(self.data.test_volume2,
                                                      self.data.connector)
-        data = {}
-        self.driver._add_auth(data, True, True)
-        self.assertIn('initiator-discovery-user-name', data,
-                      'Missing discovery user in data')
-        self.assertIn('initiator-discovery-password', data,
-                      'Missing discovery password in data')
 
     def test_initialize_connection_bad_ig(self, req):
         req.side_effect = xms_bad_request
@@ -574,7 +467,7 @@ class EMCXIODriverISCSITestCase(test.TestCase):
         self.driver.db = mock.Mock()
         (self.driver.db.
          volume_get_all_by_group.return_value) = [mock.MagicMock()]
-        self.driver.create_cgsnapshot(d.context, d.cgsnapshot, [])
+        self.driver.create_cgsnapshot(d.context, d.cgsnapshot)
         snapset_name = self.driver._get_cgsnap_name(d.cgsnapshot)
         self.assertEqual(snapset_name,
                          '192eb39b6c2f420cbae33cfd117f0345192eb39b6c2f420cbae'
@@ -584,8 +477,8 @@ class EMCXIODriverISCSITestCase(test.TestCase):
                     'name': snapset_name,
                     'index': 1}
         xms_data['snapshot-sets'] = {snapset_name: snapset1, 1: snapset1}
-        self.driver.delete_cgsnapshot(d.context, d.cgsnapshot, [])
-        self.driver.delete_consistencygroup(d.context, d.group, [])
+        self.driver.delete_cgsnapshot(d.context, d.cgsnapshot)
+        self.driver.delete_consistencygroup(d.context, d.group)
         xms_data['snapshot-sets'] = {}
 
     @mock.patch('cinder.objects.snapshot.SnapshotList.get_all_for_cgsnapshot')
@@ -604,7 +497,7 @@ class EMCXIODriverISCSITestCase(test.TestCase):
 
         self.driver.create_consistencygroup(d.context, d.group)
         self.driver.create_volume(d.test_volume)
-        self.driver.create_cgsnapshot(d.context, d.cgsnapshot, [])
+        self.driver.create_cgsnapshot(d.context, d.cgsnapshot)
         xms_data['volumes'][2]['ancestor-vol-id'] = (xms_data['volumes'][1]
                                                      ['vol-id'])
         snapset_name = self.driver._get_cgsnap_name(d.cgsnapshot)
@@ -622,20 +515,6 @@ class EMCXIODriverISCSITestCase(test.TestCase):
                                                      [new_vol1],
                                                      d.cgsnapshot, [snapshot1])
 
-        new_cg_obj = fake_cg.fake_consistencyobject_obj(d.context, id=5)
-        snapset2_name = new_cg_obj.id
-        new_vol1.id = '192eb39b-6c2f-420c-bae3-3cfd117f0001'
-        new_vol2 = fake_volume.fake_volume_obj(d.context)
-        snapset2 = {'vol-list': [xms_data['volumes'][2]['vol-id']],
-                    'name': snapset2_name,
-                    'index': 1}
-        xms_data['snapshot-sets'].update({5: snapset2,
-                                          snapset2_name: snapset2})
-        self.driver.create_consistencygroup_from_src(d.context, new_cg_obj,
-                                                     [new_vol2],
-                                                     None, None,
-                                                     cg_obj, [new_vol1])
-
 
 @mock.patch('requests.request')
 class EMCXIODriverTestCase(test.TestCase):
@@ -647,18 +526,15 @@ class EMCXIODriverTestCase(test.TestCase):
         configuration.san_password = ''
         configuration.san_ip = ''
         configuration.xtremio_cluster_name = ''
-        configuration.driver_ssl_cert_verify = True
-        configuration.driver_ssl_cert_path = '/test/path/root_ca.crt'
 
         def safe_get(key):
-            return getattr(configuration, key)
+            getattr(configuration, key)
 
         configuration.safe_get = safe_get
         self.driver = xtremio.XtremIOISCSIDriver(configuration=configuration)
 
         self.data = CommonData()
 
-    @mock.patch.object(time, 'sleep', mock.Mock(return_value=0))
     def test_retry_request(self, req):
         busy_response = mock.MagicMock()
         busy_response.status_code = 400
@@ -679,17 +555,6 @@ class EMCXIODriverTestCase(test.TestCase):
 
         req.side_effect = busy_request
         self.driver.create_volume(self.data.test_volume)
-
-    def test_verify_cert(self, req):
-        good_response = mock.MagicMock()
-        good_response.status_code = 200
-
-        def request_verify_cert(*args, **kwargs):
-            self.assertEqual(kwargs['verify'], '/test/path/root_ca.crt')
-            return good_response
-
-        req.side_effect = request_verify_cert
-        self.driver.client.req('volumes')
 
 
 @mock.patch('cinder.volume.drivers.emc.xtremio.XtremIOClient.req')
@@ -716,35 +581,6 @@ class EMCXIODriverFibreChannelTestCase(test.TestCase):
         map_data = self.driver.initialize_connection(self.data.test_volume,
                                                      self.data.connector)
         self.assertEqual(1, map_data['data']['target_lun'])
-        for i1 in xms_data['initiators'].values():
-            i1['ig-id'] = ['', i1['ig-id'], 1]
-        self.driver.terminate_connection(self.data.test_volume,
-                                         self.data.connector)
-        self.driver.delete_volume(self.data.test_volume)
-
-    def test_initialize_existing_ig_terminate_connection(self, req):
-        req.side_effect = xms_request
-        self.driver.client = xtremio.XtremIOClient4(
-            self.config, self.config.xtremio_cluster_name)
-
-        self.driver.create_volume(self.data.test_volume)
-
-        pre_existing = 'pre_existing_host'
-        self.driver._create_ig(pre_existing)
-        wwpns = self.driver._get_initiator_names(self.data.connector)
-        for wwpn in wwpns:
-            data = {'initiator-name': wwpn, 'ig-id': pre_existing,
-                    'port-address': wwpn}
-            self.driver.client.req('initiators', 'POST', data)
-
-        def get_fake_initiator(wwpn):
-            return {'port-address': wwpn, 'ig-id': ['', pre_existing, 1]}
-        with mock.patch.object(self.driver.client, 'get_initiator',
-                               side_effect=get_fake_initiator):
-            map_data = self.driver.initialize_connection(self.data.test_volume,
-                                                         self.data.connector)
-        self.assertEqual(1, map_data['data']['target_lun'])
-        self.assertEqual(1, len(xms_data['initiator-groups']))
         self.driver.terminate_connection(self.data.test_volume,
                                          self.data.connector)
         self.driver.delete_volume(self.data.test_volume)

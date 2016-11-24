@@ -27,9 +27,6 @@ from cinder import test
 from cinder.volume.drivers import vzstorage
 
 
-_orig_path_exists = os.path.exists
-
-
 class VZStorageTestCase(test.TestCase):
 
     _FAKE_SHARE = "10.0.0.1,10.0.0.2:/cluster123:123123"
@@ -72,31 +69,21 @@ class VZStorageTestCase(test.TestCase):
         self._vz_driver._execute = mock.Mock()
         self._vz_driver.base = self._FAKE_MNT_BASE
 
-    def _path_exists(self, path):
-        if path.startswith(self._FAKE_VZ_CONFIG.vzstorage_shares_config):
-            return True
-        return _orig_path_exists(path)
-
-    def _path_dont_exists(self, path):
-        if path.startswith('/fake'):
-            return False
-        return _orig_path_exists(path)
-
     @mock.patch('os.path.exists')
     def test_setup_ok(self, mock_exists):
-        mock_exists.side_effect = self._path_exists
+        mock_exists.return_value = True
         self._vz_driver.do_setup(mock.sentinel.context)
 
     @mock.patch('os.path.exists')
     def test_setup_missing_shares_conf(self, mock_exists):
-        mock_exists.side_effect = self._path_dont_exists
+        mock_exists.return_value = False
         self.assertRaises(exception.VzStorageException,
                           self._vz_driver.do_setup,
                           mock.sentinel.context)
 
     @mock.patch('os.path.exists')
     def test_setup_invalid_usage_ratio(self, mock_exists):
-        mock_exists.side_effect = self._path_exists
+        mock_exists.return_value = True
         self._vz_driver.configuration.vzstorage_used_ratio = 1.2
         self.assertRaises(exception.VzStorageException,
                           self._vz_driver.do_setup,
@@ -104,7 +91,7 @@ class VZStorageTestCase(test.TestCase):
 
     @mock.patch('os.path.exists')
     def test_setup_invalid_usage_ratio2(self, mock_exists):
-        mock_exists.side_effect = self._path_exists
+        mock_exists.return_value = True
         self._vz_driver.configuration.vzstorage_used_ratio = 0
         self.assertRaises(exception.VzStorageException,
                           self._vz_driver.do_setup,
@@ -112,7 +99,7 @@ class VZStorageTestCase(test.TestCase):
 
     @mock.patch('os.path.exists')
     def test_setup_invalid_mount_point_base(self, mock_exists):
-        mock_exists.side_effect = self._path_exists
+        mock_exists.return_value = True
         conf = copy.copy(self._FAKE_VZ_CONFIG)
         conf.vzstorage_mount_point_base = './tmp'
         vz_driver = vzstorage.VZStorageDriver(configuration=conf)
@@ -122,7 +109,7 @@ class VZStorageTestCase(test.TestCase):
 
     @mock.patch('os.path.exists')
     def test_setup_no_vzstorage(self, mock_exists):
-        mock_exists.side_effect = self._path_exists
+        mock_exists.return_value = True
         exc = OSError()
         exc.errno = errno.ENOENT
         self._vz_driver._execute.side_effect = exc
@@ -179,7 +166,7 @@ class VZStorageTestCase(test.TestCase):
         drv = self._vz_driver
         cap_info = (100 * units.Gi, 40 * units.Gi, 60 * units.Gi)
         with mock.patch.object(drv, '_get_capacity_info',
-                               return_value=cap_info):
+                               return_value = cap_info):
             ret = drv._is_share_eligible(self._FAKE_SHARE, 50)
             self.assertFalse(ret)
 
@@ -187,7 +174,7 @@ class VZStorageTestCase(test.TestCase):
         drv = self._vz_driver
         cap_info = (100 * units.Gi, 40 * units.Gi, 60 * units.Gi)
         with mock.patch.object(drv, '_get_capacity_info',
-                               return_value=cap_info):
+                               return_value = cap_info):
             ret = drv._is_share_eligible(self._FAKE_SHARE, 30)
             self.assertTrue(ret)
 
