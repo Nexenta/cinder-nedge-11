@@ -60,9 +60,6 @@ def _usage_from_volume(context, volume_ref, **kw):
     now = timeutils.utcnow()
     launched_at = volume_ref['launched_at'] or now
     created_at = volume_ref['created_at'] or now
-    volume_status = volume_ref['status']
-    if volume_status == 'error_managing_deleting':
-        volume_status = 'deleting'
     usage_info = dict(
         tenant_id=volume_ref['project_id'],
         host=volume_ref['host'],
@@ -73,7 +70,7 @@ def _usage_from_volume(context, volume_ref, **kw):
         display_name=volume_ref['display_name'],
         launched_at=launched_at.isoformat(),
         created_at=created_at.isoformat(),
-        status=volume_status,
+        status=volume_ref['status'],
         snapshot_id=volume_ref['snapshot_id'],
         size=volume_ref['size'],
         replication_status=volume_ref['replication_status'],

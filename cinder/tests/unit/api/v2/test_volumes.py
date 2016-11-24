@@ -272,18 +272,6 @@ class VolumeApiTest(test.TestCase):
         get_snapshot.assert_called_once_with(self.controller.volume_api,
                                              context, snapshot_id)
 
-    @ddt.data({'s': 'ea895e29-8485-4930-bbb8-c5616a309c0e'},
-              ['ea895e29-8485-4930-bbb8-c5616a309c0e'],
-              42)
-    def test_volume_creation_fails_with_invalid_snapshot_type(self, value):
-        snapshot_id = value
-        vol = self._vol_in_request_body(snapshot_id=snapshot_id)
-        body = {"volume": vol}
-        req = fakes.HTTPRequest.blank('/v2/volumes')
-        # Raise 400 when snapshot has not uuid type.
-        self.assertRaises(webob.exc.HTTPBadRequest, self.controller.create,
-                          req, body)
-
     @mock.patch.object(db.sqlalchemy.api, '_volume_type_get_full',
                        autospec=True)
     @mock.patch.object(volume_api.API, 'get_volume', autospec=True)
@@ -1390,20 +1378,6 @@ class VolumeApiTest(test.TestCase):
         req = fakes.HTTPRequest.blank('/v2/volumes/%s' % fake.VOLUME_ID)
         res_dict = self.controller.show(req, fake.VOLUME_ID)
         self.assertEqual(False, res_dict['volume']['encrypted'])
-
-    def test_volume_show_with_error_managing_deleting(self):
-        def stub_volume_get(self, context, volume_id, **kwargs):
-            vol = stubs.stub_volume(volume_id,
-                                    status='error_managing_deleting')
-            return fake_volume.fake_volume_obj(context, **vol)
-
-        self.stubs.Set(volume_api.API, 'get', stub_volume_get)
-        self.stubs.Set(db.sqlalchemy.api, '_volume_type_get_full',
-                       stubs.stub_volume_type_get)
-
-        req = fakes.HTTPRequest.blank('/v2/volumes/%s' % fake.VOLUME_ID)
-        res_dict = self.controller.show(req, fake.VOLUME_ID)
-        self.assertEqual('deleting', res_dict['volume']['status'])
 
     def test_volume_delete(self):
         self.stubs.Set(volume_api.API, 'get', stubs.stub_volume_get)

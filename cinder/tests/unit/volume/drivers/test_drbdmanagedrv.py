@@ -653,6 +653,9 @@ class DrbdManageDrbdTestCase(DrbdManageIscsiTestCase):
 
 
 class DrbdManageCommonTestCase(DrbdManageIscsiTestCase):
+    def setUp(self):
+        super(DrbdManageCommonTestCase, self).setUp()
+
     def test_drbd_policy_loop_timeout(self):
         dmd = drv.DrbdManageDrbdDriver(configuration=self.configuration)
         dmd.odm = DrbdManageFakeDriver()

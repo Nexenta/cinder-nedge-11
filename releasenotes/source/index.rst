@@ -6,6 +6,5 @@
    :maxdepth: 1
 
    unreleased
-   newton
    mitaka
    liberty

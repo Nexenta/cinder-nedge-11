@@ -75,7 +75,7 @@ def _clean_reason(reason):
         return reason[0:REASON_LENGTH] + '...'
 
 
-def error_out(resource, reason=None, status='error'):
+def error_out(resource, reason=None):
     """Sets status to error for any persistent OVO."""
     reason = _clean_reason(reason)
     try:
@@ -83,12 +83,11 @@ def error_out(resource, reason=None, status='error'):
                   '%(reason)s', {'object_type': resource.obj_name(),
                                  'object_id': resource.id,
                                  'reason': reason})
-        resource.status = status
+        resource.status = 'error'
         resource.save()
     except Exception:
         # Don't let this cause further exceptions.
         LOG.exception(_LE("Failed setting %(object_type)s %(object_id)s to "
-                          " %(status)s status."),
+                          " error status."),
                       {'object_type': resource.obj_name(),
-                       'object_id': resource.id,
-                       'status': status})
+                       'object_id': resource.id})

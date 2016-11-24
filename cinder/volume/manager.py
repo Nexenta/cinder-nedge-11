@@ -764,17 +764,16 @@ class VolumeManager(manager.SchedulerDependentManager):
         if not is_migrating:
             # Get reservations
             try:
-                reservations = None
-                if volume.status != 'error_managing_deleting':
-                    reserve_opts = {'volumes': -1,
-                                    'gigabytes': -volume.size}
-                    QUOTAS.add_volume_type_opts(context,
-                                                reserve_opts,
-                                                volume.volume_type_id)
-                    reservations = QUOTAS.reserve(context,
-                                                  project_id=project_id,
-                                                  **reserve_opts)
+                reserve_opts = {'volumes': -1,
+                                'gigabytes': -volume.size}
+                QUOTAS.add_volume_type_opts(context,
+                                            reserve_opts,
+                                            volume.volume_type_id)
+                reservations = QUOTAS.reserve(context,
+                                              project_id=project_id,
+                                              **reserve_opts)
             except Exception:
+                reservations = None
                 LOG.exception(_LE("Failed to update usages deleting volume."),
                               resource=volume)
 
@@ -4525,7 +4524,7 @@ class _VolumeV3Proxy(object):
     def get_manageable_snapshots(self, ctxt, marker, limit, offset, sort_keys,
                                  sort_dirs):
         return self.manager.get_manageable_snapshots(
-            ctxt, marker, limit, offset, sort_keys, sort_dirs)
+            self, ctxt, marker, limit, offset, sort_keys, sort_dirs)
 
     def get_capabilities(self, context, discover):
         return self.manager.get_capabilities(context, discover)

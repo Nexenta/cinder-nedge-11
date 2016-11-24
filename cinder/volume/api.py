@@ -26,6 +26,7 @@ from oslo_log import log as logging
 from oslo_utils import excutils
 from oslo_utils import strutils
 from oslo_utils import timeutils
+from oslo_utils import uuidutils
 import six
 
 from cinder.api import common
@@ -367,18 +368,15 @@ class API(base.Base):
             # NOTE(vish): scheduling failed, so delete it
             # Note(zhiteng): update volume quota reservation
             try:
-                reservations = None
-                if volume.status != 'error_managing':
-                    LOG.debug("Decrease volume quotas only if status is not "
-                              "error_managing.")
-                    reserve_opts = {'volumes': -1, 'gigabytes': -volume.size}
-                    QUOTAS.add_volume_type_opts(context,
-                                                reserve_opts,
-                                                volume.volume_type_id)
-                    reservations = QUOTAS.reserve(context,
-                                                  project_id=project_id,
-                                                  **reserve_opts)
+                reserve_opts = {'volumes': -1, 'gigabytes': -volume.size}
+                QUOTAS.add_volume_type_opts(context,
+                                            reserve_opts,
+                                            volume.volume_type_id)
+                reservations = QUOTAS.reserve(context,
+                                              project_id=project_id,
+                                              **reserve_opts)
             except Exception:
+                reservations = None
                 LOG.exception(_LE("Failed to update quota while "
                                   "deleting volume."))
             volume.destroy()
@@ -402,7 +400,7 @@ class API(base.Base):
         # If not force deleting we have status conditions
         if not force:
             expected['status'] = ('available', 'error', 'error_restoring',
-                                  'error_extending', 'error_managing')
+                                  'error_extending')
 
         if cascade:
             # Allow deletion if all snapshots are in an expected state
@@ -411,8 +409,6 @@ class API(base.Base):
             # Don't allow deletion of volume with snapshots
             filters = [~db.volume_has_snapshots_filter()]
         values = {'status': 'deleting', 'terminated_at': timeutils.utcnow()}
-        if volume.status == 'error_managing':
-            values['status'] = 'error_managing_deleting'
 
         result = volume.conditional_update(values, expected, filters)
 
@@ -1459,8 +1455,12 @@ class API(base.Base):
 
         # Support specifying volume type by ID or name
         try:
-            vol_type = (
-                volume_types.get_by_name_or_id(context.elevated(), new_type))
+            if uuidutils.is_uuid_like(new_type):
+                vol_type = volume_types.get_volume_type(context.elevated(),
+                                                        new_type)
+            else:
+                vol_type = volume_types.get_volume_type_by_name(
+                    context.elevated(), new_type)
         except exception.InvalidVolumeType:
             msg = _('Invalid volume_type passed: %s.') % new_type
             LOG.error(msg)

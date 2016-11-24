@@ -46,7 +46,7 @@ class LVMVolumeDriverTestCase(test_volume.DriverTestCase):
                    'id': 'test1'}
 
     @mock.patch.object(os.path, 'exists', return_value=True)
-    @mock.patch.object(fake_driver.FakeLoggingVolumeDriver, 'create_export')
+    @mock.patch.object(fake_driver.FakeISCSIDriver, 'create_export')
     def test_delete_volume_invalid_parameter(self, _mock_create_export,
                                              mock_exists):
         self.configuration.volume_clear = 'zero'
@@ -59,7 +59,7 @@ class LVMVolumeDriverTestCase(test_volume.DriverTestCase):
                           self.FAKE_VOLUME)
 
     @mock.patch.object(os.path, 'exists', return_value=False)
-    @mock.patch.object(fake_driver.FakeLoggingVolumeDriver, 'create_export')
+    @mock.patch.object(fake_driver.FakeISCSIDriver, 'create_export')
     def test_delete_volume_bad_path(self, _mock_create_export, mock_exists):
         self.configuration.volume_clear = 'zero'
         self.configuration.volume_clear_size = 0
@@ -74,7 +74,7 @@ class LVMVolumeDriverTestCase(test_volume.DriverTestCase):
 
     @mock.patch.object(volutils, 'clear_volume')
     @mock.patch.object(volutils, 'copy_volume')
-    @mock.patch.object(fake_driver.FakeLoggingVolumeDriver, 'create_export')
+    @mock.patch.object(fake_driver.FakeISCSIDriver, 'create_export')
     def test_delete_volume_thinlvm_snap(self, _mock_create_export,
                                         mock_copy, mock_clear):
         vg_obj = fake_lvm.FakeBrickLVM('cinder-volumes',
@@ -805,12 +805,11 @@ class LVMVolumeDriverTestCase(test_volume.DriverTestCase):
         res = self.volume.driver.get_manageable_volumes(cinder_vols, None,
                                                         1000, 0,
                                                         ['size'], ['asc'])
-        exp = [{'size': 2, 'reason_not_safe': 'already managed',
-                'extra_info': None,
+        exp = [{'size': 2, 'reason_not_safe': None, 'extra_info': None,
                 'reference': {'source-name':
                               'volume-00000000-0000-0000-0000-000000000000'},
                 'cinder_id': '00000000-0000-0000-0000-000000000000',
-                'safe_to_manage': False},
+                'safe_to_manage': False, 'reason_not_safe': 'already managed'},
                {'size': 3, 'reason_not_safe': 'volume in use',
                 'reference': {'source-name':
                               'volume-00000000-0000-0000-0000-000000000001'},

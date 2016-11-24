@@ -386,6 +386,9 @@ class TestCinderManageCmd(test.TestCase):
         super(TestCinderManageCmd, self).setUp()
         sys.argv = ['cinder-manage']
 
+    def tearDown(self):
+        super(TestCinderManageCmd, self).tearDown()
+
     def _test_purge_invalid_age_in_days(self, age_in_days):
         db_cmds = cinder_manage.DbCommands()
         ex = self.assertRaises(SystemExit, db_cmds.purge, age_in_days)

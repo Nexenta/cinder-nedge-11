@@ -23,6 +23,9 @@ from cinder import test
 
 
 class ChanceWeigherTestCase(test.TestCase):
+    def setUp(self):
+        super(ChanceWeigherTestCase, self).setUp()
+
     def fake_random(self, reset=False):
         if reset:
             self.not_random_float = 0.0

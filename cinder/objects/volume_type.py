@@ -23,6 +23,9 @@ from cinder.objects import base
 from cinder.volume import volume_types
 
 
+OPTIONAL_FIELDS = ['extra_specs', 'projects', 'qos_specs']
+
+
 @base.CinderObjectRegistry.register
 class VolumeType(base.CinderPersistentObject, base.CinderObject,
                  base.CinderObjectDictCompat, base.CinderComparableObject):
@@ -30,8 +33,6 @@ class VolumeType(base.CinderPersistentObject, base.CinderObject,
     # Version 1.1: Changed extra_specs to DictOfNullableStringsField
     # Version 1.2: Added qos_specs
     VERSION = '1.2'
-
-    OPTIONAL_FIELDS = ('extra_specs', 'projects', 'qos_specs')
 
     fields = {
         'id': fields.UUIDField(),
@@ -61,12 +62,12 @@ class VolumeType(base.CinderPersistentObject, base.CinderObject,
     def _get_expected_attrs(cls, context, *args, **kwargs):
         return 'extra_specs', 'projects'
 
-    @classmethod
-    def _from_db_object(cls, context, type, db_type, expected_attrs=None):
+    @staticmethod
+    def _from_db_object(context, type, db_type, expected_attrs=None):
         if expected_attrs is None:
             expected_attrs = ['extra_specs', 'projects']
         for name, field in type.fields.items():
-            if name in cls.OPTIONAL_FIELDS:
+            if name in OPTIONAL_FIELDS:
                 continue
             value = db_type[name]
             if isinstance(field, fields.IntegerField):

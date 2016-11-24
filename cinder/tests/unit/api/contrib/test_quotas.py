@@ -163,6 +163,9 @@ class QuotaSetsControllerTestBase(test.TestCase):
 
 
 class QuotaSetsControllerTest(QuotaSetsControllerTestBase):
+    def setUp(self):
+        super(QuotaSetsControllerTest, self).setUp()
+
     def test_defaults(self):
         result = self.controller.defaults(self.req, fake.PROJECT_ID)
         self.assertDictMatch(make_body(), result)

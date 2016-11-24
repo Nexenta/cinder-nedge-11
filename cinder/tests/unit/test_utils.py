@@ -953,6 +953,9 @@ class WrongException(Exception):
 
 
 class TestRetryDecorator(test.TestCase):
+    def setUp(self):
+        super(TestRetryDecorator, self).setUp()
+
     def test_no_retry_required(self):
         self.counter = 0
 

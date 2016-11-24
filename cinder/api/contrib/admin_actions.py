@@ -44,9 +44,7 @@ class AdminController(wsgi.Controller):
                         'available',
                         'deleting',
                         'error',
-                        'error_deleting',
-                        'error_managing',
-                        'managing', ])
+                        'error_deleting', ])
 
     def __init__(self, *args, **kwargs):
         super(AdminController, self).__init__(*args, **kwargs)
